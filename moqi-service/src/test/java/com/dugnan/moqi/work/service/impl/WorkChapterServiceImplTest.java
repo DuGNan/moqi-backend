@@ -5,6 +5,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
+import java.time.LocalDateTime;
+import java.util.List;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.Test;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.Mock;
+
 import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
@@ -21,25 +30,26 @@ import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
 import com.dugnan.moqi.work.mapper.WorkMapper;
-import java.time.LocalDateTime;
-import java.util.List;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
 class WorkChapterServiceImplTest {
 
-    @Mock private WorkMapper workMapper;
-    @Mock private ChapterMapper chapterMapper;
-    @Mock private ChapterConversationMapper conversationMapper;
-    @Mock private ChapterGenerationMapper generationMapper;
-    @Mock private ChapterOutlineQueryMapper outlineMapper;
-    @Mock private SettingCandidateMapper settingCandidateMapper;
-    @Mock private SettingEntryMapper settingEntryMapper;
-    @Mock private ForeshadowingItemMapper foreshadowingMapper;
+    @Mock
+    private WorkMapper workMapper;
+    @Mock
+    private ChapterMapper chapterMapper;
+    @Mock
+    private ChapterConversationMapper conversationMapper;
+    @Mock
+    private ChapterGenerationMapper generationMapper;
+    @Mock
+    private ChapterOutlineQueryMapper outlineMapper;
+    @Mock
+    private SettingCandidateMapper settingCandidateMapper;
+    @Mock
+    private SettingEntryMapper settingEntryMapper;
+    @Mock
+    private ForeshadowingItemMapper foreshadowingMapper;
 
     private WorkChapterServiceImpl service;
 

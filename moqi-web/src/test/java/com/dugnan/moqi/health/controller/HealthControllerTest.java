@@ -5,20 +5,23 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.dugnan.moqi.health.service.HealthQueryService;
 import java.util.Map;
+
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
+import org.junit.jupiter.api.Test;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.Mock;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
+import com.dugnan.moqi.health.service.HealthQueryService;
 
 @ExtendWith(MockitoExtension.class)
 class HealthControllerTest {
 
     @Mock
+
     private HealthQueryService healthQueryService;
 
     private MockMvc mockMvc;

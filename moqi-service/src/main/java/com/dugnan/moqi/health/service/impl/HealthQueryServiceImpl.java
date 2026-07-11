@@ -1,13 +1,15 @@
 package com.dugnan.moqi.health.service.impl;
 
-import com.dugnan.moqi.health.service.HealthQueryService;
 import java.util.LinkedHashMap;
 import java.util.Map;
+
 import org.springframework.boot.actuate.health.CompositeHealth;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthComponent;
 import org.springframework.boot.actuate.health.HealthEndpoint;
 import org.springframework.stereotype.Service;
+
+import com.dugnan.moqi.health.service.HealthQueryService;
 
 @Service
 public class HealthQueryServiceImpl implements HealthQueryService {
