@@ -1,0 +1,8 @@
+target/
+/.idea/
+/.vscode/
+*.iml
+*.log
+/build-test-red.log
+/build-test-green.log
+/build-modules.log

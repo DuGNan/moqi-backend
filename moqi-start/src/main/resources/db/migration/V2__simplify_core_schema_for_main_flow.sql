@@ -1,0 +1,22 @@
+ALTER TABLE works
+    DROP INDEX idx_works_last_opened_at,
+    DROP COLUMN description,
+    DROP COLUMN current_chapter_id,
+    DROP COLUMN chapter_count,
+    DROP COLUMN word_count,
+    DROP COLUMN last_opened_chapter_id,
+    DROP COLUMN last_opened_at,
+    DROP COLUMN created_by,
+    DROP COLUMN updated_by;
+
+ALTER TABLE chapters
+    DROP INDEX idx_chapters_last_opened_at,
+    DROP COLUMN content_word_count,
+    DROP COLUMN last_workspace,
+    DROP COLUMN current_generation_id,
+    DROP COLUMN current_brief_id,
+    DROP COLUMN base_version,
+    DROP COLUMN created_by,
+    DROP COLUMN updated_by,
+    DROP COLUMN last_opened_at,
+    DROP COLUMN last_generated_at;
