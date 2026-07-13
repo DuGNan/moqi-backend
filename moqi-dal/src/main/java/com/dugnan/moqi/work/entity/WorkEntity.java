@@ -1,28 +1,20 @@
 package com.dugnan.moqi.work.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.Data;
+
 import com.dugnan.moqi.common.entity.BaseEntity;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:映射作品基础数据。
+ */
+@Data
 @TableName("works")
 public class WorkEntity extends BaseEntity {
 
     private String title;
 
     private String status;
-
-    public String getTitle() {
-        return title;
-    }
-
-    public void setTitle(String title) {
-        this.title = title;
-    }
-
-    public String getStatus() {
-        return status;
-    }
-
-    public void setStatus(String status) {
-        this.status = status;
-    }
 }

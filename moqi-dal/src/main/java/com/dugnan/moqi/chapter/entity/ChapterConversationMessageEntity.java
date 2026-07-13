@@ -1,8 +1,16 @@
 package com.dugnan.moqi.chapter.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.Data;
+
 import com.dugnan.moqi.common.entity.BaseEntity;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:映射章节共创会话消息数据。
+ */
+@Data
 @TableName("chapter_conversation_messages")
 public class ChapterConversationMessageEntity extends BaseEntity {
 
@@ -13,36 +21,4 @@ public class ChapterConversationMessageEntity extends BaseEntity {
     private String messageRole;
 
     private String content;
-
-    public Long getConversationId() {
-        return conversationId;
-    }
-
-    public void setConversationId(Long conversationId) {
-        this.conversationId = conversationId;
-    }
-
-    public Long getChapterId() {
-        return chapterId;
-    }
-
-    public void setChapterId(Long chapterId) {
-        this.chapterId = chapterId;
-    }
-
-    public String getMessageRole() {
-        return messageRole;
-    }
-
-    public void setMessageRole(String messageRole) {
-        this.messageRole = messageRole;
-    }
-
-    public String getContent() {
-        return content;
-    }
-
-    public void setContent(String content) {
-        this.content = content;
-    }
 }

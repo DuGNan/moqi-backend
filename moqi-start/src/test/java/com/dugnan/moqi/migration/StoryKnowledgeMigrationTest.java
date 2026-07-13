@@ -4,9 +4,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:验证 V8 迁移包含长篇小说知识层表结构。
+ */
 class StoryKnowledgeMigrationTest {
 
     @Test

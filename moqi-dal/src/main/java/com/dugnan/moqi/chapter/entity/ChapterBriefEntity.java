@@ -1,8 +1,16 @@
 package com.dugnan.moqi.chapter.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.Data;
+
 import com.dugnan.moqi.common.entity.BaseEntity;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:映射章节简报数据。
+ */
+@Data
 @TableName("chapter_briefs")
 public class ChapterBriefEntity extends BaseEntity {
 
@@ -13,36 +21,4 @@ public class ChapterBriefEntity extends BaseEntity {
     private String briefStatus;
 
     private String briefContent;
-
-    public Long getWorkId() {
-        return workId;
-    }
-
-    public void setWorkId(Long workId) {
-        this.workId = workId;
-    }
-
-    public Long getChapterId() {
-        return chapterId;
-    }
-
-    public void setChapterId(Long chapterId) {
-        this.chapterId = chapterId;
-    }
-
-    public String getBriefStatus() {
-        return briefStatus;
-    }
-
-    public void setBriefStatus(String briefStatus) {
-        this.briefStatus = briefStatus;
-    }
-
-    public String getBriefContent() {
-        return briefContent;
-    }
-
-    public void setBriefContent(String briefContent) {
-        this.briefContent = briefContent;
-    }
 }
