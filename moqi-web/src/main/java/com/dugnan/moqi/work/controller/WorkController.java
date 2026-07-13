@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:提供作品及其章节的基础 HTTP 接口。
+ */
 package com.dugnan.moqi.work.controller;
 
 import jakarta.validation.constraints.NotBlank;

@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:验证健康检查接口的响应协议。
+ */
 package com.dugnan.moqi.health.controller;
 
 import static org.mockito.BDDMockito.given;

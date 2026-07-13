@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:映射待确认设定候选数据。
+ */
 package com.dugnan.moqi.knowledge.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;

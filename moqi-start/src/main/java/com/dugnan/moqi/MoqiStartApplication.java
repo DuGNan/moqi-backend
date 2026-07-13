@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:提供 Moqi 后端应用启动入口。
+ */
 package com.dugnan.moqi;
 
 import org.mybatis.spring.annotation.MapperScan;

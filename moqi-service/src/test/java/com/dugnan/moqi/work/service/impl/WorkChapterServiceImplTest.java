@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:验证作品与章节服务的查询、创建和打开规则。
+ */
 package com.dugnan.moqi.work.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;

@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:定义持久化实体通用的主键、审计时间和软删除字段。
+ */
 package com.dugnan.moqi.common.entity;
 
 import java.time.LocalDateTime;

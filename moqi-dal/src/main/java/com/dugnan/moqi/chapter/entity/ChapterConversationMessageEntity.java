@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:映射章节共创会话消息数据。
+ */
 package com.dugnan.moqi.chapter.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;

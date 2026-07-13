@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:映射章节摘要数据。
+ */
 package com.dugnan.moqi.knowledge.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;

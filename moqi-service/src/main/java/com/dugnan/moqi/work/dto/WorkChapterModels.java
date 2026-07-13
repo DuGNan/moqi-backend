@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:集中定义作品与章节接口使用的业务数据模型。
+ */
 package com.dugnan.moqi.work.dto;
 
 import java.time.LocalDateTime;

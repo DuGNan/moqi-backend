@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:统一处理 Web 层异常并转换为标准 API 响应。
+ */
 package com.dugnan.moqi.web.exception;
 
 import java.util.LinkedHashMap;

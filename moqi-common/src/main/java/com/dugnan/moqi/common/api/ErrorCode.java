@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:定义后端统一错误码。
+ */
 package com.dugnan.moqi.common.api;
 
 public enum ErrorCode {

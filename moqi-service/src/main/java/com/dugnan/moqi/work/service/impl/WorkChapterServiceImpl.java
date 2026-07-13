@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:实现作品与章节的查询、创建及打开聚合逻辑。
+ */
 package com.dugnan.moqi.work.service.impl;
 
 import java.util.Comparator;

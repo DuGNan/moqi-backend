@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:查询并聚合应用与数据库健康状态。
+ */
 package com.dugnan.moqi.health.service.impl;
 
 import java.util.LinkedHashMap;

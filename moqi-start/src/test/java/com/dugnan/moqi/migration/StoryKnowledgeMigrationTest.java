@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:验证 V8 迁移包含长篇小说知识层表结构。
+ */
 package com.dugnan.moqi.migration;
 
 import static org.assertj.core.api.Assertions.assertThat;

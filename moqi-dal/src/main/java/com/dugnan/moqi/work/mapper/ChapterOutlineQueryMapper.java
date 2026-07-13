@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:提供章节大纲及最新修订版本的查询能力。
+ */
 package com.dugnan.moqi.work.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;

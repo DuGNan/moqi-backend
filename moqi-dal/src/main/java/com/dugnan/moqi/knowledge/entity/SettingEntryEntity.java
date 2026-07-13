@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:映射已确认作品设定数据。
+ */
 package com.dugnan.moqi.knowledge.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;

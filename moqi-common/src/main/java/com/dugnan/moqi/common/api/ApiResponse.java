@@ -1,3 +1,8 @@
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:统一封装 API 成功与失败响应。
+ */
 package com.dugnan.moqi.common.api;
 
 import java.time.OffsetDateTime;
