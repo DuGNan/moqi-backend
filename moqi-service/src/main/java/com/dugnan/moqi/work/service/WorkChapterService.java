@@ -1,8 +1,3 @@
-/**
- * @author dgn
- * @date:2026-07-13
- * @description:定义作品与章节的基础业务能力。
- */
 package com.dugnan.moqi.work.service;
 
 import com.dugnan.moqi.work.dto.CreateChapterCommand;
@@ -15,6 +10,11 @@ import com.dugnan.moqi.work.dto.WorkChapterModels.WorkDetail;
 import com.dugnan.moqi.work.dto.WorkChapterModels.WorkList;
 import com.dugnan.moqi.work.dto.WorkChapterModels.WorkSummary;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:定义作品与章节的基础业务能力。
+ */
 public interface WorkChapterService {
     WorkList listWorks(String status, String keyword, Integer limit);
 

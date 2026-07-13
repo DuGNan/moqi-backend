@@ -1,8 +1,3 @@
-/**
- * @author dgn
- * @date:2026-07-13
- * @description:提供章节大纲及最新修订版本的查询能力。
- */
 package com.dugnan.moqi.work.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
@@ -11,6 +6,11 @@ import org.apache.ibatis.annotations.Select;
 
 import com.dugnan.moqi.work.entity.ChapterOutlineEntity;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:提供章节大纲及最新修订版本的查询能力。
+ */
 public interface ChapterOutlineQueryMapper extends BaseMapper<ChapterOutlineEntity> {
     @Select("""
             SELECT *

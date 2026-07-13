@@ -1,8 +1,3 @@
-/**
- * @author dgn
- * @date:2026-07-13
- * @description:统一处理 Web 层异常并转换为标准 API 响应。
- */
 package com.dugnan.moqi.web.exception;
 
 import java.util.LinkedHashMap;
@@ -24,6 +19,11 @@ import com.dugnan.moqi.common.api.ApiResponse;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:统一处理 Web 层异常并转换为标准 API 响应。
+ */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(GlobalExceptionHandler.class);

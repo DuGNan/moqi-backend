@@ -1,8 +1,3 @@
-/**
- * @author dgn
- * @date:2026-07-13
- * @description:集中定义作品与章节接口使用的业务数据模型。
- */
 package com.dugnan.moqi.work.dto;
 
 import java.time.LocalDateTime;
@@ -10,6 +5,11 @@ import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:集中定义作品与章节接口使用的业务数据模型。
+ */
 public final class WorkChapterModels {
 
     private WorkChapterModels() {

@@ -1,8 +1,3 @@
-/**
- * @author dgn
- * @date:2026-07-13
- * @description:提供作品及其章节的基础 HTTP 接口。
- */
 package com.dugnan.moqi.work.controller;
 
 import jakarta.validation.constraints.NotBlank;
@@ -26,6 +21,11 @@ import com.dugnan.moqi.work.dto.WorkChapterModels.WorkList;
 import com.dugnan.moqi.work.dto.WorkChapterModels.WorkSummary;
 import com.dugnan.moqi.work.service.WorkChapterService;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:提供作品及其章节的基础 HTTP 接口。
+ */
 @RestController
 @RequestMapping("/api/works")
 public class WorkController {

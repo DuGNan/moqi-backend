@@ -1,8 +1,3 @@
-/**
- * @author dgn
- * @date:2026-07-13
- * @description:验证作品与章节接口的请求校验及响应协议。
- */
 package com.dugnan.moqi.work.controller;
 
 import static org.hamcrest.Matchers.nullValue;
@@ -28,6 +23,11 @@ import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterOpen;
 import com.dugnan.moqi.work.dto.WorkChapterModels.WorkList;
 import com.dugnan.moqi.work.service.WorkChapterService;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:验证作品与章节接口的请求校验及响应协议。
+ */
 class WorkChapterControllerTest {
     private WorkChapterService service;
     private MockMvc mvc;

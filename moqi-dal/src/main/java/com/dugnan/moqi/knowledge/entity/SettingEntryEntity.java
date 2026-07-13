@@ -1,18 +1,16 @@
+package com.dugnan.moqi.knowledge.entity;
+
+import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.Data;
+
+import com.dugnan.moqi.common.entity.BaseEntity;
+
 /**
  * @author dgn
  * @date:2026-07-13
  * @description:映射已确认作品设定数据。
  */
-package com.dugnan.moqi.knowledge.entity;
-
-import com.baomidou.mybatisplus.annotation.TableName;
-import lombok.Getter;
-import lombok.Setter;
-
-import com.dugnan.moqi.common.entity.BaseEntity;
-
-@Getter
-@Setter
+@Data
 @TableName("setting_entries")
 public class SettingEntryEntity extends BaseEntity {
 

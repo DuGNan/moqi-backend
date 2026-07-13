@@ -1,18 +1,16 @@
+package com.dugnan.moqi.knowledge.entity;
+
+import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.Data;
+
+import com.dugnan.moqi.common.entity.BaseEntity;
+
 /**
  * @author dgn
  * @date:2026-07-13
  * @description:映射待确认设定候选数据。
  */
-package com.dugnan.moqi.knowledge.entity;
-
-import com.baomidou.mybatisplus.annotation.TableName;
-import lombok.Getter;
-import lombok.Setter;
-
-import com.dugnan.moqi.common.entity.BaseEntity;
-
-@Getter
-@Setter
+@Data
 @TableName("setting_candidates")
 public class SettingCandidateEntity extends BaseEntity {
 

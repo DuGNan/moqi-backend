@@ -1,18 +1,16 @@
+package com.dugnan.moqi.chapter.entity;
+
+import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.Data;
+
+import com.dugnan.moqi.common.entity.BaseEntity;
+
 /**
  * @author dgn
  * @date:2026-07-13
  * @description:映射章节共创会话消息数据。
  */
-package com.dugnan.moqi.chapter.entity;
-
-import com.baomidou.mybatisplus.annotation.TableName;
-import lombok.Getter;
-import lombok.Setter;
-
-import com.dugnan.moqi.common.entity.BaseEntity;
-
-@Getter
-@Setter
+@Data
 @TableName("chapter_conversation_messages")
 public class ChapterConversationMessageEntity extends BaseEntity {
 

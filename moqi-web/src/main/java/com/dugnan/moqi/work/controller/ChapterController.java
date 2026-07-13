@@ -1,8 +1,3 @@
-/**
- * @author dgn
- * @date:2026-07-13
- * @description:提供章节详情与打开聚合 HTTP 接口。
- */
 package com.dugnan.moqi.work.controller;
 
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,6 +12,11 @@ import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterDetail;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterOpen;
 import com.dugnan.moqi.work.service.WorkChapterService;
 
+/**
+ * @author dgn
+ * @date:2026-07-13
+ * @description:提供章节详情与打开聚合 HTTP 接口。
+ */
 @RestController
 @RequestMapping("/api/chapters")
 public class ChapterController {
