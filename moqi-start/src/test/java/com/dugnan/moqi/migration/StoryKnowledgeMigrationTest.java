@@ -15,6 +15,11 @@ import org.springframework.core.io.ClassPathResource;
  */
 class StoryKnowledgeMigrationTest {
 
+    /**
+     * 验证知识层迁移创建所需表结构和章节类型字段。
+     *
+     * @throws IOException 读取迁移文件失败
+     */
     @Test
     void v8MigrationAddsStoryKnowledgeLayerTablesAndChapterType() throws IOException {
         var resource = new ClassPathResource("db/migration/V8__add_story_knowledge_layer_tables.sql");

@@ -22,15 +22,33 @@ import com.dugnan.moqi.work.service.WorkChapterService;
 public class ChapterController {
     private final WorkChapterService service;
 
+    /**
+     * 创建章节控制器。
+     *
+     * @param service 作品章节业务服务
+     */
     public ChapterController(WorkChapterService service) {
         this.service = service;
     }
 
+    /**
+     * 查询章节详情。
+     *
+     * @param chapterId 章节 ID
+     * @return 章节详情响应
+     */
     @GetMapping("/{chapterId}")
     public ApiResponse<ChapterDetail> detail(@PathVariable Long chapterId) {
         return ApiResponse.success(service.getChapter(chapterId));
     }
 
+    /**
+     * 获取章节打开时的默认工作区建议。
+     *
+     * @param chapterId 章节 ID
+     * @param request 打开请求，可为空
+     * @return 章节打开建议响应
+     */
     @PostMapping("/{chapterId}/open")
     public ApiResponse<ChapterOpen> open(@PathVariable Long chapterId,
             @RequestBody(required = false) OpenChapterRequest request) {

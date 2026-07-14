@@ -58,6 +58,9 @@ class WorkChapterServiceImplTest {
 
     private WorkChapterServiceImpl service;
 
+    /**
+     * 初始化作品章节服务测试依赖。
+     */
     @BeforeEach
     void setUp() {
         service = new WorkChapterServiceImpl(workMapper, chapterMapper, conversationMapper,
@@ -65,6 +68,9 @@ class WorkChapterServiceImplTest {
                 foreshadowingMapper);
     }
 
+    /**
+     * 验证创建作品时会清理标题并使用草稿状态。
+     */
     @Test
     void createsTrimmedDraftWork() {
         when(workMapper.insert(any(WorkEntity.class))).thenAnswer(invocation -> {
@@ -81,6 +87,9 @@ class WorkChapterServiceImplTest {
         assertThat(result.chapterCount()).isZero();
     }
 
+    /**
+     * 验证查询不存在作品时返回业务错误。
+     */
     @Test
     void rejectsMissingWork() {
         when(workMapper.selectById(99L)).thenReturn(null);
@@ -89,6 +98,9 @@ class WorkChapterServiceImplTest {
                 .extracting("errorCode").isEqualTo(ErrorCode.WORK_NOT_FOUND);
     }
 
+    /**
+     * 验证创建章节时会按当前最大编号递增并进入共创状态。
+     */
     @Test
     void createsNextChapterInCoCreation() {
         WorkEntity work = work(1L);
@@ -109,6 +121,9 @@ class WorkChapterServiceImplTest {
         assertThat(result.defaultWorkspace()).isEqualTo("co_creation");
     }
 
+    /**
+     * 验证章节字数统计会排除 Unicode 空白字符。
+     */
     @Test
     void countsUnicodeNonWhitespaceCharacters() {
         WorkEntity work = work(1L);
@@ -118,6 +133,9 @@ class WorkChapterServiceImplTest {
         assertThat(service.getChapter(2L).wordCount()).isEqualTo(4);
     }
 
+    /**
+     * 验证打开章节时按预览、编辑器、共创顺序选择工作区。
+     */
     @Test
     void openPrefersPreviewThenEditorThenCoCreation() {
         WorkEntity work = work(1L);
@@ -140,6 +158,9 @@ class WorkChapterServiceImplTest {
         assertThat(service.openChapter(2L).defaultWorkspace()).isEqualTo("co_creation");
     }
 
+    /**
+     * 验证非法数量和章节类型参数会被拒绝。
+     */
     @Test
     void rejectsInvalidLimitAndChapterType() {
         assertThatThrownBy(() -> service.listWorks(null, null, 101))
@@ -151,6 +172,12 @@ class WorkChapterServiceImplTest {
                 .extracting("errorCode").isEqualTo(ErrorCode.BAD_REQUEST);
     }
 
+    /**
+     * 构造测试用作品实体。
+     *
+     * @param id 作品 ID
+     * @return 测试作品实体
+     */
     private WorkEntity work(Long id) {
         WorkEntity work = new WorkEntity();
         work.setId(id);
@@ -160,6 +187,15 @@ class WorkChapterServiceImplTest {
         return work;
     }
 
+    /**
+     * 构造测试用章节实体。
+     *
+     * @param id 章节 ID
+     * @param workId 作品 ID
+     * @param chapterNo 章节编号
+     * @param content 章节正文
+     * @return 测试章节实体
+     */
     private ChapterEntity chapter(Long id, Long workId, int chapterNo, String content) {
         ChapterEntity chapter = new ChapterEntity();
         chapter.setId(id);

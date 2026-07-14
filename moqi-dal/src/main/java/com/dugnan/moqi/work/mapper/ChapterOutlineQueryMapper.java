@@ -12,6 +12,12 @@ import com.dugnan.moqi.work.entity.ChapterOutlineEntity;
  * @description:提供章节大纲及最新修订版本的查询能力。
  */
 public interface ChapterOutlineQueryMapper extends BaseMapper<ChapterOutlineEntity> {
+    /**
+     * 查询章节最新的未删除大纲版本。
+     *
+     * @param chapterId 章节 ID
+     * @return 最新大纲，不存在时返回 null
+     */
     @Select("""
             SELECT *
             FROM chapter_outlines
