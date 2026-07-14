@@ -31,26 +31,60 @@ import com.dugnan.moqi.work.service.WorkChapterService;
 public class WorkController {
     private final WorkChapterService service;
 
+    /**
+     * 创建作品控制器。
+     *
+     * @param service 作品章节业务服务
+     */
     public WorkController(WorkChapterService service) {
         this.service = service;
     }
 
+    /**
+     * 查询作品列表。
+     *
+     * @param status 作品状态
+     * @param keyword 作品标题关键字
+     * @param limit 返回数量上限
+     * @return 作品列表响应
+     */
     @GetMapping
     public ApiResponse<WorkList> list(@RequestParam(required = false) String status,
             @RequestParam(required = false) String keyword, @RequestParam(required = false) Integer limit) {
         return ApiResponse.success(service.listWorks(status, keyword, limit));
     }
 
+    /**
+     * 创建作品。
+     *
+     * @param request 创建作品请求
+     * @return 创建后的作品摘要响应
+     */
     @PostMapping
     public ApiResponse<WorkSummary> create(@Valid @RequestBody CreateWorkRequest request) {
         return ApiResponse.success(service.createWork(new CreateWorkCommand(request.title())));
     }
 
+    /**
+     * 查询作品详情。
+     *
+     * @param workId 作品 ID
+     * @return 作品详情响应
+     */
     @GetMapping("/{workId}")
     public ApiResponse<WorkDetail> detail(@PathVariable Long workId) {
         return ApiResponse.success(service.getWork(workId));
     }
 
+    /**
+     * 查询作品下的章节列表。
+     *
+     * @param workId 作品 ID
+     * @param chapterType 章节类型
+     * @param workflowStatus 工作流状态
+     * @param keyword 章节标题关键字
+     * @return 章节列表响应
+     */
     @GetMapping("/{workId}/chapters")
     public ApiResponse<ChapterList> chapters(@PathVariable Long workId,
             @RequestParam(required = false) String chapterType,
@@ -59,6 +93,13 @@ public class WorkController {
         return ApiResponse.success(service.listChapters(workId, chapterType, workflowStatus, keyword));
     }
 
+    /**
+     * 创建章节。
+     *
+     * @param workId 作品 ID
+     * @param request 创建章节请求
+     * @return 创建后的章节响应
+     */
     @PostMapping("/{workId}/chapters")
     public ApiResponse<ChapterCreated> createChapter(@PathVariable Long workId,
             @Valid @RequestBody CreateChapterRequest request) {

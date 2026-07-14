@@ -12,6 +12,9 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  */
 public final class WorkChapterModels {
 
+    /**
+     * 禁止实例化模型容器。
+     */
     private WorkChapterModels() {
     }
 

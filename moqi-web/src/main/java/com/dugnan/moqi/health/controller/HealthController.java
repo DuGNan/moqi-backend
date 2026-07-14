@@ -20,10 +20,20 @@ public class HealthController {
 
     private final HealthQueryService healthQueryService;
 
+    /**
+     * 创建健康检查控制器。
+     *
+     * @param healthQueryService 健康状态查询服务
+     */
     public HealthController(HealthQueryService healthQueryService) {
         this.healthQueryService = healthQueryService;
     }
 
+    /**
+     * 返回应用健康状态。
+     *
+     * @return 统一健康状态响应
+     */
     @GetMapping
     public ApiResponse<Map<String, Object>> health() {
         return ApiResponse.success(healthQueryService.currentHealth());

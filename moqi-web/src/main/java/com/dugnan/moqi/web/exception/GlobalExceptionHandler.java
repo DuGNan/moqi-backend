@@ -28,6 +28,12 @@ import com.dugnan.moqi.common.exception.BusinessException;
 public class GlobalExceptionHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    /**
+     * 处理业务异常并转换为统一错误响应。
+     *
+     * @param exception 业务异常
+     * @return 业务错误响应
+     */
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Map<String, Object>>> handleBusinessException(BusinessException exception) {
         HttpStatus status = switch (exception.getErrorCode()) {
@@ -39,6 +45,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(status).body(response);
     }
 
+    /**
+     * 处理请求参数校验异常。
+     *
+     * @param exception 参数校验异常
+     * @return 参数校验错误响应
+     */
     @ExceptionHandler({MethodArgumentNotValidException.class, BindException.class})
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Map<String, Object>> handleValidationException(Exception exception) {
@@ -47,12 +59,24 @@ public class GlobalExceptionHandler {
         return ApiResponse.failure(ErrorCode.BAD_REQUEST, "request validation failed", data);
     }
 
+    /**
+     * 处理不可读取的请求体。
+     *
+     * @param exception 请求体解析异常
+     * @return 请求体错误响应
+     */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Map<String, Object>> handleUnreadableMessage(HttpMessageNotReadableException exception) {
         return ApiResponse.failure(ErrorCode.BAD_REQUEST, "请求体不是有效 JSON", Map.of());
     }
 
+    /**
+     * 处理未预期的系统异常。
+     *
+     * @param exception 未预期异常
+     * @return 系统错误响应
+     */
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ApiResponse<Map<String, Object>> handleUnexpectedException(Exception exception) {
@@ -60,6 +84,12 @@ public class GlobalExceptionHandler {
         return ApiResponse.failure(ErrorCode.INTERNAL_ERROR, "internal server error", Map.of());
     }
 
+    /**
+     * 提取参数校验错误字段及消息。
+     *
+     * @param exception 参数校验异常
+     * @return 字段错误映射
+     */
     private Map<String, String> extractErrors(Exception exception) {
         Map<String, String> errors = new LinkedHashMap<>();
         if (exception instanceof MethodArgumentNotValidException methodArgumentNotValidException) {
