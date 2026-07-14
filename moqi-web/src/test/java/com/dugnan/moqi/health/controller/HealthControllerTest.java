@@ -31,12 +31,20 @@ class HealthControllerTest {
 
     private MockMvc mockMvc;
 
+    /**
+     * 初始化健康控制器测试环境。
+     */
     @BeforeEach
     void setUp() {
         HealthController controller = new HealthController(healthQueryService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
+    /**
+     * 验证健康接口返回统一响应结构。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
     @Test
     void shouldReturnUnifiedHealthResponse() throws Exception {
         given(healthQueryService.currentHealth()).willReturn(Map.of(

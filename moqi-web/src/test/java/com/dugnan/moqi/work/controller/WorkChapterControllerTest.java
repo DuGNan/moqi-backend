@@ -32,6 +32,9 @@ class WorkChapterControllerTest {
     private WorkChapterService service;
     private MockMvc mvc;
 
+    /**
+     * 初始化作品章节控制器测试环境。
+     */
     @BeforeEach
     void setUp() {
         service = Mockito.mock(WorkChapterService.class);
@@ -41,6 +44,11 @@ class WorkChapterControllerTest {
                 .build();
     }
 
+    /**
+     * 验证作品列表接口返回统一响应。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
     @Test
     void listsWorksInUnifiedResponse() throws Exception {
         when(service.listWorks(null, null, null)).thenReturn(new WorkList(List.of()));
@@ -50,6 +58,11 @@ class WorkChapterControllerTest {
                 .andExpect(jsonPath("$.data.works").isArray());
     }
 
+    /**
+     * 验证作品标题为空时返回参数校验错误。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
     @Test
     void rejectsBlankWorkTitle() throws Exception {
         mvc.perform(post("/api/works")
@@ -59,6 +72,11 @@ class WorkChapterControllerTest {
                 .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
 
+    /**
+     * 验证请求体 JSON 格式错误时返回 400。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
     @Test
     void rejectsMalformedJsonAsBadRequest() throws Exception {
         mvc.perform(post("/api/works")
@@ -68,6 +86,11 @@ class WorkChapterControllerTest {
                 .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
 
+    /**
+     * 验证不存在章节时返回 404。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
     @Test
     void mapsMissingChapterTo404() throws Exception {
         when(service.getChapter(99L))
@@ -77,6 +100,11 @@ class WorkChapterControllerTest {
                 .andExpect(jsonPath("$.code").value("CHAPTER_NOT_FOUND"));
     }
 
+    /**
+     * 验证打开章节请求不会持久化请求来源。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
     @Test
     void opensChapterWithoutPersistingSource() throws Exception {
         ChapterOpen response = new ChapterOpen(

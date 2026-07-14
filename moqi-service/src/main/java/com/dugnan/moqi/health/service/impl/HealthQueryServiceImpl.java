@@ -21,10 +21,20 @@ public class HealthQueryServiceImpl implements HealthQueryService {
 
     private final HealthEndpoint healthEndpoint;
 
+    /**
+     * 创建健康状态查询服务。
+     *
+     * @param healthEndpoint Spring Boot 健康检查端点
+     */
     public HealthQueryServiceImpl(HealthEndpoint healthEndpoint) {
         this.healthEndpoint = healthEndpoint;
     }
 
+    /**
+     * 查询并整理应用健康状态。
+     *
+     * @return 健康状态及明细
+     */
     @Override
     public Map<String, Object> currentHealth() {
         HealthComponent health = healthEndpoint.health();

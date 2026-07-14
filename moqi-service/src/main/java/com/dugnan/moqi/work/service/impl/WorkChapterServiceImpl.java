@@ -52,6 +52,7 @@ public class WorkChapterServiceImpl implements WorkChapterService {
 
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 100;
+    private static final int MAX_TITLE_LENGTH = 200;
     private static final Set<String> WORK_STATUSES = Set.of("draft");
     private static final Set<String> CHAPTER_TYPES =
             Set.of("dedication", "prologue", "chapter", "epilogue", "other");
@@ -66,6 +67,18 @@ public class WorkChapterServiceImpl implements WorkChapterService {
     private final SettingEntryMapper settingEntryMapper;
     private final ForeshadowingItemMapper foreshadowingMapper;
 
+    /**
+     * 创建作品章节服务。
+     *
+     * @param workMapper 作品数据访问对象
+     * @param chapterMapper 章节数据访问对象
+     * @param conversationMapper 章节会话数据访问对象
+     * @param generationMapper 章节生成数据访问对象
+     * @param outlineMapper 章节大纲查询对象
+     * @param settingCandidateMapper 设定候选数据访问对象
+     * @param settingEntryMapper 设定数据访问对象
+     * @param foreshadowingMapper 伏笔数据访问对象
+     */
     public WorkChapterServiceImpl(
             WorkMapper workMapper,
             ChapterMapper chapterMapper,
@@ -85,6 +98,14 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         this.foreshadowingMapper = foreshadowingMapper;
     }
 
+    /**
+     * 查询作品列表并应用状态、关键字及数量过滤。
+     *
+     * @param status 作品状态
+     * @param keyword 作品标题关键字
+     * @param limit 返回数量上限
+     * @return 作品列表
+     */
     @Override
     public WorkList listWorks(String status, String keyword, Integer limit) {
         int size = limit == null ? DEFAULT_LIMIT : limit;
@@ -102,8 +123,14 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return new WorkList(workMapper.selectList(query).stream().map(this::workSummary).toList());
     }
 
+    /**
+     * 创建作品并返回作品摘要。
+     *
+     * @param command 创建作品命令
+     * @return 创建后的作品摘要
+    */
     @Override
-    @Transactional
+    @Transactional(rollbackFor = RuntimeException.class)
     public WorkSummary createWork(CreateWorkCommand command) {
         String title = validTitle(command == null ? null : command.title());
         WorkEntity entity = new WorkEntity();
@@ -117,6 +144,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return workSummary(saved == null ? entity : saved);
     }
 
+    /**
+     * 查询作品详情及其统计信息。
+     *
+     * @param workId 作品 ID
+     * @return 作品详情
+     */
     @Override
     public WorkDetail getWork(Long workId) {
         WorkEntity work = requireWork(workId);
@@ -141,6 +174,15 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 work.getGmtModified());
     }
 
+    /**
+     * 查询作品下的章节列表。
+     *
+     * @param workId 作品 ID
+     * @param chapterType 章节类型
+     * @param workflowStatus 工作流状态
+     * @param keyword 章节标题关键字
+     * @return 章节列表
+     */
     @Override
     public ChapterList listChapters(
             Long workId,
@@ -167,8 +209,15 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return new ChapterList(new WorkRef(workId, work.getTitle()), summaries);
     }
 
+    /**
+     * 创建章节并分配下一个章节编号。
+     *
+     * @param workId 作品 ID
+     * @param command 创建章节命令
+     * @return 创建后的章节信息
+    */
     @Override
-    @Transactional
+    @Transactional(rollbackFor = RuntimeException.class)
     public ChapterCreated createChapter(Long workId, CreateChapterCommand command) {
         requireWork(workId);
         String title = validTitle(command == null ? null : command.title());
@@ -214,6 +263,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 saved.getGmtModified());
     }
 
+    /**
+     * 查询章节详情。
+     *
+     * @param chapterId 章节 ID
+     * @return 章节详情
+     */
     @Override
     public ChapterDetail getChapter(Long chapterId) {
         ChapterEntity chapter = requireChapter(chapterId);
@@ -232,6 +287,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 chapter.getGmtModified());
     }
 
+    /**
+     * 聚合章节相关状态并计算默认工作区。
+     *
+     * @param chapterId 章节 ID
+     * @return 章节打开建议
+     */
     @Override
     public ChapterOpen openChapter(Long chapterId) {
         ChapterEntity chapter = requireChapter(chapterId);
@@ -255,6 +316,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 chapter.getGmtModified());
     }
 
+    /**
+     * 查询章节最新的预览生成记录。
+     *
+     * @param chapterId 章节 ID
+     * @return 最新预览记录，不存在时返回 null
+     */
     private ChapterGenerationEntity findLatestPreview(Long chapterId) {
         LambdaQueryWrapper<ChapterGenerationEntity> query =
                 new LambdaQueryWrapper<ChapterGenerationEntity>()
@@ -265,6 +332,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return generationMapper.selectList(query).stream().findFirst().orElse(null);
     }
 
+    /**
+     * 查询章节最新的活动会话。
+     *
+     * @param chapterId 章节 ID
+     * @return 最新活动会话，不存在时返回 null
+     */
     private ChapterConversationEntity findLatestConversation(Long chapterId) {
         LambdaQueryWrapper<ChapterConversationEntity> query =
                 new LambdaQueryWrapper<ChapterConversationEntity>()
@@ -275,6 +348,13 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return conversationMapper.selectList(query).stream().findFirst().orElse(null);
     }
 
+    /**
+     * 根据章节上下文计算默认工作区。
+     *
+     * @param chapter 章节实体
+     * @param preview 最新预览生成记录
+     * @return 默认工作区标识
+     */
     private String defaultWorkspace(
             ChapterEntity chapter,
             ChapterGenerationEntity preview) {
@@ -287,6 +367,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return "co_creation";
     }
 
+    /**
+     * 将作品实体转换为作品摘要。
+     *
+     * @param work 作品实体
+     * @return 作品摘要
+     */
     private WorkSummary workSummary(WorkEntity work) {
         List<ChapterEntity> chapters = chapters(work.getId());
         ChapterEntity latest = chapters.stream()
@@ -307,6 +393,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 work.getGmtModified());
     }
 
+    /**
+     * 将章节实体转换为章节摘要。
+     *
+     * @param chapter 章节实体
+     * @return 章节摘要
+     */
     private ChapterSummary chapterSummary(ChapterEntity chapter) {
         long previewCount = generationMapper.selectCount(
                 new LambdaQueryWrapper<ChapterGenerationEntity>()
@@ -326,6 +418,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 chapter.getGmtModified());
     }
 
+    /**
+     * 查询作品下所有未删除章节。
+     *
+     * @param workId 作品 ID
+     * @return 未删除章节列表
+     */
     private List<ChapterEntity> chapters(Long workId) {
         return chapterMapper.selectList(
                 new LambdaQueryWrapper<ChapterEntity>()
@@ -333,6 +431,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                         .eq(ChapterEntity::getDeleted, 0));
     }
 
+    /**
+     * 统计作品下未删除章节数量。
+     *
+     * @param workId 作品 ID
+     * @return 章节数量
+     */
     private long chapterCount(Long workId) {
         return chapterMapper.selectCount(
                 new LambdaQueryWrapper<ChapterEntity>()
@@ -340,6 +444,13 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                         .eq(ChapterEntity::getDeleted, 0));
     }
 
+    /**
+     * 统计待确认设定数量。
+     *
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID，可为空
+     * @return 待确认设定数量
+     */
     private long pendingSettings(Long workId, Long chapterId) {
         return settingCandidateMapper.selectCount(
                 new LambdaQueryWrapper<SettingCandidateEntity>()
@@ -349,6 +460,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                         .eq(SettingCandidateEntity::getDeleted, 0));
     }
 
+    /**
+     * 获取未删除作品，不存在时抛出业务异常。
+     *
+     * @param id 作品 ID
+     * @return 作品实体
+     */
     private WorkEntity requireWork(Long id) {
         WorkEntity entity = id == null ? null : workMapper.selectById(id);
         if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
@@ -357,6 +474,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return entity;
     }
 
+    /**
+     * 获取未删除章节，不存在时抛出业务异常。
+     *
+     * @param id 章节 ID
+     * @return 章节实体
+     */
     private ChapterEntity requireChapter(Long id) {
         ChapterEntity entity = id == null ? null : chapterMapper.selectById(id);
         if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
@@ -365,31 +488,62 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return entity;
     }
 
+    /**
+     * 校验并规范化标题。
+     *
+     * @param title 原始标题
+     * @return 去除首尾空白后的标题
+     */
     private String validTitle(String title) {
         String value = trim(title);
         if (!StringUtils.hasText(value)) {
             throw badRequest("标题不能为空");
         }
-        if (value.codePointCount(0, value.length()) > 200) {
-            throw badRequest("标题不能超过 200 个字符");
+        if (value.codePointCount(0, value.length()) > MAX_TITLE_LENGTH) {
+            throw badRequest("标题不能超过 " + MAX_TITLE_LENGTH + " 个字符");
         }
         return value;
     }
 
+    /**
+     * 创建请求参数错误异常。
+     *
+     * @param message 错误消息
+     * @return 请求参数错误异常
+     */
     private BusinessException badRequest(String message) {
         return new BusinessException(ErrorCode.BAD_REQUEST, message);
     }
 
+    /**
+     * 校验可选枚举参数是否在允许范围内。
+     *
+     * @param value 待校验值
+     * @param allowed 允许值集合
+     * @param field 字段名称
+     */
     private void validateOptional(String value, Set<String> allowed, String field) {
         if (StringUtils.hasText(value) && !allowed.contains(trim(value))) {
             throw badRequest(field + " 取值非法");
         }
     }
 
+    /**
+     * 去除字符串首尾空白。
+     *
+     * @param value 原始字符串
+     * @return 规范化字符串
+     */
     private String trim(String value) {
         return value == null ? null : value.trim();
     }
 
+    /**
+     * 统计字符串中的非空白 Unicode 码点数量。
+     *
+     * @param value 原始文本
+     * @return 非空白字符数量
+     */
     private int wordCount(String value) {
         if (value == null) {
             return 0;
@@ -397,6 +551,12 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return (int) value.codePoints().filter(codePoint -> !Character.isWhitespace(codePoint)).count();
     }
 
+    /**
+     * 安全获取实体 ID。
+     *
+     * @param entity 基础实体
+     * @return 实体 ID，不存在时返回 null
+     */
     private Long id(BaseEntity entity) {
         return entity == null ? null : entity.getId();
     }
