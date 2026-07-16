@@ -18,5 +18,7 @@ public class ChapterConversationEntity extends BaseEntity {
 
     private Long chapterId;
 
+    private String conversationType;
+
     private String conversationStatus;
 }

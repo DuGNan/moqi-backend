@@ -14,6 +14,10 @@ public enum ErrorCode {
     WORK_NOT_FOUND,
     /** 章节不存在。 */
     CHAPTER_NOT_FOUND,
+    /** 会话不存在。 */
+    CONVERSATION_NOT_FOUND,
+    /** 大纲修订版本冲突。 */
+    OUTLINE_REVISION_CONFLICT,
     /** 通用业务错误。 */
     BUSINESS_ERROR,
     /** 服务内部错误。 */

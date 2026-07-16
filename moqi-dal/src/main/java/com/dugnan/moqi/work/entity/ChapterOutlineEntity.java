@@ -16,5 +16,6 @@ public class ChapterOutlineEntity extends BaseEntity {
     private Long workId;
     private Long chapterId;
     private String outlineStatus;
+    private String outlineContent;
     private Integer revision;
 }
