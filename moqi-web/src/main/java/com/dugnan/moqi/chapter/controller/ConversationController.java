@@ -22,15 +22,15 @@ import com.dugnan.moqi.common.api.ApiResponse;
 @RequestMapping("/api/conversations")
 public class ConversationController {
 
-    private final ChapterCollaborationService service;
+    private final ChapterCollaborationService chapterCollaborationService;
 
     /**
      * 创建会话控制器。
      *
-     * @param service 章节共创服务
+     * @param chapterCollaborationService 章节共创服务
      */
-    public ConversationController(ChapterCollaborationService service) {
-        this.service = service;
+    public ConversationController(ChapterCollaborationService chapterCollaborationService) {
+        this.chapterCollaborationService = chapterCollaborationService;
     }
 
     /**
@@ -41,7 +41,7 @@ public class ConversationController {
      */
     @GetMapping("/{conversationId}/messages")
     public ApiResponse<MessageList> messages(@PathVariable Long conversationId) {
-        return ApiResponse.success(service.listMessages(conversationId));
+        return ApiResponse.success(chapterCollaborationService.listMessages(conversationId));
     }
 
     /**
@@ -55,6 +55,6 @@ public class ConversationController {
     public ApiResponse<MessageCreated> sendMessage(
             @PathVariable Long conversationId,
             @RequestBody SendMessageRequest request) {
-        return ApiResponse.success(service.sendMessage(conversationId, request));
+        return ApiResponse.success(chapterCollaborationService.sendMessage(conversationId, request));
     }
 }

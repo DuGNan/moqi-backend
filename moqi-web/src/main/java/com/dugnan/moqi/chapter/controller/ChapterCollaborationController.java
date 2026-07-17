@@ -25,15 +25,15 @@ import com.dugnan.moqi.common.api.ApiResponse;
 @RequestMapping("/api/chapters")
 public class ChapterCollaborationController {
 
-    private final ChapterCollaborationService service;
+    private final ChapterCollaborationService chapterCollaborationService;
 
     /**
      * 创建章节共创控制器。
      *
-     * @param service 章节共创服务
+     * @param chapterCollaborationService 章节共创服务
      */
-    public ChapterCollaborationController(ChapterCollaborationService service) {
-        this.service = service;
+    public ChapterCollaborationController(ChapterCollaborationService chapterCollaborationService) {
+        this.chapterCollaborationService = chapterCollaborationService;
     }
 
     /**
@@ -44,7 +44,7 @@ public class ChapterCollaborationController {
      */
     @GetMapping("/{chapterId}/conversation")
     public ApiResponse<ConversationDetail> conversation(@PathVariable Long chapterId) {
-        return ApiResponse.success(service.getConversation(chapterId));
+        return ApiResponse.success(chapterCollaborationService.getConversation(chapterId));
     }
 
     /**
@@ -55,7 +55,7 @@ public class ChapterCollaborationController {
      */
     @PostMapping("/{chapterId}/conversation")
     public ApiResponse<ConversationDetail> createConversation(@PathVariable Long chapterId) {
-        return ApiResponse.success(service.createOrGetConversation(chapterId));
+        return ApiResponse.success(chapterCollaborationService.createOrGetConversation(chapterId));
     }
 
     /**
@@ -66,7 +66,7 @@ public class ChapterCollaborationController {
      */
     @GetMapping("/{chapterId}/briefs/latest")
     public ApiResponse<BriefDetail> latestBrief(@PathVariable Long chapterId) {
-        return ApiResponse.success(service.getLatestBrief(chapterId));
+        return ApiResponse.success(chapterCollaborationService.getLatestBrief(chapterId));
     }
 
     /**
@@ -80,7 +80,7 @@ public class ChapterCollaborationController {
     public ApiResponse<BriefDetail> saveLatestBrief(
             @PathVariable Long chapterId,
             @RequestBody BriefRequest request) {
-        return ApiResponse.success(service.saveLatestBrief(chapterId, request));
+        return ApiResponse.success(chapterCollaborationService.saveLatestBrief(chapterId, request));
     }
 
     /**
@@ -91,7 +91,7 @@ public class ChapterCollaborationController {
      */
     @GetMapping("/{chapterId}/outline")
     public ApiResponse<OutlineDetail> outline(@PathVariable Long chapterId) {
-        return ApiResponse.success(service.getOutline(chapterId));
+        return ApiResponse.success(chapterCollaborationService.getOutline(chapterId));
     }
 
     /**
@@ -105,7 +105,7 @@ public class ChapterCollaborationController {
     public ApiResponse<OutlineDetail> saveOutline(
             @PathVariable Long chapterId,
             @RequestBody OutlineRequest request) {
-        return ApiResponse.success(service.saveOutline(chapterId, request));
+        return ApiResponse.success(chapterCollaborationService.saveOutline(chapterId, request));
     }
 
     /**
@@ -116,6 +116,6 @@ public class ChapterCollaborationController {
      */
     @PostMapping("/{chapterId}/outline/refresh")
     public ApiResponse<OutlineDetail> refreshOutline(@PathVariable Long chapterId) {
-        return ApiResponse.success(service.refreshOutline(chapterId));
+        return ApiResponse.success(chapterCollaborationService.refreshOutline(chapterId));
     }
 }

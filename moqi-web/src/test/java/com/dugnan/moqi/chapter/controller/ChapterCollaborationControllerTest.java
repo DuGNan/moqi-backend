@@ -34,7 +34,7 @@ import com.dugnan.moqi.web.exception.GlobalExceptionHandler;
  */
 class ChapterCollaborationControllerTest {
 
-    private ChapterCollaborationService service;
+    private ChapterCollaborationService chapterCollaborationService;
     private MockMvc mvc;
 
     /**
@@ -42,11 +42,11 @@ class ChapterCollaborationControllerTest {
      */
     @BeforeEach
     void setUp() {
-        service = Mockito.mock(ChapterCollaborationService.class);
+        chapterCollaborationService = Mockito.mock(ChapterCollaborationService.class);
         mvc = MockMvcBuilders
                 .standaloneSetup(
-                        new ChapterCollaborationController(service),
-                        new ConversationController(service))
+                        new ChapterCollaborationController(chapterCollaborationService),
+                        new ConversationController(chapterCollaborationService))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -58,7 +58,7 @@ class ChapterCollaborationControllerTest {
      */
     @Test
     void getsChapterConversation() throws Exception {
-        when(service.getConversation(2L))
+        when(chapterCollaborationService.getConversation(2L))
                 .thenReturn(new ConversationDetail(8L, 1L, 2L, "chapter_co_creation", "active", null, null));
 
         mvc.perform(get("/api/chapters/2/conversation"))
@@ -74,7 +74,7 @@ class ChapterCollaborationControllerTest {
      */
     @Test
     void sendsConversationMessageWithAiTask() throws Exception {
-        when(service.sendMessage(Mockito.eq(8L), Mockito.any()))
+        when(chapterCollaborationService.sendMessage(Mockito.eq(8L), Mockito.any()))
                 .thenReturn(new MessageCreated(11L, 8L, 2L, "user", "讨论目标", 12L, null, null));
 
         mvc.perform(post("/api/conversations/8/messages")
@@ -92,7 +92,7 @@ class ChapterCollaborationControllerTest {
      */
     @Test
     void listsConversationMessages() throws Exception {
-        when(service.listMessages(8L)).thenReturn(new MessageList(List.of()));
+        when(chapterCollaborationService.listMessages(8L)).thenReturn(new MessageList(List.of()));
 
         mvc.perform(get("/api/conversations/8/messages"))
                 .andExpect(status().isOk())
@@ -106,7 +106,7 @@ class ChapterCollaborationControllerTest {
      */
     @Test
     void savesLatestBrief() throws Exception {
-        when(service.saveLatestBrief(Mockito.eq(2L), Mockito.any()))
+        when(chapterCollaborationService.saveLatestBrief(Mockito.eq(2L), Mockito.any()))
                 .thenReturn(new BriefDetail(5L, 1L, 2L, "draft", "本章 brief", null, null));
 
         mvc.perform(put("/api/chapters/2/briefs/latest")
@@ -123,7 +123,7 @@ class ChapterCollaborationControllerTest {
      */
     @Test
     void mapsOutlineRevisionConflictTo409() throws Exception {
-        when(service.saveOutline(Mockito.eq(2L), Mockito.any(OutlineRequest.class)))
+        when(chapterCollaborationService.saveOutline(Mockito.eq(2L), Mockito.any(OutlineRequest.class)))
                 .thenThrow(new BusinessException(ErrorCode.OUTLINE_REVISION_CONFLICT, "大纲已被更新"));
 
         mvc.perform(put("/api/chapters/2/outline")
@@ -140,7 +140,7 @@ class ChapterCollaborationControllerTest {
      */
     @Test
     void refreshesOutline() throws Exception {
-        when(service.refreshOutline(2L))
+        when(chapterCollaborationService.refreshOutline(2L))
                 .thenReturn(new OutlineDetail(6L, 1L, 2L, "draft", "{}", 2, null, null));
 
         mvc.perform(post("/api/chapters/2/outline/refresh"))

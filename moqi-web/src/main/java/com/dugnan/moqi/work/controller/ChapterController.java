@@ -20,15 +20,15 @@ import com.dugnan.moqi.work.service.WorkChapterService;
 @RestController
 @RequestMapping("/api/chapters")
 public class ChapterController {
-    private final WorkChapterService service;
+    private final WorkChapterService workChapterService;
 
     /**
      * 创建章节控制器。
      *
-     * @param service 作品章节业务服务
+     * @param workChapterService 作品章节业务服务
      */
-    public ChapterController(WorkChapterService service) {
-        this.service = service;
+    public ChapterController(WorkChapterService workChapterService) {
+        this.workChapterService = workChapterService;
     }
 
     /**
@@ -39,7 +39,7 @@ public class ChapterController {
      */
     @GetMapping("/{chapterId}")
     public ApiResponse<ChapterDetail> detail(@PathVariable Long chapterId) {
-        return ApiResponse.success(service.getChapter(chapterId));
+        return ApiResponse.success(workChapterService.getChapter(chapterId));
     }
 
     /**
@@ -52,7 +52,7 @@ public class ChapterController {
     @PostMapping("/{chapterId}/open")
     public ApiResponse<ChapterOpen> open(@PathVariable Long chapterId,
             @RequestBody(required = false) OpenChapterRequest request) {
-        return ApiResponse.success(service.openChapter(chapterId));
+        return ApiResponse.success(workChapterService.openChapter(chapterId));
     }
 
     public record OpenChapterRequest(String source) {
