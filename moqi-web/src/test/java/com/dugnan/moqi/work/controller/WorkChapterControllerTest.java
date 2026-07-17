@@ -29,7 +29,7 @@ import com.dugnan.moqi.work.service.WorkChapterService;
  * @description:验证作品与章节接口的请求校验及响应协议。
  */
 class WorkChapterControllerTest {
-    private WorkChapterService service;
+    private WorkChapterService workChapterService;
     private MockMvc mvc;
 
     /**
@@ -37,9 +37,9 @@ class WorkChapterControllerTest {
      */
     @BeforeEach
     void setUp() {
-        service = Mockito.mock(WorkChapterService.class);
+        workChapterService = Mockito.mock(WorkChapterService.class);
         mvc = MockMvcBuilders
-                .standaloneSetup(new WorkController(service), new ChapterController(service))
+                .standaloneSetup(new WorkController(workChapterService), new ChapterController(workChapterService))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -51,7 +51,7 @@ class WorkChapterControllerTest {
      */
     @Test
     void listsWorksInUnifiedResponse() throws Exception {
-        when(service.listWorks(null, null, null)).thenReturn(new WorkList(List.of()));
+        when(workChapterService.listWorks(null, null, null)).thenReturn(new WorkList(List.of()));
         mvc.perform(get("/api/works"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("SUCCESS"))
@@ -93,7 +93,7 @@ class WorkChapterControllerTest {
      */
     @Test
     void mapsMissingChapterTo404() throws Exception {
-        when(service.getChapter(99L))
+        when(workChapterService.getChapter(99L))
                 .thenThrow(new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在"));
         mvc.perform(get("/api/chapters/99"))
                 .andExpect(status().isNotFound())
@@ -109,7 +109,7 @@ class WorkChapterControllerTest {
     void opensChapterWithoutPersistingSource() throws Exception {
         ChapterOpen response = new ChapterOpen(
                 1L, 2L, "co_creation", null, null, 0, null, null, 0, null);
-        when(service.openChapter(2L)).thenReturn(response);
+        when(workChapterService.openChapter(2L)).thenReturn(response);
         mvc.perform(post("/api/chapters/2/open")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"source\":\"home_recent_chapter\"}"))

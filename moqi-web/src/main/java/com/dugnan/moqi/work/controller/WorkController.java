@@ -29,15 +29,15 @@ import com.dugnan.moqi.work.service.WorkChapterService;
 @RestController
 @RequestMapping("/api/works")
 public class WorkController {
-    private final WorkChapterService service;
+    private final WorkChapterService workChapterService;
 
     /**
      * 创建作品控制器。
      *
-     * @param service 作品章节业务服务
+     * @param workChapterService 作品章节业务服务
      */
-    public WorkController(WorkChapterService service) {
-        this.service = service;
+    public WorkController(WorkChapterService workChapterService) {
+        this.workChapterService = workChapterService;
     }
 
     /**
@@ -51,7 +51,7 @@ public class WorkController {
     @GetMapping
     public ApiResponse<WorkList> list(@RequestParam(required = false) String status,
             @RequestParam(required = false) String keyword, @RequestParam(required = false) Integer limit) {
-        return ApiResponse.success(service.listWorks(status, keyword, limit));
+        return ApiResponse.success(workChapterService.listWorks(status, keyword, limit));
     }
 
     /**
@@ -62,7 +62,7 @@ public class WorkController {
      */
     @PostMapping
     public ApiResponse<WorkSummary> create(@Valid @RequestBody CreateWorkRequest request) {
-        return ApiResponse.success(service.createWork(new CreateWorkCommand(request.title())));
+        return ApiResponse.success(workChapterService.createWork(new CreateWorkCommand(request.title())));
     }
 
     /**
@@ -73,7 +73,7 @@ public class WorkController {
      */
     @GetMapping("/{workId}")
     public ApiResponse<WorkDetail> detail(@PathVariable Long workId) {
-        return ApiResponse.success(service.getWork(workId));
+        return ApiResponse.success(workChapterService.getWork(workId));
     }
 
     /**
@@ -90,7 +90,7 @@ public class WorkController {
             @RequestParam(required = false) String chapterType,
             @RequestParam(required = false) String workflowStatus,
             @RequestParam(required = false) String keyword) {
-        return ApiResponse.success(service.listChapters(workId, chapterType, workflowStatus, keyword));
+        return ApiResponse.success(workChapterService.listChapters(workId, chapterType, workflowStatus, keyword));
     }
 
     /**
@@ -104,7 +104,7 @@ public class WorkController {
     public ApiResponse<ChapterCreated> createChapter(@PathVariable Long workId,
             @Valid @RequestBody CreateChapterRequest request) {
         CreateChapterCommand command = new CreateChapterCommand(request.title(), request.chapterType());
-        return ApiResponse.success(service.createChapter(workId, command));
+        return ApiResponse.success(workChapterService.createChapter(workId, command));
     }
 
     public record CreateWorkRequest(

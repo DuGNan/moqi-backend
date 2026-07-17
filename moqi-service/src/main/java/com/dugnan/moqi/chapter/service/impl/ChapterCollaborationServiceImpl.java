@@ -1,0 +1,526 @@
+package com.dugnan.moqi.chapter.service.impl;
+
+import java.util.List;
+import java.util.Set;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
+
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.BriefDetail;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.BriefRequest;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ConversationDetail;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageCreated;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageDetail;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageList;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineDetail;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineRequest;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.SendMessageRequest;
+import com.dugnan.moqi.chapter.entity.AiTaskEntity;
+import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
+import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
+import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.service.ChapterCollaborationService;
+import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.exception.BusinessException;
+import com.dugnan.moqi.work.entity.ChapterEntity;
+import com.dugnan.moqi.work.entity.ChapterOutlineEntity;
+import com.dugnan.moqi.work.entity.WorkEntity;
+import com.dugnan.moqi.work.mapper.ChapterMapper;
+import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
+import com.dugnan.moqi.work.mapper.WorkMapper;
+
+/**
+ * @author dgn
+ * @date 2026-07-16
+ * @description 实现章节共创会话、消息、简报和大纲业务流程。
+ */
+@Service
+public class ChapterCollaborationServiceImpl implements ChapterCollaborationService {
+
+    private static final String STATUS_ACTIVE = "active";
+    private static final String STATUS_DRAFT = "draft";
+    private static final String STATUS_OUTDATED = "outdated";
+    private static final String CONVERSATION_TYPE = "chapter_co_creation";
+    private static final String AI_TASK_TYPE = "conversation_reply";
+    private static final String AI_TASK_STATUS = "queued";
+    private static final Set<String> MESSAGE_ROLES = Set.of("user", "assistant", "system");
+    private static final Set<String> BRIEF_STATUSES = Set.of(STATUS_DRAFT, "confirmed");
+    private static final Set<String> OUTLINE_STATUSES = Set.of(STATUS_DRAFT, "confirmed", STATUS_OUTDATED);
+
+    private final WorkMapper workMapper;
+    private final ChapterMapper chapterMapper;
+    private final ChapterConversationMapper conversationMapper;
+    private final ChapterConversationMessageMapper messageMapper;
+    private final ChapterBriefMapper briefMapper;
+    private final ChapterOutlineQueryMapper outlineMapper;
+    private final AiTaskMapper aiTaskMapper;
+
+    /**
+     * 创建章节共创服务。
+     *
+     * @param workMapper 作品数据访问对象
+     * @param chapterMapper 章节数据访问对象
+     * @param conversationMapper 会话数据访问对象
+     * @param messageMapper 消息数据访问对象
+     * @param briefMapper 简报数据访问对象
+     * @param outlineMapper 大纲数据访问对象
+     * @param aiTaskMapper AI 任务数据访问对象
+     */
+    public ChapterCollaborationServiceImpl(
+            WorkMapper workMapper,
+            ChapterMapper chapterMapper,
+            ChapterConversationMapper conversationMapper,
+            ChapterConversationMessageMapper messageMapper,
+            ChapterBriefMapper briefMapper,
+            ChapterOutlineQueryMapper outlineMapper,
+            AiTaskMapper aiTaskMapper) {
+        this.workMapper = workMapper;
+        this.chapterMapper = chapterMapper;
+        this.conversationMapper = conversationMapper;
+        this.messageMapper = messageMapper;
+        this.briefMapper = briefMapper;
+        this.outlineMapper = outlineMapper;
+        this.aiTaskMapper = aiTaskMapper;
+    }
+
+    @Override
+    public ConversationDetail getConversation(Long chapterId) {
+        ChapterEntity chapter = requireChapter(chapterId);
+        requireWork(chapter.getWorkId());
+        ChapterConversationEntity conversation = findActiveConversation(chapterId);
+        if (conversation == null) {
+            throw new BusinessException(ErrorCode.CONVERSATION_NOT_FOUND, "章节会话不存在");
+        }
+        return conversationDetail(conversation);
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public ConversationDetail createOrGetConversation(Long chapterId) {
+        ChapterEntity chapter = requireChapter(chapterId);
+        requireWork(chapter.getWorkId());
+        ChapterConversationEntity conversation = findActiveConversation(chapterId);
+        if (conversation == null) {
+            conversation = new ChapterConversationEntity();
+            conversation.setWorkId(chapter.getWorkId());
+            conversation.setChapterId(chapterId);
+            conversation.setConversationType(CONVERSATION_TYPE);
+            conversation.setConversationStatus(STATUS_ACTIVE);
+            conversation.setDeleted(0);
+            conversationMapper.insert(conversation);
+        }
+        return conversationDetail(conversation);
+    }
+
+    @Override
+    public MessageList listMessages(Long conversationId) {
+        ChapterConversationEntity conversation = requireConversation(conversationId);
+        List<MessageDetail> messages = messageMapper.selectList(
+                        new LambdaQueryWrapper<ChapterConversationMessageEntity>()
+                                .eq(ChapterConversationMessageEntity::getConversationId, conversation.getId())
+                                .eq(ChapterConversationMessageEntity::getDeleted, 0)
+                                .orderByAsc(ChapterConversationMessageEntity::getGmtCreate)
+                                .orderByAsc(ChapterConversationMessageEntity::getId))
+                .stream()
+                .map(this::messageDetail)
+                .toList();
+        return new MessageList(messages);
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public MessageCreated sendMessage(Long conversationId, SendMessageRequest request) {
+        ChapterConversationEntity conversation = requireConversation(conversationId);
+        requireChapter(conversation.getChapterId());
+        String role = role(request == null ? null : request.messageRole());
+        String content = requiredText(request == null ? null : request.content(), "消息内容不能为空");
+
+        ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
+        message.setConversationId(conversationId);
+        message.setChapterId(conversation.getChapterId());
+        message.setMessageRole(role);
+        message.setContent(content);
+        message.setDeleted(0);
+        messageMapper.insert(message);
+
+        if (request != null && Boolean.TRUE.equals(request.createAiTask())) {
+            AiTaskEntity aiTask = new AiTaskEntity();
+            aiTask.setTaskType(AI_TASK_TYPE);
+            aiTask.setTaskStatus(AI_TASK_STATUS);
+            aiTask.setWorkId(conversation.getWorkId());
+            aiTask.setChapterId(conversation.getChapterId());
+            aiTask.setResultMessageId(message.getId());
+            aiTask.setDeleted(0);
+            aiTask.setVersion(0);
+            aiTaskMapper.insert(aiTask);
+            message.setAiTaskId(aiTask.getId());
+            messageMapper.updateById(message);
+        }
+        return messageCreated(message);
+    }
+
+    @Override
+    public BriefDetail getLatestBrief(Long chapterId) {
+        ChapterEntity chapter = requireChapter(chapterId);
+        requireWork(chapter.getWorkId());
+        ChapterBriefEntity brief = findLatestBrief(chapterId);
+        return brief == null ? null : briefDetail(brief);
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public BriefDetail saveLatestBrief(Long chapterId, BriefRequest request) {
+        ChapterEntity chapter = requireChapter(chapterId);
+        requireWork(chapter.getWorkId());
+        String content = requiredText(request == null ? null : request.briefContent(), "brief 内容不能为空");
+        String status = optionalStatus(request == null ? null : request.briefStatus(), BRIEF_STATUSES, "briefStatus");
+        ChapterBriefEntity brief = findLatestBrief(chapterId);
+        if (brief == null) {
+            brief = new ChapterBriefEntity();
+            brief.setWorkId(chapter.getWorkId());
+            brief.setChapterId(chapterId);
+            brief.setDeleted(0);
+        }
+        brief.setBriefStatus(status);
+        brief.setBriefContent(content);
+        if (brief.getId() == null) {
+            briefMapper.insert(brief);
+        } else {
+            briefMapper.updateById(brief);
+        }
+        return briefDetail(brief);
+    }
+
+    @Override
+    public OutlineDetail getOutline(Long chapterId) {
+        ChapterEntity chapter = requireChapter(chapterId);
+        requireWork(chapter.getWorkId());
+        ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
+        return outline == null ? null : outlineDetail(outline);
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public OutlineDetail saveOutline(Long chapterId, OutlineRequest request) {
+        ChapterEntity chapter = requireChapter(chapterId);
+        requireWork(chapter.getWorkId());
+        String content = requiredText(request == null ? null : request.outlineContent(), "大纲内容不能为空");
+        String status = optionalStatus(request == null ? null : request.outlineStatus(), OUTLINE_STATUSES, "outlineStatus");
+        ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
+        if (outline == null) {
+            if (request != null && request.baseRevision() != null && request.baseRevision() != 0) {
+                throw revisionConflict();
+            }
+            outline = new ChapterOutlineEntity();
+            outline.setWorkId(chapter.getWorkId());
+            outline.setChapterId(chapterId);
+            outline.setDeleted(0);
+            outline.setRevision(0);
+        } else if (request == null || request.baseRevision() == null
+                || !request.baseRevision().equals(revision(outline))) {
+            throw revisionConflict();
+        } else {
+            outline.setRevision(revision(outline) + 1);
+        }
+        outline.setOutlineStatus(status);
+        outline.setOutlineContent(content);
+        if (outline.getId() == null) {
+            outlineMapper.insert(outline);
+        } else {
+            outlineMapper.updateById(outline);
+        }
+        return outlineDetail(outline);
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public OutlineDetail refreshOutline(Long chapterId) {
+        ChapterEntity chapter = requireChapter(chapterId);
+        WorkEntity work = requireWork(chapter.getWorkId());
+        ChapterBriefEntity brief = findLatestBrief(chapterId);
+        ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
+        if (outline == null) {
+            outline = new ChapterOutlineEntity();
+            outline.setWorkId(chapter.getWorkId());
+            outline.setChapterId(chapterId);
+            outline.setDeleted(0);
+            outline.setRevision(0);
+        } else {
+            outline.setRevision(revision(outline) + 1);
+        }
+        outline.setOutlineStatus(STATUS_DRAFT);
+        outline.setOutlineContent(refreshContent(work, chapter, brief));
+        if (outline.getId() == null) {
+            outlineMapper.insert(outline);
+        } else {
+            outlineMapper.updateById(outline);
+        }
+        return outlineDetail(outline);
+    }
+
+    /**
+     * 查询章节活动会话。
+     *
+     * @param chapterId 章节 ID
+     * @return 会话实体
+     */
+    private ChapterConversationEntity findActiveConversation(Long chapterId) {
+        return conversationMapper.selectList(
+                        new LambdaQueryWrapper<ChapterConversationEntity>()
+                                .eq(ChapterConversationEntity::getChapterId, chapterId)
+                                .eq(ChapterConversationEntity::getConversationType, CONVERSATION_TYPE)
+                                .eq(ChapterConversationEntity::getConversationStatus, STATUS_ACTIVE)
+                                .eq(ChapterConversationEntity::getDeleted, 0)
+                                .orderByDesc(ChapterConversationEntity::getGmtModified))
+                .stream()
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * 查询章节最新 brief。
+     *
+     * @param chapterId 章节 ID
+     * @return brief 实体
+     */
+    private ChapterBriefEntity findLatestBrief(Long chapterId) {
+        return briefMapper.selectList(
+                        new LambdaQueryWrapper<ChapterBriefEntity>()
+                                .eq(ChapterBriefEntity::getChapterId, chapterId)
+                                .eq(ChapterBriefEntity::getDeleted, 0)
+                                .orderByDesc(ChapterBriefEntity::getGmtModified)
+                                .orderByDesc(ChapterBriefEntity::getId))
+                .stream()
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * 查询未删除作品。
+     *
+     * @param id 作品 ID
+     * @return 作品实体
+     */
+    private WorkEntity requireWork(Long id) {
+        WorkEntity entity = id == null ? null : workMapper.selectById(id);
+        if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
+            throw new BusinessException(ErrorCode.WORK_NOT_FOUND, "作品不存在");
+        }
+        return entity;
+    }
+
+    /**
+     * 查询未删除章节。
+     *
+     * @param id 章节 ID
+     * @return 章节实体
+     */
+    private ChapterEntity requireChapter(Long id) {
+        ChapterEntity entity = id == null ? null : chapterMapper.selectById(id);
+        if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
+            throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
+        }
+        return entity;
+    }
+
+    /**
+     * 查询未删除会话。
+     *
+     * @param id 会话 ID
+     * @return 会话实体
+     */
+    private ChapterConversationEntity requireConversation(Long id) {
+        ChapterConversationEntity entity = id == null ? null : conversationMapper.selectById(id);
+        if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
+            throw new BusinessException(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在");
+        }
+        return entity;
+    }
+
+    /**
+     * 规范化消息角色。
+     *
+     * @param value 消息角色
+     * @return 消息角色
+     */
+    private String role(String value) {
+        String role = StringUtils.hasText(value) ? value.trim() : "user";
+        if (!MESSAGE_ROLES.contains(role)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "messageRole 取值非法");
+        }
+        return role;
+    }
+
+    /**
+     * 规范化状态字段。
+     *
+     * @param value 原始状态
+     * @param allowed 允许状态
+     * @param field 字段名
+     * @return 状态字段
+     */
+    private String optionalStatus(String value, Set<String> allowed, String field) {
+        String status = StringUtils.hasText(value) ? value.trim() : STATUS_DRAFT;
+        if (!allowed.contains(status)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, field + " 取值非法");
+        }
+        return status;
+    }
+
+    /**
+     * 校验必填文本。
+     *
+     * @param value 原始文本
+     * @param message 错误消息
+     * @return 清理后的文本
+     */
+    private String requiredText(String value, String message) {
+        String text = value == null ? null : value.trim();
+        if (!StringUtils.hasText(text)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, message);
+        }
+        return text;
+    }
+
+    /**
+     * 创建大纲版本冲突异常。
+     *
+     * @return 版本冲突异常
+     */
+    private BusinessException revisionConflict() {
+        return new BusinessException(ErrorCode.OUTLINE_REVISION_CONFLICT, "大纲已被更新，请刷新后重试");
+    }
+
+    /**
+     * 获取大纲修订版本。
+     *
+     * @param outline 大纲实体
+     * @return 修订版本
+     */
+    private int revision(ChapterOutlineEntity outline) {
+        return outline.getRevision() == null ? 0 : outline.getRevision();
+    }
+
+    /**
+     * 生成确定性的刷新大纲内容。
+     *
+     * @param work 作品
+     * @param chapter 章节
+     * @param brief brief
+     * @return 大纲 JSON 字符串
+     */
+    private String refreshContent(WorkEntity work, ChapterEntity chapter, ChapterBriefEntity brief) {
+        String briefContent = brief == null ? "暂无 brief" : brief.getBriefContent();
+        return """
+                {"workTitle":"%s","chapterTitle":"%s","sourceBrief":"%s","scenes":[],"openQuestions":[]}
+                """.formatted(json(work.getTitle()), json(chapter.getTitle()), json(briefContent)).trim();
+    }
+
+    /**
+     * 转义 JSON 字符串片段。
+     *
+     * @param value 原始值
+     * @return 转义值
+     */
+    private String json(String value) {
+        return value == null ? "" : value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n");
+    }
+
+    /**
+     * 转换会话详情。
+     *
+     * @param entity 会话实体
+     * @return 会话详情
+     */
+    private ConversationDetail conversationDetail(ChapterConversationEntity entity) {
+        return new ConversationDetail(
+                entity.getId(),
+                entity.getWorkId(),
+                entity.getChapterId(),
+                entity.getConversationType(),
+                entity.getConversationStatus(),
+                entity.getGmtCreate(),
+                entity.getGmtModified());
+    }
+
+    /**
+     * 转换消息详情。
+     *
+     * @param entity 消息实体
+     * @return 消息详情
+     */
+    private MessageDetail messageDetail(ChapterConversationMessageEntity entity) {
+        return new MessageDetail(
+                entity.getId(),
+                entity.getConversationId(),
+                entity.getChapterId(),
+                entity.getMessageRole(),
+                entity.getContent(),
+                entity.getAiTaskId(),
+                entity.getGmtCreate(),
+                entity.getGmtModified());
+    }
+
+    /**
+     * 转换已创建消息。
+     *
+     * @param entity 消息实体
+     * @return 已创建消息
+     */
+    private MessageCreated messageCreated(ChapterConversationMessageEntity entity) {
+        return new MessageCreated(
+                entity.getId(),
+                entity.getConversationId(),
+                entity.getChapterId(),
+                entity.getMessageRole(),
+                entity.getContent(),
+                entity.getAiTaskId(),
+                entity.getGmtCreate(),
+                entity.getGmtModified());
+    }
+
+    /**
+     * 转换 brief 详情。
+     *
+     * @param entity brief 实体
+     * @return brief 详情
+     */
+    private BriefDetail briefDetail(ChapterBriefEntity entity) {
+        return new BriefDetail(
+                entity.getId(),
+                entity.getWorkId(),
+                entity.getChapterId(),
+                entity.getBriefStatus(),
+                entity.getBriefContent(),
+                entity.getGmtCreate(),
+                entity.getGmtModified());
+    }
+
+    /**
+     * 转换大纲详情。
+     *
+     * @param entity 大纲实体
+     * @return 大纲详情
+     */
+    private OutlineDetail outlineDetail(ChapterOutlineEntity entity) {
+        return new OutlineDetail(
+                entity.getId(),
+                entity.getWorkId(),
+                entity.getChapterId(),
+                entity.getOutlineStatus(),
+                entity.getOutlineContent(),
+                entity.getRevision(),
+                entity.getGmtCreate(),
+                entity.getGmtModified());
+    }
+}

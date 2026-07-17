@@ -21,4 +21,6 @@ public class ChapterConversationMessageEntity extends BaseEntity {
     private String messageRole;
 
     private String content;
+
+    private Long aiTaskId;
 }

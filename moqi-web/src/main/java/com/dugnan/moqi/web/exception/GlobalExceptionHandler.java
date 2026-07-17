@@ -37,7 +37,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Map<String, Object>>> handleBusinessException(BusinessException exception) {
         HttpStatus status = switch (exception.getErrorCode()) {
-            case WORK_NOT_FOUND, CHAPTER_NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case WORK_NOT_FOUND, CHAPTER_NOT_FOUND, CONVERSATION_NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case OUTLINE_REVISION_CONFLICT -> HttpStatus.CONFLICT;
             default -> HttpStatus.BAD_REQUEST;
         };
         ApiResponse<Map<String, Object>> response =
