@@ -21,12 +21,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.SharedString;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -97,12 +99,66 @@ class KnowledgeServiceImplTest {
     @Test
     void filtersSettingCandidatesAndReturnsEmptyList() {
         when(workMapper.selectById(1L)).thenReturn(work(1L));
-        when(candidateMapper.selectList(any())).thenReturn(List.of());
+        when(candidateMapper.selectList(any())).thenAnswer(invocation -> {
+            assertLimit(invocation.getArgument(0), 0, 50);
+            return List.of();
+        });
 
         var result = service.listSettingCandidates(1L, 12L, "pending", "character", "林风");
 
         assertThat(result.candidates()).isEmpty();
         verify(candidateMapper).selectList(any());
+    }
+
+    /**
+     * 验证三类知识列表使用页码计算 LIMIT/OFFSET，且保持稳定排序查询。
+     */
+    @Test
+    void paginatesKnowledgeListsWithBoundedPageSize() {
+        when(workMapper.selectById(1L)).thenReturn(work(1L));
+        when(candidateMapper.selectList(any())).thenAnswer(invocation -> {
+            assertLimit(invocation.getArgument(0), 20, 10);
+            return List.of();
+        });
+        when(settingMapper.selectList(any())).thenAnswer(invocation -> {
+            assertLimit(invocation.getArgument(0), 20, 10);
+            return List.of();
+        });
+        when(foreshadowingMapper.selectList(any())).thenAnswer(invocation -> {
+            assertLimit(invocation.getArgument(0), 20, 10);
+            return List.of();
+        });
+
+        service.listSettingCandidates(1L, null, null, null, null, 3, 10);
+        service.listSettings(1L, null, null, null, 3, 10);
+        service.listForeshadowings(1L, null, null, null, 3, 10);
+
+        verify(candidateMapper).selectList(any());
+        verify(settingMapper).selectList(any());
+        verify(foreshadowingMapper).selectList(any());
+    }
+
+    /**
+     * 验证非法页码和超过上限的 pageSize 在查询前被拒绝。
+     */
+    @Test
+    void rejectsInvalidKnowledgePagination() {
+        assertThatThrownBy(() -> service.listSettingCandidates(
+                1L, null, null, null, null, 0, 10))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        assertThatThrownBy(() -> service.listSettings(1L, null, null, null, 1, 101))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        assertThatThrownBy(() -> service.listForeshadowings(1L, null, null, null, -1, 10))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        verify(candidateMapper, never()).selectList(any());
+        verify(settingMapper, never()).selectList(any());
+        verify(foreshadowingMapper, never()).selectList(any());
     }
 
     /**
@@ -563,5 +619,19 @@ class KnowledgeServiceImplTest {
         } catch (RuntimeException exception) {
             return exception;
         }
+    }
+
+    /**
+     * 断言 MyBatis Plus 查询尾句包含预期分页范围。
+     *
+     * @param wrapper 查询条件
+     * @param offset 起始偏移
+     * @param pageSize 每页数量
+     */
+    private void assertLimit(Wrapper<?> wrapper, long offset, int pageSize) {
+        SharedString lastSql = (SharedString) ReflectionTestUtils.getField(wrapper, "lastSql");
+        assertThat(lastSql).isNotNull();
+        assertThat(lastSql.getStringValue()).isEqualTo(" LIMIT " + offset + ", " + pageSize);
+        assertThat(wrapper.getExpression().getOrderBy()).hasSize(2);
     }
 }

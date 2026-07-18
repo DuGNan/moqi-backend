@@ -39,13 +39,24 @@ public class UserConfigServiceImpl implements UserConfigService {
     private static final String LOCAL_USER = "local-user";
     private static final String MODEL_CONFIG_KEY = "model.active";
     private static final String NOT_TESTED = "not_tested";
+    private static final String MASKED_KEY_SUFFIX = "masked";
     private static final Set<String> ALLOWED_CONFIG_KEYS = Set.of(
             MODEL_CONFIG_KEY,
             "writing.preferences",
             "appearance.preferences",
             "sync.preferences");
-    private static final Set<String> SENSITIVE_KEY_PARTS =
-            Set.of("apikey", "token", "secret", "password");
+    private static final Set<String> SENSITIVE_KEY_NAMES = Set.of(
+            "apikey",
+            "accesskey",
+            "privatekey",
+            "token",
+            "secret",
+            "password",
+            "credential",
+            "credentials");
+    private static final Set<String> SENSITIVE_KEY_WORDS =
+            Set.of("token", "secret", "password", "credential", "credentials");
+    private static final Set<String> KEY_QUALIFIER_WORDS = Set.of("api", "access", "private");
 
     private final UserConfigMapper configMapper;
     private final ObjectMapper objectMapper;
@@ -95,7 +106,9 @@ public class UserConfigServiceImpl implements UserConfigService {
             throw badRequest("configValue 必须是 JSON 对象");
         }
         if (containsSensitiveKey(configValue)) {
-            throw badRequest("configValue 不允许包含 apiKey、token、secret 或 password 等敏感键");
+            throw badRequest(
+                    "configValue 不允许包含 apiKey、accessKey、privateKey、token、secret、password"
+                            + " 或 credential 等敏感键");
         }
 
         UserConfigEntity entity = findConfig(key);
@@ -270,8 +283,33 @@ public class UserConfigServiceImpl implements UserConfigService {
      * @return 是否敏感
      */
     private boolean isSensitiveKey(String fieldName) {
-        String normalized = fieldName.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
-        return SENSITIVE_KEY_PARTS.stream().anyMatch(normalized::contains);
+        String separated = fieldName
+                .replaceAll("([a-z0-9])([A-Z])", "$1 $2")
+                .replaceAll("[^A-Za-z0-9]+", " ")
+                .trim()
+                .toLowerCase(Locale.ROOT);
+        if (separated.isEmpty()) {
+            return false;
+        }
+        String[] words = separated.split(" +");
+        String normalized = String.join("", words);
+        if (MASKED_KEY_SUFFIX.equals(words[words.length - 1])) {
+            return false;
+        }
+        if (SENSITIVE_KEY_NAMES.contains(normalized)) {
+            return true;
+        }
+        for (int index = 0; index < words.length; index++) {
+            if (SENSITIVE_KEY_WORDS.contains(words[index])) {
+                return true;
+            }
+            if (index + 1 < words.length
+                    && "key".equals(words[index + 1])
+                    && KEY_QUALIFIER_WORDS.contains(words[index])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

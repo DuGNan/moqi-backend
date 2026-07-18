@@ -1,6 +1,7 @@
 package com.dugnan.moqi.api;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -85,31 +86,40 @@ class KnowledgeConfigTaskControllerTest {
      */
     @Test
     void exposesWorkKnowledgeLists() throws Exception {
-        when(knowledgeService.listSettingCandidates(1L, 12L, "pending", "character", "林"))
+        when(knowledgeService.listSettingCandidates(1L, 12L, "pending", "character", "林", 2, 25))
                 .thenReturn(new SettingCandidateList(1L, List.of()));
-        when(knowledgeService.listSettings(1L, "character", "active", "林"))
+        when(knowledgeService.listSettings(1L, "character", "active", "林", 2, 25))
                 .thenReturn(new SettingList(1L, List.of()));
-        when(knowledgeService.listForeshadowings(1L, "planted", 12L, null))
+        when(knowledgeService.listForeshadowings(1L, "planted", 12L, null, 2, 25))
                 .thenReturn(new ForeshadowingList(1L, List.of()));
 
         mvc.perform(get("/api/works/1/setting-candidates")
                         .param("chapterId", "12")
                         .param("candidateStatus", "pending")
                         .param("settingType", "character")
-                        .param("keyword", "林"))
+                        .param("keyword", "林")
+                        .param("page", "2")
+                        .param("pageSize", "25"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.candidates").isArray());
         mvc.perform(get("/api/works/1/settings")
                         .param("settingType", "character")
                         .param("entryStatus", "active")
-                        .param("keyword", "林"))
+                        .param("keyword", "林")
+                        .param("page", "2")
+                        .param("pageSize", "25"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.settings").isArray());
         mvc.perform(get("/api/works/1/foreshadowings")
                         .param("status", "planted")
-                        .param("sourceChapterId", "12"))
+                        .param("sourceChapterId", "12")
+                        .param("page", "2")
+                        .param("pageSize", "25"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.foreshadowings").isArray());
+        verify(knowledgeService).listSettingCandidates(1L, 12L, "pending", "character", "林", 2, 25);
+        verify(knowledgeService).listSettings(1L, "character", "active", "林", 2, 25);
+        verify(knowledgeService).listForeshadowings(1L, "planted", 12L, null, 2, 25);
     }
 
     /**

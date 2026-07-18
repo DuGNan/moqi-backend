@@ -5,6 +5,7 @@ import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
@@ -28,6 +29,7 @@ public class AiTaskServiceImpl implements AiTaskService {
     private static final Set<String> TERMINAL_STATUSES = Set.of("succeeded", "failed", STATUS_CANCELED);
     private static final Set<String> TASK_STATUSES =
             Set.of("queued", "running", "succeeded", "failed", STATUS_CANCELED);
+    private static final int MAX_CANCEL_ATTEMPTS = 3;
 
     private final AiTaskMapper taskMapper;
 
@@ -46,13 +48,32 @@ public class AiTaskServiceImpl implements AiTaskService {
     }
 
     @Override
-    @Transactional(rollbackFor = RuntimeException.class)
+    @Transactional(rollbackFor = RuntimeException.class, isolation = Isolation.READ_COMMITTED)
     public AiTaskCanceled cancelTask(Long taskId) {
         AiTaskEntity task = requireTask(taskId);
+        for (int attempt = 0; attempt < MAX_CANCEL_ATTEMPTS; attempt++) {
+            if (TERMINAL_STATUSES.contains(task.getTaskStatus())) {
+                return cancelResult(task);
+            }
+            AiTaskCanceled canceled = tryCancel(task);
+            if (canceled != null) {
+                return canceled;
+            }
+            task = requireTask(taskId);
+        }
         if (TERMINAL_STATUSES.contains(task.getTaskStatus())) {
             return cancelResult(task);
         }
+        throw new BusinessException(ErrorCode.BUSINESS_ERROR, "任务状态已变化，请重试");
+    }
 
+    /**
+     * 使用任务快照版本尝试一次原子取消。
+     *
+     * @param task 非终态任务快照
+     * @return 取消结果，竞争失败时返回 null
+     */
+    private AiTaskCanceled tryCancel(AiTaskEntity task) {
         int currentVersion = task.getVersion() == null ? 0 : task.getVersion();
         LocalDateTime modifiedAt = LocalDateTime.now();
         UpdateWrapper<AiTaskEntity> update = new UpdateWrapper<AiTaskEntity>()
@@ -66,12 +87,7 @@ public class AiTaskServiceImpl implements AiTaskService {
         if (taskMapper.update(null, update) == 1) {
             return new AiTaskCanceled(task.getId(), STATUS_CANCELED, modifiedAt);
         }
-
-        AiTaskEntity latest = requireTask(taskId);
-        if (TERMINAL_STATUSES.contains(latest.getTaskStatus())) {
-            return cancelResult(latest);
-        }
-        throw new BusinessException(ErrorCode.BUSINESS_ERROR, "任务状态已变化，请重试");
+        return null;
     }
 
     /**

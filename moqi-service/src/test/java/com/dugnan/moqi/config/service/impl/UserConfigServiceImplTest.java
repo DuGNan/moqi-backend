@@ -191,15 +191,49 @@ class UserConfigServiceImplTest {
      */
     @Test
     void rejectsNestedSensitiveKeys() throws Exception {
-        UpdateUserConfigRequest request = new UpdateUserConfigRequest(
-                0,
-                objectMapper.readTree("{\"provider\":{\"Api_Key\":\"plain-secret\"}}"));
+        List<String> sensitiveKeys = List.of(
+                "apiKey",
+                "accessKey",
+                "privateKey",
+                "apiKeyUnmasked",
+                "token",
+                "clientSecret",
+                "password",
+                "credential");
+        for (String sensitiveKey : sensitiveKeys) {
+            UpdateUserConfigRequest request = new UpdateUserConfigRequest(
+                    0,
+                    objectMapper.readTree(
+                            "{\"providers\":[{\"nested\":{\"" + sensitiveKey + "\":\"plain\"}}]}"));
 
-        assertThatThrownBy(() -> service.updateConfig("model.active", request))
-                .isInstanceOf(BusinessException.class)
-                .extracting("errorCode")
-                .isEqualTo(ErrorCode.BAD_REQUEST);
+            assertThatThrownBy(() -> service.updateConfig("model.active", request))
+                    .isInstanceOf(BusinessException.class)
+                    .extracting("errorCode")
+                    .isEqualTo(ErrorCode.BAD_REQUEST);
+        }
         verify(configMapper, never()).insert(any(UserConfigEntity.class));
+    }
+
+    /**
+     * 验证 token 数量配置和明确脱敏的密钥摘要字段可以保存。
+     *
+     * @throws Exception 测试 JSON 解析失败
+     */
+    @Test
+    void allowsMaxTokensAndExplicitMaskedKeySummaries() throws Exception {
+        when(configMapper.selectList(any())).thenReturn(List.of());
+        when(configMapper.insert(any(UserConfigEntity.class))).thenReturn(1);
+
+        var writing = service.updateConfig(
+                "writing.preferences",
+                new UpdateUserConfigRequest(0, objectMapper.readTree("{\"maxTokens\":4096}")));
+        var model = service.updateConfig(
+                "model.active",
+                new UpdateUserConfigRequest(0, objectMapper.readTree("{\"apiKeyMasked\":\"sk-****\"}")));
+
+        assertThat(writing.version()).isEqualTo(1);
+        assertThat(model.version()).isEqualTo(1);
+        verify(configMapper, times(2)).insert(any(UserConfigEntity.class));
     }
 
     /**
@@ -210,14 +244,22 @@ class UserConfigServiceImplTest {
         when(configMapper.selectList(any())).thenReturn(List.of(config(
                 601L,
                 "model.active",
-                "{\"provider\":\"local\",\"token\":\"legacy-plain\"}",
+                "{\"provider\":\"local\",\"maxTokens\":4096,"
+                        + "\"apiKeyMasked\":\"sk-****\","
+                        + "\"providers\":[{\"accessKey\":\"legacy-access\","
+                        + "\"privateKey\":\"legacy-private\","
+                        + "\"token\":\"legacy-token\","
+                        + "\"clientSecret\":\"legacy-secret\","
+                        + "\"password\":\"legacy-password\","
+                        + "\"credential\":\"legacy-credential\"}]}",
                 1)));
 
         var result = service.getConfig("model.active");
 
         assertThat(result.configValue().has("provider")).isTrue();
-        assertThat(result.configValue().has("token")).isFalse();
-        assertThat(result.configValue().toString()).doesNotContain("legacy-plain");
+        assertThat(result.configValue().get("maxTokens").asInt()).isEqualTo(4096);
+        assertThat(result.configValue().get("apiKeyMasked").asText()).isEqualTo("sk-****");
+        assertThat(result.configValue().toString()).doesNotContain("legacy-");
     }
 
     /**

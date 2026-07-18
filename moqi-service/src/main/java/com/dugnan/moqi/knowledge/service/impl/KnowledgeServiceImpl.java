@@ -64,6 +64,9 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     private static final Set<String> ENTRY_STATUSES = Set.of(STATUS_ACTIVE, "deprecated");
     private static final Set<String> FORESHADOWING_STATUSES =
             Set.of("planted", "pending_payoff", "paid_off", "abandoned");
+    private static final int DEFAULT_PAGE = 1;
+    private static final int DEFAULT_PAGE_SIZE = 50;
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final WorkMapper workMapper;
     private final ChapterMapper chapterMapper;
@@ -111,7 +114,10 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             Long chapterId,
             String candidateStatus,
             String settingType,
-            String keyword) {
+            String keyword,
+            Integer page,
+            Integer pageSize) {
+        PageWindow pageWindow = pageWindow(page, pageSize);
         requireWork(workId);
         String status = StringUtils.hasText(candidateStatus) ? candidateStatus.trim() : STATUS_PENDING;
         validateValue(status, CANDIDATE_STATUSES, "candidateStatus");
@@ -128,7 +134,8 @@ public class KnowledgeServiceImpl implements KnowledgeService {
                         .or()
                         .like(SettingCandidateEntity::getContent, trim(keyword)))
                 .orderByDesc(SettingCandidateEntity::getGmtModified)
-                .orderByDesc(SettingCandidateEntity::getId);
+                .orderByDesc(SettingCandidateEntity::getId)
+                .last(pageWindow.limitClause());
         List<SettingCandidateDetail> candidates = candidateMapper.selectList(query).stream()
                 .map(this::candidateDetail)
                 .toList();
@@ -200,7 +207,14 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     }
 
     @Override
-    public SettingList listSettings(Long workId, String settingType, String entryStatus, String keyword) {
+    public SettingList listSettings(
+            Long workId,
+            String settingType,
+            String entryStatus,
+            String keyword,
+            Integer page,
+            Integer pageSize) {
+        PageWindow pageWindow = pageWindow(page, pageSize);
         requireWork(workId);
         validateOptional(settingType, SETTING_TYPES, "settingType");
         String status = StringUtils.hasText(entryStatus) ? entryStatus.trim() : STATUS_ACTIVE;
@@ -218,7 +232,8 @@ public class KnowledgeServiceImpl implements KnowledgeService {
                         .or()
                         .like(SettingEntryEntity::getContent, trim(keyword)))
                 .orderByDesc(SettingEntryEntity::getGmtModified)
-                .orderByDesc(SettingEntryEntity::getId);
+                .orderByDesc(SettingEntryEntity::getId)
+                .last(pageWindow.limitClause());
         List<SettingDetail> settings = settingMapper.selectList(query).stream()
                 .map(this::settingDetail)
                 .toList();
@@ -230,7 +245,10 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             Long workId,
             String status,
             Long sourceChapterId,
-            Long payoffChapterId) {
+            Long payoffChapterId,
+            Integer page,
+            Integer pageSize) {
+        PageWindow pageWindow = pageWindow(page, pageSize);
         requireWork(workId);
         validateOptional(status, FORESHADOWING_STATUSES, "status");
         LambdaQueryWrapper<ForeshadowingItemEntity> query =
@@ -246,7 +264,8 @@ public class KnowledgeServiceImpl implements KnowledgeService {
                                 .or()
                                 .eq(ForeshadowingItemEntity::getActualPayoffChapterId, payoffChapterId))
                         .orderByDesc(ForeshadowingItemEntity::getGmtModified)
-                        .orderByDesc(ForeshadowingItemEntity::getId);
+                        .orderByDesc(ForeshadowingItemEntity::getId)
+                        .last(pageWindow.limitClause());
         List<ForeshadowingDetail> foreshadowings = foreshadowingMapper.selectList(query).stream()
                 .map(this::foreshadowingDetail)
                 .toList();
@@ -405,12 +424,45 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     }
 
     /**
+     * 校验并计算知识列表分页范围。
+     *
+     * @param page 页码
+     * @param pageSize 每页数量
+     * @return 分页窗口
+     */
+    private PageWindow pageWindow(Integer page, Integer pageSize) {
+        int currentPage = page == null ? DEFAULT_PAGE : page;
+        int currentPageSize = pageSize == null ? DEFAULT_PAGE_SIZE : pageSize;
+        if (currentPage < 1) {
+            throw badRequest("page 必须大于等于 1");
+        }
+        if (currentPageSize < 1 || currentPageSize > MAX_PAGE_SIZE) {
+            throw badRequest("pageSize 必须在 1 到 " + MAX_PAGE_SIZE + " 之间");
+        }
+        long offset = (long) (currentPage - 1) * currentPageSize;
+        return new PageWindow(offset, currentPageSize);
+    }
+
+    /**
      * 创建候选并发状态变化异常，使当前事务回滚。
      *
      * @return 并发业务异常
      */
     private BusinessException concurrentCandidateChange() {
         return new BusinessException("设定候选或正式设定已被更新，请刷新后重试");
+    }
+
+    /**
+     * 表示已校验的列表分页窗口。
+     *
+     * @param offset 起始偏移
+     * @param pageSize 每页数量
+     */
+    private record PageWindow(long offset, int pageSize) {
+
+        private String limitClause() {
+            return "LIMIT " + offset + ", " + pageSize;
+        }
     }
 
     /**

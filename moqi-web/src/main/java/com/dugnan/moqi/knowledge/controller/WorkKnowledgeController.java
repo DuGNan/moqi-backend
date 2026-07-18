@@ -44,6 +44,8 @@ public class WorkKnowledgeController {
      * @param candidateStatus 候选状态
      * @param settingType 设定类型
      * @param keyword 关键字
+     * @param page 页码
+     * @param pageSize 每页数量
      * @return 候选列表响应
      */
     @GetMapping("/{workId}/setting-candidates")
@@ -52,9 +54,11 @@ public class WorkKnowledgeController {
             @RequestParam(required = false) Long chapterId,
             @RequestParam(required = false) String candidateStatus,
             @RequestParam(required = false) String settingType,
-            @RequestParam(required = false) String keyword) {
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer pageSize) {
         return ApiResponse.success(knowledgeService.listSettingCandidates(
-                workId, chapterId, candidateStatus, settingType, keyword));
+                workId, chapterId, candidateStatus, settingType, keyword, page, pageSize));
     }
 
     /**
@@ -64,6 +68,8 @@ public class WorkKnowledgeController {
      * @param settingType 设定类型
      * @param entryStatus 设定状态
      * @param keyword 关键字
+     * @param page 页码
+     * @param pageSize 每页数量
      * @return 正式设定列表响应
      */
     @GetMapping("/{workId}/settings")
@@ -71,8 +77,11 @@ public class WorkKnowledgeController {
             @PathVariable Long workId,
             @RequestParam(required = false) String settingType,
             @RequestParam(required = false) String entryStatus,
-            @RequestParam(required = false) String keyword) {
-        return ApiResponse.success(knowledgeService.listSettings(workId, settingType, entryStatus, keyword));
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer pageSize) {
+        return ApiResponse.success(knowledgeService.listSettings(
+                workId, settingType, entryStatus, keyword, page, pageSize));
     }
 
     /**
@@ -82,6 +91,8 @@ public class WorkKnowledgeController {
      * @param status 伏笔状态
      * @param sourceChapterId 来源章节 ID
      * @param payoffChapterId 回收章节 ID
+     * @param page 页码
+     * @param pageSize 每页数量
      * @return 伏笔列表响应
      */
     @GetMapping("/{workId}/foreshadowings")
@@ -89,9 +100,11 @@ public class WorkKnowledgeController {
             @PathVariable Long workId,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long sourceChapterId,
-            @RequestParam(required = false) Long payoffChapterId) {
+            @RequestParam(required = false) Long payoffChapterId,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer pageSize) {
         return ApiResponse.success(knowledgeService.listForeshadowings(
-                workId, status, sourceChapterId, payoffChapterId));
+                workId, status, sourceChapterId, payoffChapterId, page, pageSize));
     }
 
     /**

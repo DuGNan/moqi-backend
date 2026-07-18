@@ -4,9 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -67,6 +69,51 @@ class AiTaskServiceImplTest {
 
         assertThat(result.taskStatus()).isEqualTo("canceled");
         verify(taskMapper).update(any(), any());
+    }
+
+    /**
+     * 验证首次取消竞争失败后，会读取 running 最新版本并再次取消。
+     */
+    @Test
+    void retriesCancellationWithLatestRunningVersion() {
+        AiTaskEntity queued = task(9001L, "queued");
+        queued.setVersion(1);
+        AiTaskEntity running = task(9001L, "running");
+        running.setVersion(2);
+        when(taskMapper.selectById(9001L)).thenReturn(queued, running);
+        when(taskMapper.update(any(), any())).thenAnswer(invocation -> {
+            UpdateWrapper<?> update = invocation.getArgument(1);
+            return update.getParamNameValuePairs().containsValue(3) ? 1 : 0;
+        });
+
+        var result = service.cancelTask(9001L);
+
+        assertThat(result.taskStatus()).isEqualTo("canceled");
+        verify(taskMapper, times(2)).selectById(9001L);
+        verify(taskMapper, times(2)).update(any(), any());
+    }
+
+    /**
+     * 验证持续版本竞争时取消只做有限次数尝试。
+     */
+    @Test
+    void stopsCancellationAfterBoundedRetries() {
+        AiTaskEntity first = task(9001L, "queued");
+        AiTaskEntity second = task(9001L, "running");
+        AiTaskEntity third = task(9001L, "running");
+        AiTaskEntity latest = task(9001L, "running");
+        first.setVersion(1);
+        second.setVersion(2);
+        third.setVersion(3);
+        latest.setVersion(4);
+        when(taskMapper.selectById(9001L)).thenReturn(first, second, third, latest);
+        when(taskMapper.update(any(), any())).thenReturn(0);
+
+        assertThatThrownBy(() -> service.cancelTask(9001L))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("重试");
+        verify(taskMapper, times(3)).update(any(), any());
+        verify(taskMapper, times(4)).selectById(9001L);
     }
 
     /**

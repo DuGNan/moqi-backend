@@ -29,12 +29,36 @@ public interface KnowledgeService {
      * @param keyword 关键字
      * @return 候选列表
      */
+    default SettingCandidateList listSettingCandidates(
+            Long workId,
+            Long chapterId,
+            String candidateStatus,
+            String settingType,
+            String keyword) {
+        return listSettingCandidates(
+                workId, chapterId, candidateStatus, settingType, keyword, null, null);
+    }
+
+    /**
+     * 按条件分页查询作品设定候选。
+     *
+     * @param workId 作品 ID
+     * @param chapterId 来源章节 ID
+     * @param candidateStatus 候选状态
+     * @param settingType 设定类型
+     * @param keyword 关键字
+     * @param page 页码
+     * @param pageSize 每页数量
+     * @return 候选列表
+     */
     SettingCandidateList listSettingCandidates(
             Long workId,
             Long chapterId,
             String candidateStatus,
             String settingType,
-            String keyword);
+            String keyword,
+            Integer page,
+            Integer pageSize);
 
     /**
      * 确认候选并创建或合并正式设定。
@@ -63,7 +87,28 @@ public interface KnowledgeService {
      * @param keyword 关键字
      * @return 正式设定列表
      */
-    SettingList listSettings(Long workId, String settingType, String entryStatus, String keyword);
+    default SettingList listSettings(Long workId, String settingType, String entryStatus, String keyword) {
+        return listSettings(workId, settingType, entryStatus, keyword, null, null);
+    }
+
+    /**
+     * 按条件分页查询作品正式设定。
+     *
+     * @param workId 作品 ID
+     * @param settingType 设定类型
+     * @param entryStatus 设定状态
+     * @param keyword 关键字
+     * @param page 页码
+     * @param pageSize 每页数量
+     * @return 正式设定列表
+     */
+    SettingList listSettings(
+            Long workId,
+            String settingType,
+            String entryStatus,
+            String keyword,
+            Integer page,
+            Integer pageSize);
 
     /**
      * 按条件查询作品伏笔。
@@ -74,11 +119,32 @@ public interface KnowledgeService {
      * @param payoffChapterId 回收章节 ID
      * @return 伏笔列表
      */
+    default ForeshadowingList listForeshadowings(
+            Long workId,
+            String status,
+            Long sourceChapterId,
+            Long payoffChapterId) {
+        return listForeshadowings(workId, status, sourceChapterId, payoffChapterId, null, null);
+    }
+
+    /**
+     * 按条件分页查询作品伏笔。
+     *
+     * @param workId 作品 ID
+     * @param status 伏笔状态
+     * @param sourceChapterId 来源章节 ID
+     * @param payoffChapterId 回收章节 ID
+     * @param page 页码
+     * @param pageSize 每页数量
+     * @return 伏笔列表
+     */
     ForeshadowingList listForeshadowings(
             Long workId,
             String status,
             Long sourceChapterId,
-            Long payoffChapterId);
+            Long payoffChapterId,
+            Integer page,
+            Integer pageSize);
 
     /**
      * 创建作品伏笔。
