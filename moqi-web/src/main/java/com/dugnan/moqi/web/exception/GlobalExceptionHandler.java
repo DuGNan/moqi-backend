@@ -37,12 +37,15 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Map<String, Object>>> handleBusinessException(BusinessException exception) {
         HttpStatus status = switch (exception.getErrorCode()) {
-            case WORK_NOT_FOUND, CHAPTER_NOT_FOUND, CONVERSATION_NOT_FOUND -> HttpStatus.NOT_FOUND;
-            case OUTLINE_REVISION_CONFLICT -> HttpStatus.CONFLICT;
+            case WORK_NOT_FOUND, CHAPTER_NOT_FOUND, CONVERSATION_NOT_FOUND,
+                    OUTLINE_NOT_FOUND, GENERATION_NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case OUTLINE_REVISION_CONFLICT, GENERATION_STATUS_CONFLICT,
+                    CHAPTER_VERSION_CONFLICT -> HttpStatus.CONFLICT;
+            case INTERNAL_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
             default -> HttpStatus.BAD_REQUEST;
         };
         ApiResponse<Map<String, Object>> response =
-                ApiResponse.failure(exception.getErrorCode(), exception.getMessage(), Map.of());
+                ApiResponse.failure(exception.getErrorCode(), exception.getMessage(), exception.getData());
         return ResponseEntity.status(status).body(response);
     }
 

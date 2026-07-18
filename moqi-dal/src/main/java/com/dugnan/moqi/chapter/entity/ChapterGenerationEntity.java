@@ -20,7 +20,23 @@ public class ChapterGenerationEntity extends BaseEntity {
 
     private Long briefId;
 
+    private Long outlineId;
+
+    private Integer outlineRevision;
+
     private String generationStatus;
 
+    private String generationMode;
+
+    private String lengthPreset;
+
+    private Integer customWordCount;
+
+    private String basisSnapshotJson;
+
     private String generatedContent;
+
+    private Integer wordCount;
+
+    private Long aiTaskId;
 }

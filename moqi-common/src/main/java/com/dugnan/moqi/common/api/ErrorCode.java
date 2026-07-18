@@ -18,6 +18,14 @@ public enum ErrorCode {
     CONVERSATION_NOT_FOUND,
     /** 大纲修订版本冲突。 */
     OUTLINE_REVISION_CONFLICT,
+    /** 章节大纲不存在。 */
+    OUTLINE_NOT_FOUND,
+    /** 章节生成记录不存在。 */
+    GENERATION_NOT_FOUND,
+    /** 章节生成记录状态不允许当前操作。 */
+    GENERATION_STATUS_CONFLICT,
+    /** 章节正文版本冲突。 */
+    CHAPTER_VERSION_CONFLICT,
     /** 通用业务错误。 */
     BUSINESS_ERROR,
     /** 服务内部错误。 */

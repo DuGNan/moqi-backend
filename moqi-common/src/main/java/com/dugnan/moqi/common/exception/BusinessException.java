@@ -1,5 +1,9 @@
 package com.dugnan.moqi.common.exception;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import com.dugnan.moqi.common.api.ErrorCode;
 
 /**
@@ -10,6 +14,8 @@ import com.dugnan.moqi.common.api.ErrorCode;
 public class BusinessException extends RuntimeException {
 
     private final ErrorCode errorCode;
+
+    private final Map<String, Object> data;
 
     /**
      * 使用默认业务错误码创建异常。
@@ -27,8 +33,22 @@ public class BusinessException extends RuntimeException {
      * @param message 异常消息
      */
     public BusinessException(ErrorCode errorCode, String message) {
+        this(errorCode, message, Map.of());
+    }
+
+    /**
+     * 使用指定错误码和附加数据创建异常。
+     *
+     * @param errorCode 统一错误码
+     * @param message 异常消息
+     * @param data 错误附加数据
+     */
+    public BusinessException(ErrorCode errorCode, String message, Map<String, Object> data) {
         super(message);
         this.errorCode = errorCode;
+        this.data = data == null
+                ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(data));
     }
 
     /**
@@ -38,5 +58,14 @@ public class BusinessException extends RuntimeException {
      */
     public ErrorCode getErrorCode() {
         return errorCode;
+    }
+
+    /**
+     * 获取错误附加数据。
+     *
+     * @return 错误附加数据
+     */
+    public Map<String, Object> getData() {
+        return data;
     }
 }
