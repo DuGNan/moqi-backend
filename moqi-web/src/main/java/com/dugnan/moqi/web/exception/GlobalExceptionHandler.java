@@ -38,9 +38,10 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Map<String, Object>>> handleBusinessException(BusinessException exception) {
         HttpStatus status = switch (exception.getErrorCode()) {
             case WORK_NOT_FOUND, CHAPTER_NOT_FOUND, CONVERSATION_NOT_FOUND,
-                    OUTLINE_NOT_FOUND, GENERATION_NOT_FOUND -> HttpStatus.NOT_FOUND;
+                    OUTLINE_NOT_FOUND, GENERATION_NOT_FOUND,
+                    SETTING_CANDIDATE_NOT_FOUND, SETTING_NOT_FOUND, AI_TASK_NOT_FOUND -> HttpStatus.NOT_FOUND;
             case OUTLINE_REVISION_CONFLICT, GENERATION_STATUS_CONFLICT,
-                    CHAPTER_VERSION_CONFLICT -> HttpStatus.CONFLICT;
+                    CHAPTER_VERSION_CONFLICT, CONFIG_VERSION_CONFLICT -> HttpStatus.CONFLICT;
             case INTERNAL_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
             default -> HttpStatus.BAD_REQUEST;
         };

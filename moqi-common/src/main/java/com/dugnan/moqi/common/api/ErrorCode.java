@@ -16,6 +16,12 @@ public enum ErrorCode {
     CHAPTER_NOT_FOUND,
     /** 会话不存在。 */
     CONVERSATION_NOT_FOUND,
+    /** 设定候选不存在。 */
+    SETTING_CANDIDATE_NOT_FOUND,
+    /** 正式设定不存在。 */
+    SETTING_NOT_FOUND,
+    /** AI 任务不存在。 */
+    AI_TASK_NOT_FOUND,
     /** 大纲修订版本冲突。 */
     OUTLINE_REVISION_CONFLICT,
     /** 章节大纲不存在。 */
@@ -26,6 +32,8 @@ public enum ErrorCode {
     GENERATION_STATUS_CONFLICT,
     /** 章节正文版本冲突。 */
     CHAPTER_VERSION_CONFLICT,
+    /** 用户配置版本冲突。 */
+    CONFIG_VERSION_CONFLICT,
     /** 通用业务错误。 */
     BUSINESS_ERROR,
     /** 服务内部错误。 */
