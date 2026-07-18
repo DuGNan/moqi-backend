@@ -34,6 +34,10 @@ public enum ErrorCode {
     CHAPTER_VERSION_CONFLICT,
     /** 用户配置版本冲突。 */
     CONFIG_VERSION_CONFLICT,
+    /** 设定候选状态冲突。 */
+    SETTING_CANDIDATE_CONFLICT,
+    /** AI 任务状态冲突。 */
+    AI_TASK_STATE_CONFLICT,
     /** 通用业务错误。 */
     BUSINESS_ERROR,
     /** 服务内部错误。 */

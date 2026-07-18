@@ -9,6 +9,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Method;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -17,7 +18,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.apache.ibatis.annotations.Select;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.dugnan.moqi.common.api.ErrorCode;
@@ -184,7 +186,7 @@ class KnowledgeServiceImplTest {
     @Test
     void confirmsCandidateByCreatingSetting() {
         SettingCandidateEntity candidate = candidate(501L, 1L, "pending");
-        when(candidateMapper.selectById(501L)).thenReturn(candidate);
+        when(candidateMapper.selectByIdForUpdate(501L)).thenReturn(candidate);
         when(settingMapper.insert(any(SettingEntryEntity.class))).thenAnswer(invocation -> {
             SettingEntryEntity setting = invocation.getArgument(0);
             setting.setId(301L);
@@ -206,13 +208,31 @@ class KnowledgeServiceImplTest {
     }
 
     /**
+     * 验证候选锁定查询显式过滤软删除记录并使用 FOR UPDATE。
+     *
+     * @throws Exception Mapper 方法不存在
+     */
+    @Test
+    void locksCandidateWithExplicitForUpdateSql() throws Exception {
+        Method method = SettingCandidateMapper.class.getMethod("selectByIdForUpdate", Long.class);
+        Select select = method.getAnnotation(Select.class);
+
+        assertThat(select).isNotNull();
+        assertThat(String.join(" ", select.value()))
+                .containsIgnoringCase("FROM setting_candidates")
+                .contains("id = #{id}")
+                .contains("deleted = 0")
+                .containsIgnoringCase("FOR UPDATE");
+    }
+
+    /**
      * 验证确认候选可合并到同作品正式设定。
      */
     @Test
     void confirmsCandidateByMergingExistingSetting() {
         SettingCandidateEntity candidate = candidate(501L, 1L, "pending");
         SettingEntryEntity setting = setting(301L, 1L);
-        when(candidateMapper.selectById(501L)).thenReturn(candidate);
+        when(candidateMapper.selectByIdForUpdate(501L)).thenReturn(candidate);
         when(settingMapper.selectById(301L)).thenReturn(setting);
         when(settingMapper.update(isNull(), org.mockito.ArgumentMatchers.<Wrapper<SettingEntryEntity>>any()))
                 .thenReturn(1);
@@ -232,21 +252,28 @@ class KnowledgeServiceImplTest {
     }
 
     /**
-     * 验证并发确认中只有条件更新成功的一方获胜，失败方必须抛错以回滚新建设定。
+     * 验证并发确认由候选行锁串行化，等待方重读终态后幂等返回。
      */
     @Test
-    void rollsBackCreatedSettingWhenConcurrentConfirmWinsCandidate() throws Exception {
-        CyclicBarrier updateBarrier = new CyclicBarrier(2);
+    void serializesConcurrentConfirmsWithCandidateLock() throws Exception {
+        ReentrantLock candidateLock = new ReentrantLock();
         AtomicBoolean isConfirmed = new AtomicBoolean();
-        AtomicLong settingId = new AtomicLong(301L);
-        when(candidateMapper.selectById(501L)).thenAnswer(invocation -> {
-            SettingCandidateEntity candidate = candidate(501L, 1L, "pending");
-            candidate.setVersion(3);
-            return candidate;
+        when(candidateMapper.selectByIdForUpdate(501L)).thenAnswer(invocation -> {
+            candidateLock.lock();
+            SettingCandidateEntity current = candidate(
+                    501L,
+                    1L,
+                    isConfirmed.get() ? "confirmed" : "pending");
+            current.setVersion(isConfirmed.get() ? 4 : 3);
+            if (isConfirmed.get()) {
+                current.setConfirmedSettingId(301L);
+                candidateLock.unlock();
+            }
+            return current;
         });
         when(settingMapper.insert(any(SettingEntryEntity.class))).thenAnswer(invocation -> {
             SettingEntryEntity setting = invocation.getArgument(0);
-            setting.setId(settingId.getAndIncrement());
+            setting.setId(301L);
             return 1;
         });
         when(candidateMapper.update(
@@ -254,8 +281,9 @@ class KnowledgeServiceImplTest {
                 org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any())).thenAnswer(invocation -> {
             Wrapper<SettingCandidateEntity> update = invocation.getArgument(1);
             assertThat(update.getSqlSegment()).contains("candidate_status", "version", "deleted");
-            updateBarrier.await(5, TimeUnit.SECONDS);
-            return isConfirmed.compareAndSet(false, true) ? 1 : 0;
+            isConfirmed.set(true);
+            candidateLock.unlock();
+            return 1;
         });
 
         List<Object> outcomes = runConcurrently(
@@ -266,9 +294,14 @@ class KnowledgeServiceImplTest {
                         501L,
                         new ConfirmSettingRequest("character", "林风", "并发确认正文二", null)));
 
-        assertThat(outcomes).filteredOn(ConfirmSettingResult.class::isInstance).hasSize(1);
-        assertThat(outcomes).filteredOn(BusinessException.class::isInstance).hasSize(1);
-        verify(settingMapper, times(2)).insert(any(SettingEntryEntity.class));
+        assertThat(outcomes).filteredOn(ConfirmSettingResult.class::isInstance).hasSize(2);
+        assertThat(outcomes)
+                .filteredOn(ConfirmSettingResult.class::isInstance)
+                .allSatisfy(outcome -> assertThat(((ConfirmSettingResult) outcome).settingId()).isEqualTo(301L));
+        verify(settingMapper).insert(any(SettingEntryEntity.class));
+        verify(candidateMapper).update(
+                isNull(),
+                org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any());
     }
 
     /**
@@ -280,7 +313,7 @@ class KnowledgeServiceImplTest {
         candidate.setVersion(2);
         SettingEntryEntity setting = setting(301L, 1L);
         setting.setVersion(4);
-        when(candidateMapper.selectById(501L)).thenReturn(candidate);
+        when(candidateMapper.selectByIdForUpdate(501L)).thenReturn(candidate);
         when(settingMapper.selectById(301L)).thenReturn(setting);
         when(settingMapper.update(
                 isNull(),
@@ -293,7 +326,9 @@ class KnowledgeServiceImplTest {
         assertThatThrownBy(() -> service.confirmSettingCandidate(
                 501L,
                 new ConfirmSettingRequest("character", "林风", "并发合并正文", 301L)))
-                .isInstanceOf(BusinessException.class);
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getErrorCode().name())
+                .isEqualTo("SETTING_CANDIDATE_CONFLICT");
         verify(candidateMapper, never()).update(
                 isNull(),
                 org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any());
@@ -307,6 +342,11 @@ class KnowledgeServiceImplTest {
         CyclicBarrier updateBarrier = new CyclicBarrier(2);
         AtomicBoolean hasWinner = new AtomicBoolean();
         when(candidateMapper.selectById(501L)).thenAnswer(invocation -> {
+            SettingCandidateEntity candidate = candidate(501L, 1L, "pending");
+            candidate.setVersion(5);
+            return candidate;
+        });
+        when(candidateMapper.selectByIdForUpdate(501L)).thenAnswer(invocation -> {
             SettingCandidateEntity candidate = candidate(501L, 1L, "pending");
             candidate.setVersion(5);
             return candidate;
@@ -333,6 +373,10 @@ class KnowledgeServiceImplTest {
                 .filter(result -> result instanceof ConfirmSettingResult || result instanceof IgnoreSettingResult)
                 .count()).isEqualTo(1);
         assertThat(outcomes).filteredOn(BusinessException.class::isInstance).hasSize(1);
+        assertThat(outcomes).filteredOn(BusinessException.class::isInstance)
+                .singleElement()
+                .satisfies(outcome -> assertThat(((BusinessException) outcome).getErrorCode().name())
+                        .isEqualTo("SETTING_CANDIDATE_CONFLICT"));
         verify(candidateMapper, times(2)).update(
                 isNull(),
                 org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any());
@@ -355,7 +399,23 @@ class KnowledgeServiceImplTest {
         assertThatThrownBy(() -> service.ignoreSettingCandidate(502L, new IgnoreSettingRequest(null)))
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode")
-                .isEqualTo(ErrorCode.BAD_REQUEST);
+                .isEqualTo(ErrorCode.SETTING_CANDIDATE_CONFLICT);
+    }
+
+    /**
+     * 验证候选锁等待后读到已忽略终态时返回状态冲突。
+     */
+    @Test
+    void rejectsConfirmingIgnoredCandidateAsConflict() {
+        when(candidateMapper.selectByIdForUpdate(501L)).thenReturn(candidate(501L, 1L, "ignored"));
+
+        assertThatThrownBy(() -> service.confirmSettingCandidate(
+                        501L,
+                        new ConfirmSettingRequest("character", "林风", "正文", null)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.SETTING_CANDIDATE_CONFLICT);
+        verify(settingMapper, never()).insert(any(SettingEntryEntity.class));
     }
 
     /**
@@ -363,7 +423,7 @@ class KnowledgeServiceImplTest {
      */
     @Test
     void rejectsMissingCandidate() {
-        when(candidateMapper.selectById(999L)).thenReturn(null);
+        when(candidateMapper.selectByIdForUpdate(999L)).thenReturn(null);
 
         assertThatThrownBy(() -> service.confirmSettingCandidate(
                 999L,

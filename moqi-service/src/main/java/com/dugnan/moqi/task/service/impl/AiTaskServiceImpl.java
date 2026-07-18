@@ -64,7 +64,7 @@ public class AiTaskServiceImpl implements AiTaskService {
         if (TERMINAL_STATUSES.contains(task.getTaskStatus())) {
             return cancelResult(task);
         }
-        throw new BusinessException(ErrorCode.BUSINESS_ERROR, "任务状态已变化，请重试");
+        throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "任务状态已变化，请重试");
     }
 
     /**

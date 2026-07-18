@@ -111,7 +111,9 @@ class AiTaskServiceImplTest {
 
         assertThatThrownBy(() -> service.cancelTask(9001L))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("重试");
+                .hasMessageContaining("重试")
+                .extracting(exception -> ((BusinessException) exception).getErrorCode().name())
+                .isEqualTo("AI_TASK_STATE_CONFLICT");
         verify(taskMapper, times(3)).update(any(), any());
         verify(taskMapper, times(4)).selectById(9001L);
     }

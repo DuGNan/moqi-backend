@@ -1,10 +1,12 @@
 package com.dugnan.moqi.config.service.impl;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -40,6 +42,8 @@ public class UserConfigServiceImpl implements UserConfigService {
     private static final String MODEL_CONFIG_KEY = "model.active";
     private static final String NOT_TESTED = "not_tested";
     private static final String MASKED_KEY_SUFFIX = "masked";
+    private static final Pattern MASKED_SECRET_PATTERN = Pattern.compile(
+            "^[A-Za-z0-9]{0,4}[-_:]?\\*{4,}[-_:]?[A-Za-z0-9]{0,4}$");
     private static final Set<String> ALLOWED_CONFIG_KEYS = Set.of(
             MODEL_CONFIG_KEY,
             "writing.preferences",
@@ -47,16 +51,28 @@ public class UserConfigServiceImpl implements UserConfigService {
             "sync.preferences");
     private static final Set<String> SENSITIVE_KEY_NAMES = Set.of(
             "apikey",
+            "apikeys",
             "accesskey",
+            "accesskeys",
             "privatekey",
+            "privatekeys",
             "token",
+            "tokens",
             "secret",
+            "secrets",
             "password",
+            "passwords",
             "credential",
             "credentials");
     private static final Set<String> SENSITIVE_KEY_WORDS =
-            Set.of("token", "secret", "password", "credential", "credentials");
+            Set.of(
+                    "token", "tokens",
+                    "secret", "secrets",
+                    "password", "passwords",
+                    "credential", "credentials");
     private static final Set<String> KEY_QUALIFIER_WORDS = Set.of("api", "access", "private");
+    private static final Set<String> KEY_WORDS = Set.of("key", "keys");
+    private static final Set<String> ALLOWED_NUMERIC_KEY_NAMES = Set.of("maxtokens");
 
     private final UserConfigMapper configMapper;
     private final ObjectMapper objectMapper;
@@ -105,10 +121,9 @@ public class UserConfigServiceImpl implements UserConfigService {
         if (configValue == null || !configValue.isObject()) {
             throw badRequest("configValue 必须是 JSON 对象");
         }
-        if (containsSensitiveKey(configValue)) {
+        if (containsUnsafeConfigField(configValue)) {
             throw badRequest(
-                    "configValue 不允许包含 apiKey、accessKey、privateKey、token、secret、password"
-                            + " 或 credential 等敏感键");
+                    "configValue 包含敏感键、非法脱敏摘要或非法数值配置");
         }
 
         UserConfigEntity entity = findConfig(key);
@@ -232,19 +247,28 @@ public class UserConfigServiceImpl implements UserConfigService {
      * @param node JSON 节点
      * @return 是否含敏感字段
      */
-    private boolean containsSensitiveKey(JsonNode node) {
+    private boolean containsUnsafeConfigField(JsonNode node) {
         if (node.isObject()) {
             Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
             while (fields.hasNext()) {
                 Map.Entry<String, JsonNode> field = fields.next();
-                if (isSensitiveKey(field.getKey()) || containsSensitiveKey(field.getValue())) {
+                if (isAllowedNumericKey(field.getKey()) && !isValidAllowedNumericValue(field.getValue())) {
+                    return true;
+                }
+                if (isMaskedSummaryKey(field.getKey()) && !isValidMaskedSummary(field.getValue())) {
+                    return true;
+                }
+                if (!isMaskedSummaryKey(field.getKey()) && isSensitiveKey(field.getKey())) {
+                    return true;
+                }
+                if (containsUnsafeConfigField(field.getValue())) {
                     return true;
                 }
             }
         }
         if (node.isArray()) {
             for (JsonNode child : node) {
-                if (containsSensitiveKey(child)) {
+                if (containsUnsafeConfigField(child)) {
                     return true;
                 }
             }
@@ -261,11 +285,21 @@ public class UserConfigServiceImpl implements UserConfigService {
     private JsonNode sanitize(JsonNode node) {
         if (node.isObject()) {
             ObjectNode sanitized = objectMapper.createObjectNode();
-            node.fields().forEachRemaining(field -> {
-                if (!isSensitiveKey(field.getKey())) {
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> field = fields.next();
+                if (isAllowedNumericKey(field.getKey())) {
+                    if (isValidAllowedNumericValue(field.getValue())) {
+                        sanitized.set(field.getKey(), field.getValue().deepCopy());
+                    }
+                } else if (isMaskedSummaryKey(field.getKey())) {
+                    if (isValidMaskedSummary(field.getValue())) {
+                        sanitized.set(field.getKey(), field.getValue().deepCopy());
+                    }
+                } else if (!isSensitiveKey(field.getKey())) {
                     sanitized.set(field.getKey(), sanitize(field.getValue()));
                 }
-            });
+            }
             return sanitized;
         }
         if (node.isArray()) {
@@ -283,33 +317,109 @@ public class UserConfigServiceImpl implements UserConfigService {
      * @return 是否敏感
      */
     private boolean isSensitiveKey(String fieldName) {
+        String[] words = keyWords(fieldName);
+        if (words.length == 0 || isAllowedNumericKey(fieldName)) {
+            return false;
+        }
+        return isSensitiveWords(words, words.length);
+    }
+
+    /**
+     * 判断字段是否为敏感键的明确 masked 摘要形式。
+     *
+     * @param fieldName 字段名
+     * @return 是否 masked 摘要字段
+     */
+    private boolean isMaskedSummaryKey(String fieldName) {
+        String[] words = keyWords(fieldName);
+        return words.length > 1
+                && MASKED_KEY_SUFFIX.equals(words[words.length - 1])
+                && isSensitiveWords(words, words.length - 1);
+    }
+
+    /**
+     * 校验 masked 摘要值只暴露少量首尾字符并包含明确掩码。
+     *
+     * @param value 摘要值
+     * @return 是否合法
+     */
+    private boolean isValidMaskedSummary(JsonNode value) {
+        return value.isTextual() && MASKED_SECRET_PATTERN.matcher(value.asText()).matches();
+    }
+
+    /**
+     * 判断字段是否为允许的数值配置。
+     *
+     * @param fieldName 字段名
+     * @return 是否允许
+     */
+    private boolean isAllowedNumericKey(String fieldName) {
+        String[] words = keyWords(fieldName);
+        return ALLOWED_NUMERIC_KEY_NAMES.contains(normalizedKey(words, words.length));
+    }
+
+    /**
+     * 校验白名单数值配置为正整数。
+     *
+     * @param value 配置值
+     * @return 是否合法
+     */
+    private boolean isValidAllowedNumericValue(JsonNode value) {
+        return value.isIntegralNumber() && value.canConvertToLong() && value.longValue() > 0;
+    }
+
+    /**
+     * 将字段名拆分为小写语义单词。
+     *
+     * @param fieldName 字段名
+     * @return 字段名单词
+     */
+    private String[] keyWords(String fieldName) {
         String separated = fieldName
                 .replaceAll("([a-z0-9])([A-Z])", "$1 $2")
                 .replaceAll("[^A-Za-z0-9]+", " ")
                 .trim()
                 .toLowerCase(Locale.ROOT);
         if (separated.isEmpty()) {
-            return false;
+            return new String[0];
         }
-        String[] words = separated.split(" +");
-        String normalized = String.join("", words);
-        if (MASKED_KEY_SUFFIX.equals(words[words.length - 1])) {
-            return false;
-        }
+        return separated.split(" +");
+    }
+
+    /**
+     * 判断指定长度的字段名单词是否表达敏感凭据。
+     *
+     * @param words 字段名单词
+     * @param length 参与判断的单词数量
+     * @return 是否敏感
+     */
+    private boolean isSensitiveWords(String[] words, int length) {
+        String normalized = normalizedKey(words, length);
         if (SENSITIVE_KEY_NAMES.contains(normalized)) {
             return true;
         }
-        for (int index = 0; index < words.length; index++) {
+        for (int index = 0; index < length; index++) {
             if (SENSITIVE_KEY_WORDS.contains(words[index])) {
                 return true;
             }
-            if (index + 1 < words.length
-                    && "key".equals(words[index + 1])
+            if (index + 1 < length
+                    && KEY_WORDS.contains(words[index + 1])
                     && KEY_QUALIFIER_WORDS.contains(words[index])) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * 合并指定长度的字段名单词。
+     *
+     * @param words 字段名单词
+     * @param length 合并数量
+     * @return 规范化字段名
+     */
+    private String normalizedKey(String[] words, int length) {
+        return String.join("", Arrays.copyOf(words, length));
     }
 
     /**

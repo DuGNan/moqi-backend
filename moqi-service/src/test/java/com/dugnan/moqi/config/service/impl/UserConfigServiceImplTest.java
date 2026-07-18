@@ -197,7 +197,9 @@ class UserConfigServiceImplTest {
                 "privateKey",
                 "apiKeyUnmasked",
                 "token",
+                "tokens",
                 "clientSecret",
+                "clientSecrets",
                 "password",
                 "credential");
         for (String sensitiveKey : sensitiveKeys) {
@@ -211,6 +213,46 @@ class UserConfigServiceImplTest {
                     .extracting("errorCode")
                     .isEqualTo(ErrorCode.BAD_REQUEST);
         }
+        verify(configMapper, never()).insert(any(UserConfigEntity.class));
+    }
+
+    /**
+     * 验证明文、对象和数组不能借 masked 后缀绕过敏感配置校验。
+     *
+     * @throws Exception 测试 JSON 解析失败
+     */
+    @Test
+    void rejectsInvalidMaskedSecretSummaries() throws Exception {
+        List<String> invalidConfigs = List.of(
+                "{\"apiKeyMasked\":\"sk-live-secret\"}",
+                "{\"accessKeyMasked\":\"plain\"}",
+                "{\"privateKeyMasked\":{\"value\":\"****\"}}",
+                "{\"tokenMasked\":[\"****\"]}");
+
+        for (String invalidConfig : invalidConfigs) {
+            assertThatThrownBy(() -> service.updateConfig(
+                            "model.active",
+                            new UpdateUserConfigRequest(0, objectMapper.readTree(invalidConfig))))
+                    .isInstanceOf(BusinessException.class)
+                    .extracting("errorCode")
+                    .isEqualTo(ErrorCode.BAD_REQUEST);
+        }
+        verify(configMapper, never()).insert(any(UserConfigEntity.class));
+    }
+
+    /**
+     * 验证 maxTokens 只有数值形式属于允许的 token 数量配置。
+     *
+     * @throws Exception 测试 JSON 解析失败
+     */
+    @Test
+    void rejectsNonNumericMaxTokens() throws Exception {
+        assertThatThrownBy(() -> service.updateConfig(
+                        "writing.preferences",
+                        new UpdateUserConfigRequest(0, objectMapper.readTree("{\"maxTokens\":\"4096\"}"))))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
         verify(configMapper, never()).insert(any(UserConfigEntity.class));
     }
 
@@ -247,9 +289,14 @@ class UserConfigServiceImplTest {
                 "{\"provider\":\"local\",\"maxTokens\":4096,"
                         + "\"apiKeyMasked\":\"sk-****\","
                         + "\"providers\":[{\"accessKey\":\"legacy-access\","
+                        + "\"accessKeyMasked\":\"legacy-access-masked\","
+                        + "\"privateKeyMasked\":{\"value\":\"****\"},"
+                        + "\"tokenMasked\":[\"****\"],"
                         + "\"privateKey\":\"legacy-private\","
                         + "\"token\":\"legacy-token\","
+                        + "\"tokens\":[\"legacy-token-list\"],"
                         + "\"clientSecret\":\"legacy-secret\","
+                        + "\"clientSecrets\":[\"legacy-secret-list\"],"
                         + "\"password\":\"legacy-password\","
                         + "\"credential\":\"legacy-credential\"}]}",
                 1)));
@@ -260,6 +307,7 @@ class UserConfigServiceImplTest {
         assertThat(result.configValue().get("maxTokens").asInt()).isEqualTo(4096);
         assertThat(result.configValue().get("apiKeyMasked").asText()).isEqualTo("sk-****");
         assertThat(result.configValue().toString()).doesNotContain("legacy-");
+        assertThat(result.configValue().get("providers").get(0).isEmpty()).isTrue();
     }
 
     /**

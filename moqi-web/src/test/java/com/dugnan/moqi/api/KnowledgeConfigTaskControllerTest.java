@@ -299,4 +299,45 @@ class KnowledgeConfigTaskControllerTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("AI_TASK_NOT_FOUND"));
     }
+
+    /**
+     * 验证分页参数类型错误和整数溢出统一映射为 400。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
+    @Test
+    void mapsInvalidPaginationTypesToBadRequest() throws Exception {
+        mvc.perform(get("/api/works/1/settings").param("page", "abc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+        mvc.perform(get("/api/works/1/setting-candidates").param("pageSize", "2147483648"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+    }
+
+    /**
+     * 验证候选状态竞争和 AI 任务取消竞争映射为 409。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
+    @Test
+    void mapsIssue27StateConflictsToConflict() throws Exception {
+        when(knowledgeService.confirmSettingCandidate(Mockito.eq(501L), any()))
+                .thenThrow(new BusinessException(
+                        ErrorCode.valueOf("SETTING_CANDIDATE_CONFLICT"),
+                        "候选状态已变化"));
+        when(aiTaskService.cancelTask(9001L))
+                .thenThrow(new BusinessException(
+                        ErrorCode.valueOf("AI_TASK_STATE_CONFLICT"),
+                        "任务状态已变化"));
+
+        mvc.perform(post("/api/setting-candidates/501/confirm")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"settingType\":\"character\",\"name\":\"林风\",\"content\":\"正文\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETTING_CANDIDATE_CONFLICT"));
+        mvc.perform(post("/api/ai-tasks/9001/cancel"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("AI_TASK_STATE_CONFLICT"));
+    }
 }

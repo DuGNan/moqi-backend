@@ -145,7 +145,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public ConfirmSettingResult confirmSettingCandidate(Long candidateId, ConfirmSettingRequest request) {
-        SettingCandidateEntity candidate = requireCandidate(candidateId);
+        SettingCandidateEntity candidate = lockCandidate(candidateId);
         if (STATUS_CONFIRMED.equals(candidate.getCandidateStatus())) {
             return new ConfirmSettingResult(
                     candidate.getId(),
@@ -154,7 +154,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
                     candidate.getGmtModified());
         }
         if (!STATUS_PENDING.equals(candidate.getCandidateStatus())) {
-            throw badRequest("当前候选状态不允许确认");
+            throw concurrentCandidateChange();
         }
 
         String settingType = requiredSettingType(request == null ? null : request.settingType());
@@ -198,7 +198,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             return ignoreResult(candidate);
         }
         if (!STATUS_PENDING.equals(candidate.getCandidateStatus())) {
-            throw badRequest("当前候选状态不允许忽略");
+            throw concurrentCandidateChange();
         }
         LocalDateTime modifiedAt = updateCandidateStatus(candidate, STATUS_IGNORED, null);
         candidate.setCandidateStatus(STATUS_IGNORED);
@@ -449,7 +449,9 @@ public class KnowledgeServiceImpl implements KnowledgeService {
      * @return 并发业务异常
      */
     private BusinessException concurrentCandidateChange() {
-        return new BusinessException("设定候选或正式设定已被更新，请刷新后重试");
+        return new BusinessException(
+                ErrorCode.SETTING_CANDIDATE_CONFLICT,
+                "设定候选或正式设定已被更新，请刷新后重试");
     }
 
     /**
@@ -518,6 +520,20 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     private SettingCandidateEntity requireCandidate(Long id) {
         SettingCandidateEntity entity = id == null ? null : candidateMapper.selectById(id);
         if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
+            throw new BusinessException(ErrorCode.SETTING_CANDIDATE_NOT_FOUND, "设定候选不存在");
+        }
+        return entity;
+    }
+
+    /**
+     * 在当前事务中锁定未删除候选，避免创建正式设定后再升级候选行锁。
+     *
+     * @param id 候选 ID
+     * @return 已锁定候选
+     */
+    private SettingCandidateEntity lockCandidate(Long id) {
+        SettingCandidateEntity entity = id == null ? null : candidateMapper.selectByIdForUpdate(id);
+        if (entity == null) {
             throw new BusinessException(ErrorCode.SETTING_CANDIDATE_NOT_FOUND, "设定候选不存在");
         }
         return entity;
