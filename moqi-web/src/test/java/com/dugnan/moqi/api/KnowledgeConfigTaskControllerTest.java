@@ -1,5 +1,6 @@
 package com.dugnan.moqi.api;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -11,11 +12,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.http.MediaType;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -66,7 +69,8 @@ class KnowledgeConfigTaskControllerTest {
         knowledgeService = Mockito.mock(KnowledgeService.class);
         userConfigService = Mockito.mock(UserConfigService.class);
         aiTaskService = Mockito.mock(AiTaskService.class);
-        objectMapper = new ObjectMapper();
+        objectMapper = new ObjectMapper().findAndRegisterModules();
+        objectMapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
         mvc = MockMvcBuilders
                 .standaloneSetup(
                         new WorkKnowledgeController(knowledgeService),
@@ -75,6 +79,7 @@ class KnowledgeConfigTaskControllerTest {
                         new UserConfigController(userConfigService),
                         new ModelStatusController(userConfigService),
                         new AiTaskController(aiTaskService))
+                .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -195,6 +200,20 @@ class KnowledgeConfigTaskControllerTest {
         mvc.perform(get("/api/chapters/12/key-events"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.events").isArray());
+    }
+
+    /**
+     * 验证全局忽略空值时，空章节摘要仍保留统一响应的 data 字段。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
+    @Test
+    void keepsNullDataForMissingChapterSummary() throws Exception {
+        when(knowledgeService.getChapterSummary(12L)).thenReturn(null);
+
+        mvc.perform(get("/api/chapters/12/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(nullValue()));
     }
 
     /**
