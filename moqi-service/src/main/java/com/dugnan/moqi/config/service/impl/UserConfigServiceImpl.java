@@ -1,7 +1,6 @@
 package com.dugnan.moqi.config.service.impl;
 
 import java.time.LocalDateTime;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
@@ -64,14 +63,14 @@ public class UserConfigServiceImpl implements UserConfigService {
             "passwords",
             "credential",
             "credentials");
-    private static final Set<String> SENSITIVE_KEY_WORDS =
-            Set.of(
-                    "token", "tokens",
-                    "secret", "secrets",
-                    "password", "passwords",
-                    "credential", "credentials");
-    private static final Set<String> KEY_QUALIFIER_WORDS = Set.of("api", "access", "private");
-    private static final Set<String> KEY_WORDS = Set.of("key", "keys");
+    private static final Set<String> SENSITIVE_KEY_FRAGMENTS = Set.of(
+            "apikey",
+            "accesskey",
+            "privatekey",
+            "token",
+            "secret",
+            "password",
+            "credential");
     private static final Set<String> ALLOWED_NUMERIC_KEY_NAMES = Set.of("maxtokens");
 
     private final UserConfigMapper configMapper;
@@ -317,11 +316,11 @@ public class UserConfigServiceImpl implements UserConfigService {
      * @return 是否敏感
      */
     private boolean isSensitiveKey(String fieldName) {
-        String[] words = keyWords(fieldName);
-        if (words.length == 0 || isAllowedNumericKey(fieldName)) {
+        String compactName = compactKeyName(fieldName);
+        if (compactName.isEmpty() || isAllowedNumericKey(fieldName)) {
             return false;
         }
-        return isSensitiveWords(words, words.length);
+        return compactName.endsWith(MASKED_KEY_SUFFIX) || isSensitiveCompactKey(compactName);
     }
 
     /**
@@ -331,10 +330,12 @@ public class UserConfigServiceImpl implements UserConfigService {
      * @return 是否 masked 摘要字段
      */
     private boolean isMaskedSummaryKey(String fieldName) {
-        String[] words = keyWords(fieldName);
-        return words.length > 1
-                && MASKED_KEY_SUFFIX.equals(words[words.length - 1])
-                && isSensitiveWords(words, words.length - 1);
+        String compactName = compactKeyName(fieldName);
+        if (!compactName.endsWith(MASKED_KEY_SUFFIX)) {
+            return false;
+        }
+        String baseName = compactName.substring(0, compactName.length() - MASKED_KEY_SUFFIX.length());
+        return isSensitiveCompactKey(baseName);
     }
 
     /**
@@ -354,8 +355,7 @@ public class UserConfigServiceImpl implements UserConfigService {
      * @return 是否允许
      */
     private boolean isAllowedNumericKey(String fieldName) {
-        String[] words = keyWords(fieldName);
-        return ALLOWED_NUMERIC_KEY_NAMES.contains(normalizedKey(words, words.length));
+        return ALLOWED_NUMERIC_KEY_NAMES.contains(compactKeyName(fieldName));
     }
 
     /**
@@ -369,57 +369,36 @@ public class UserConfigServiceImpl implements UserConfigService {
     }
 
     /**
-     * 将字段名拆分为小写语义单词。
+     * 将字段名规范为仅含小写字母和数字的紧凑形式。
      *
      * @param fieldName 字段名
-     * @return 字段名单词
+     * @return 紧凑字段名
      */
-    private String[] keyWords(String fieldName) {
-        String separated = fieldName
-                .replaceAll("([a-z0-9])([A-Z])", "$1 $2")
-                .replaceAll("[^A-Za-z0-9]+", " ")
-                .trim()
+    private String compactKeyName(String fieldName) {
+        return fieldName
+                .replaceAll("[^A-Za-z0-9]+", "")
                 .toLowerCase(Locale.ROOT);
-        if (separated.isEmpty()) {
-            return new String[0];
-        }
-        return separated.split(" +");
     }
 
     /**
-     * 判断指定长度的字段名单词是否表达敏感凭据。
+     * 判断紧凑字段名是否表达敏感凭据。
      *
-     * @param words 字段名单词
-     * @param length 参与判断的单词数量
+     * @param compactName 紧凑字段名
      * @return 是否敏感
      */
-    private boolean isSensitiveWords(String[] words, int length) {
-        String normalized = normalizedKey(words, length);
-        if (SENSITIVE_KEY_NAMES.contains(normalized)) {
+    private boolean isSensitiveCompactKey(String compactName) {
+        if (compactName.isEmpty() || ALLOWED_NUMERIC_KEY_NAMES.contains(compactName)) {
+            return false;
+        }
+        if (SENSITIVE_KEY_NAMES.contains(compactName)) {
             return true;
         }
-        for (int index = 0; index < length; index++) {
-            if (SENSITIVE_KEY_WORDS.contains(words[index])) {
-                return true;
-            }
-            if (index + 1 < length
-                    && KEY_WORDS.contains(words[index + 1])
-                    && KEY_QUALIFIER_WORDS.contains(words[index])) {
+        for (String fragment : SENSITIVE_KEY_FRAGMENTS) {
+            if (compactName.contains(fragment)) {
                 return true;
             }
         }
         return false;
-    }
-
-    /**
-     * 合并指定长度的字段名单词。
-     *
-     * @param words 字段名单词
-     * @param length 合并数量
-     * @return 规范化字段名
-     */
-    private String normalizedKey(String[] words, int length) {
-        return String.join("", Arrays.copyOf(words, length));
     }
 
     /**

@@ -225,6 +225,10 @@ class UserConfigServiceImplTest {
     void rejectsInvalidMaskedSecretSummaries() throws Exception {
         List<String> invalidConfigs = List.of(
                 "{\"apiKeyMasked\":\"sk-live-secret\"}",
+                "{\"apikeymasked\":\"sk-live-secret\"}",
+                "{\"apiKeymasked\":\"sk-live-secret\"}",
+                "{\"APIKEYMASKED\":\"sk-live-secret\"}",
+                "{\"tokenmasked\":\"plain-token\"}",
                 "{\"accessKeyMasked\":\"plain\"}",
                 "{\"privateKeyMasked\":{\"value\":\"****\"}}",
                 "{\"tokenMasked\":[\"****\"]}");
@@ -272,10 +276,14 @@ class UserConfigServiceImplTest {
         var model = service.updateConfig(
                 "model.active",
                 new UpdateUserConfigRequest(0, objectMapper.readTree("{\"apiKeyMasked\":\"sk-****\"}")));
+        var compactMasked = service.updateConfig(
+                "model.active",
+                new UpdateUserConfigRequest(0, objectMapper.readTree("{\"apikeymasked\":\"sk-****\"}")));
 
         assertThat(writing.version()).isEqualTo(1);
         assertThat(model.version()).isEqualTo(1);
-        verify(configMapper, times(2)).insert(any(UserConfigEntity.class));
+        assertThat(compactMasked.version()).isEqualTo(1);
+        verify(configMapper, times(3)).insert(any(UserConfigEntity.class));
     }
 
     /**
@@ -288,6 +296,10 @@ class UserConfigServiceImplTest {
                 "model.active",
                 "{\"provider\":\"local\",\"maxTokens\":4096,"
                         + "\"apiKeyMasked\":\"sk-****\","
+                        + "\"apikeymasked\":\"sk-live-secret\","
+                        + "\"apiKeymasked\":\"sk-live-secret\","
+                        + "\"APIKEYMASKED\":\"sk-live-secret\","
+                        + "\"tokenmasked\":\"plain-token\","
                         + "\"providers\":[{\"accessKey\":\"legacy-access\","
                         + "\"accessKeyMasked\":\"legacy-access-masked\","
                         + "\"privateKeyMasked\":{\"value\":\"****\"},"
@@ -306,6 +318,10 @@ class UserConfigServiceImplTest {
         assertThat(result.configValue().has("provider")).isTrue();
         assertThat(result.configValue().get("maxTokens").asInt()).isEqualTo(4096);
         assertThat(result.configValue().get("apiKeyMasked").asText()).isEqualTo("sk-****");
+        assertThat(result.configValue().has("apikeymasked")).isFalse();
+        assertThat(result.configValue().has("apiKeymasked")).isFalse();
+        assertThat(result.configValue().has("APIKEYMASKED")).isFalse();
+        assertThat(result.configValue().has("tokenmasked")).isFalse();
         assertThat(result.configValue().toString()).doesNotContain("legacy-");
         assertThat(result.configValue().get("providers").get(0).isEmpty()).isTrue();
     }
