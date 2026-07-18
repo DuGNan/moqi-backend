@@ -79,6 +79,18 @@ public class BusinessException extends RuntimeException {
     }
 
     /**
+     * 使用指定错误码和原始异常创建业务异常。
+     *
+     * @param errorCode 统一错误码
+     * @param message 异常消息
+     * @param cause 原始异常
+     */
+    public BusinessException(ErrorCode errorCode, String message, Throwable cause) {
+        super(message, cause);
+        this.errorCode = errorCode;
+    }
+
+    /**
      * 获取统一错误码。
      *
      * @return 统一错误码

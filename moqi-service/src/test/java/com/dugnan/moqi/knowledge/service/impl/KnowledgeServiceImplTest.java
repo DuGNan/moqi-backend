@@ -3,13 +3,24 @@ package com.dugnan.moqi.knowledge.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,8 +31,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.knowledge.dto.KnowledgeModels.ConfirmSettingRequest;
+import com.dugnan.moqi.knowledge.dto.KnowledgeModels.ConfirmSettingResult;
 import com.dugnan.moqi.knowledge.dto.KnowledgeModels.CreateForeshadowingRequest;
 import com.dugnan.moqi.knowledge.dto.KnowledgeModels.IgnoreSettingRequest;
+import com.dugnan.moqi.knowledge.dto.KnowledgeModels.IgnoreSettingResult;
 import com.dugnan.moqi.knowledge.entity.ChapterKeyEventEntity;
 import com.dugnan.moqi.knowledge.entity.ChapterSummaryEntity;
 import com.dugnan.moqi.knowledge.entity.ForeshadowingItemEntity;
@@ -121,6 +134,8 @@ class KnowledgeServiceImplTest {
             setting.setId(301L);
             return 1;
         });
+        when(candidateMapper.update(isNull(), org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any()))
+                .thenReturn(1);
 
         var result = service.confirmSettingCandidate(
                 501L,
@@ -129,7 +144,9 @@ class KnowledgeServiceImplTest {
         assertThat(result.settingId()).isEqualTo(301L);
         assertThat(result.candidateStatus()).isEqualTo("confirmed");
         assertThat(candidate.getConfirmedSettingId()).isEqualTo(301L);
-        verify(candidateMapper).updateById(candidate);
+        verify(candidateMapper).update(
+                isNull(),
+                org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any());
     }
 
     /**
@@ -141,6 +158,10 @@ class KnowledgeServiceImplTest {
         SettingEntryEntity setting = setting(301L, 1L);
         when(candidateMapper.selectById(501L)).thenReturn(candidate);
         when(settingMapper.selectById(301L)).thenReturn(setting);
+        when(settingMapper.update(isNull(), org.mockito.ArgumentMatchers.<Wrapper<SettingEntryEntity>>any()))
+                .thenReturn(1);
+        when(candidateMapper.update(isNull(), org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any()))
+                .thenReturn(1);
 
         var result = service.confirmSettingCandidate(
                 501L,
@@ -148,8 +169,117 @@ class KnowledgeServiceImplTest {
 
         assertThat(result.settingId()).isEqualTo(301L);
         assertThat(setting.getContent()).isEqualTo("合并后的正文");
-        verify(settingMapper).updateById(setting);
-        verify(candidateMapper).updateById(candidate);
+        verify(settingMapper).update(isNull(), org.mockito.ArgumentMatchers.<Wrapper<SettingEntryEntity>>any());
+        verify(candidateMapper).update(
+                isNull(),
+                org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any());
+    }
+
+    /**
+     * 验证并发确认中只有条件更新成功的一方获胜，失败方必须抛错以回滚新建设定。
+     */
+    @Test
+    void rollsBackCreatedSettingWhenConcurrentConfirmWinsCandidate() throws Exception {
+        CyclicBarrier updateBarrier = new CyclicBarrier(2);
+        AtomicBoolean isConfirmed = new AtomicBoolean();
+        AtomicLong settingId = new AtomicLong(301L);
+        when(candidateMapper.selectById(501L)).thenAnswer(invocation -> {
+            SettingCandidateEntity candidate = candidate(501L, 1L, "pending");
+            candidate.setVersion(3);
+            return candidate;
+        });
+        when(settingMapper.insert(any(SettingEntryEntity.class))).thenAnswer(invocation -> {
+            SettingEntryEntity setting = invocation.getArgument(0);
+            setting.setId(settingId.getAndIncrement());
+            return 1;
+        });
+        when(candidateMapper.update(
+                isNull(),
+                org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any())).thenAnswer(invocation -> {
+            Wrapper<SettingCandidateEntity> update = invocation.getArgument(1);
+            assertThat(update.getSqlSegment()).contains("candidate_status", "version", "deleted");
+            updateBarrier.await(5, TimeUnit.SECONDS);
+            return isConfirmed.compareAndSet(false, true) ? 1 : 0;
+        });
+
+        List<Object> outcomes = runConcurrently(
+                () -> service.confirmSettingCandidate(
+                        501L,
+                        new ConfirmSettingRequest("character", "林风", "并发确认正文一", null)),
+                () -> service.confirmSettingCandidate(
+                        501L,
+                        new ConfirmSettingRequest("character", "林风", "并发确认正文二", null)));
+
+        assertThat(outcomes).filteredOn(ConfirmSettingResult.class::isInstance).hasSize(1);
+        assertThat(outcomes).filteredOn(BusinessException.class::isInstance).hasSize(1);
+        verify(settingMapper, times(2)).insert(any(SettingEntryEntity.class));
+    }
+
+    /**
+     * 验证确认合并正式设定时必须同时检查正式设定的版本和软删除条件。
+     */
+    @Test
+    void rejectsMergeWhenSettingVersionRaceIsLost() {
+        SettingCandidateEntity candidate = candidate(501L, 1L, "pending");
+        candidate.setVersion(2);
+        SettingEntryEntity setting = setting(301L, 1L);
+        setting.setVersion(4);
+        when(candidateMapper.selectById(501L)).thenReturn(candidate);
+        when(settingMapper.selectById(301L)).thenReturn(setting);
+        when(settingMapper.update(
+                isNull(),
+                org.mockito.ArgumentMatchers.<Wrapper<SettingEntryEntity>>any())).thenAnswer(invocation -> {
+            Wrapper<SettingEntryEntity> update = invocation.getArgument(1);
+            assertThat(update.getSqlSegment()).contains("version", "deleted");
+            return 0;
+        });
+
+        assertThatThrownBy(() -> service.confirmSettingCandidate(
+                501L,
+                new ConfirmSettingRequest("character", "林风", "并发合并正文", 301L)))
+                .isInstanceOf(BusinessException.class);
+        verify(candidateMapper, never()).update(
+                isNull(),
+                org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any());
+    }
+
+    /**
+     * 验证确认与忽略基于同一 pending 版本竞争时只有一次条件更新可以成功。
+     */
+    @Test
+    void allowsOnlyOneWinnerWhenConfirmAndIgnoreRace() throws Exception {
+        CyclicBarrier updateBarrier = new CyclicBarrier(2);
+        AtomicBoolean hasWinner = new AtomicBoolean();
+        when(candidateMapper.selectById(501L)).thenAnswer(invocation -> {
+            SettingCandidateEntity candidate = candidate(501L, 1L, "pending");
+            candidate.setVersion(5);
+            return candidate;
+        });
+        when(candidateMapper.update(
+                isNull(),
+                org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any())).thenAnswer(invocation -> {
+            updateBarrier.await(5, TimeUnit.SECONDS);
+            return hasWinner.compareAndSet(false, true) ? 1 : 0;
+        });
+        when(settingMapper.insert(any(SettingEntryEntity.class))).thenAnswer(invocation -> {
+            SettingEntryEntity setting = invocation.getArgument(0);
+            setting.setId(303L);
+            return 1;
+        });
+
+        List<Object> outcomes = runConcurrently(
+                () -> service.ignoreSettingCandidate(501L, new IgnoreSettingRequest("并发忽略")),
+                () -> service.confirmSettingCandidate(
+                        501L,
+                        new ConfirmSettingRequest("character", "林风", "并发确认正文", null)));
+
+        assertThat(outcomes.stream()
+                .filter(result -> result instanceof ConfirmSettingResult || result instanceof IgnoreSettingResult)
+                .count()).isEqualTo(1);
+        assertThat(outcomes).filteredOn(BusinessException.class::isInstance).hasSize(1);
+        verify(candidateMapper, times(2)).update(
+                isNull(),
+                org.mockito.ArgumentMatchers.<Wrapper<SettingCandidateEntity>>any());
     }
 
     /**
@@ -398,5 +528,40 @@ class KnowledgeServiceImplTest {
         setting.setEntryStatus("active");
         setting.setDeleted(0);
         return setting;
+    }
+
+    /**
+     * 并发执行两个候选操作并收集成功值或运行时异常。
+     *
+     * @param first 第一个操作
+     * @param second 第二个操作
+     * @return 两个操作结果
+     * @throws Exception 等待并发任务失败
+     */
+    private List<Object> runConcurrently(Supplier<?> first, Supplier<?> second) throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            CompletableFuture<Object> firstResult = CompletableFuture.supplyAsync(() -> outcome(first), executor);
+            CompletableFuture<Object> secondResult = CompletableFuture.supplyAsync(() -> outcome(second), executor);
+            return List.of(
+                    firstResult.get(10, TimeUnit.SECONDS),
+                    secondResult.get(10, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    /**
+     * 将运行时异常转换为可断言的并发结果。
+     *
+     * @param action 待执行操作
+     * @return 成功值或运行时异常
+     */
+    private Object outcome(Supplier<?> action) {
+        try {
+            return action.get();
+        } catch (RuntimeException exception) {
+            return exception;
+        }
     }
 }

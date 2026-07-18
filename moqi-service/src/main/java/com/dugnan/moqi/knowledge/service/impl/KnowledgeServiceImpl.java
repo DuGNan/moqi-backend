@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -161,15 +162,20 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         setting.setContent(content);
         setting.setEntryStatus(STATUS_ACTIVE);
         if (setting.getId() == null) {
-            settingMapper.insert(setting);
+            if (settingMapper.insert(setting) != 1) {
+                throw concurrentCandidateChange();
+            }
         } else {
-            settingMapper.updateById(setting);
+            updateMergedSetting(setting);
         }
 
+        LocalDateTime modifiedAt = updateCandidateStatus(
+                candidate,
+                STATUS_CONFIRMED,
+                setting.getId());
         candidate.setCandidateStatus(STATUS_CONFIRMED);
         candidate.setConfirmedSettingId(setting.getId());
-        candidate.setGmtModified(LocalDateTime.now());
-        candidateMapper.updateById(candidate);
+        candidate.setGmtModified(modifiedAt);
         return new ConfirmSettingResult(
                 candidate.getId(),
                 candidate.getCandidateStatus(),
@@ -187,9 +193,9 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         if (!STATUS_PENDING.equals(candidate.getCandidateStatus())) {
             throw badRequest("当前候选状态不允许忽略");
         }
+        LocalDateTime modifiedAt = updateCandidateStatus(candidate, STATUS_IGNORED, null);
         candidate.setCandidateStatus(STATUS_IGNORED);
-        candidate.setGmtModified(LocalDateTime.now());
-        candidateMapper.updateById(candidate);
+        candidate.setGmtModified(modifiedAt);
         return ignoreResult(candidate);
     }
 
@@ -329,6 +335,82 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         setting.setDeleted(0);
         setting.setVersion(0);
         return setting;
+    }
+
+    /**
+     * 按版本和软删除状态原子合并正式设定。
+     *
+     * @param setting 待读取版本对应的正式设定
+     */
+    private void updateMergedSetting(SettingEntryEntity setting) {
+        int currentVersion = version(setting.getVersion());
+        int nextVersion = currentVersion + 1;
+        LocalDateTime modifiedAt = LocalDateTime.now();
+        UpdateWrapper<SettingEntryEntity> update = new UpdateWrapper<SettingEntryEntity>()
+                .eq("id", setting.getId())
+                .eq("work_id", setting.getWorkId())
+                .eq("version", currentVersion)
+                .eq("deleted", 0)
+                .set("setting_type", setting.getSettingType())
+                .set("name", setting.getName())
+                .set("content", setting.getContent())
+                .set("entry_status", setting.getEntryStatus())
+                .set("version", nextVersion)
+                .set("gmt_modified", modifiedAt);
+        if (settingMapper.update(null, update) != 1) {
+            throw concurrentCandidateChange();
+        }
+        setting.setVersion(nextVersion);
+        setting.setGmtModified(modifiedAt);
+    }
+
+    /**
+     * 从 pending 状态按版本原子更新候选，避免确认与忽略相互覆盖。
+     *
+     * @param candidate 读取到的候选快照
+     * @param targetStatus 目标状态
+     * @param confirmedSettingId 确认后的正式设定 ID
+     * @return 更新时间
+     */
+    private LocalDateTime updateCandidateStatus(
+            SettingCandidateEntity candidate,
+            String targetStatus,
+            Long confirmedSettingId) {
+        int currentVersion = version(candidate.getVersion());
+        LocalDateTime modifiedAt = LocalDateTime.now();
+        UpdateWrapper<SettingCandidateEntity> update = new UpdateWrapper<SettingCandidateEntity>()
+                .eq("id", candidate.getId())
+                .eq("candidate_status", STATUS_PENDING)
+                .eq("version", currentVersion)
+                .eq("deleted", 0)
+                .set("candidate_status", targetStatus)
+                .set("confirmed_setting_id", confirmedSettingId)
+                .set("version", currentVersion + 1)
+                .set("gmt_modified", modifiedAt);
+        if (candidateMapper.update(null, update) != 1) {
+            throw concurrentCandidateChange();
+        }
+        candidate.setVersion(currentVersion + 1);
+        return modifiedAt;
+    }
+
+    /**
+     * 将空版本按数据库初始版本零处理。
+     *
+     * @param value 实体版本
+     * @return 非空版本
+     */
+    private int version(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    /**
+     * 创建候选并发状态变化异常，使当前事务回滚。
+     *
+     * @return 并发业务异常
+     */
+    private BusinessException concurrentCandidateChange() {
+        return new BusinessException("设定候选或正式设定已被更新，请刷新后重试");
     }
 
     /**

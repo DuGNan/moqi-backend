@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -165,12 +166,18 @@ public class UserConfigServiceImpl implements UserConfigService {
         entity.setConfigKey(key);
         entity.setConfigValue(write(configValue));
         entity.setDeleted(0);
-        entity.setVersion(0);
+        entity.setVersion(1);
         LocalDateTime createdAt = LocalDateTime.now();
         entity.setGmtCreate(createdAt);
         entity.setGmtModified(createdAt);
-        configMapper.insert(entity);
-        return new UserConfigSaved(entity.getId(), key, 0, createdAt);
+        try {
+            if (configMapper.insert(entity) != 1) {
+                throw versionConflict();
+            }
+        } catch (DuplicateKeyException exception) {
+            throw versionConflict(exception);
+        }
+        return new UserConfigSaved(entity.getId(), key, 1, createdAt);
     }
 
     /**
@@ -337,5 +344,18 @@ public class UserConfigServiceImpl implements UserConfigService {
      */
     private BusinessException versionConflict() {
         return new BusinessException(ErrorCode.CONFIG_VERSION_CONFLICT, "配置已被更新，请刷新后重试");
+    }
+
+    /**
+     * 创建保留数据库竞争原因的配置版本冲突异常。
+     *
+     * @param cause 唯一键竞争异常
+     * @return 版本冲突异常
+     */
+    private BusinessException versionConflict(Throwable cause) {
+        return new BusinessException(
+                ErrorCode.CONFIG_VERSION_CONFLICT,
+                "配置已被更新，请刷新后重试",
+                cause);
     }
 }

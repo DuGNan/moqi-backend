@@ -4,10 +4,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,10 +23,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
 
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.dto.UserConfigModels.UpdateUserConfigRequest;
+import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigSaved;
 import com.dugnan.moqi.config.entity.UserConfigEntity;
 import com.dugnan.moqi.config.mapper.UserConfigMapper;
 
@@ -78,7 +88,7 @@ class UserConfigServiceImplTest {
      * @throws Exception 测试 JSON 解析失败
      */
     @Test
-    void createsMissingConfigAtVersionZero() throws Exception {
+    void createsMissingConfigAtVersionOne() throws Exception {
         when(configMapper.selectList(any())).thenReturn(List.of());
         when(configMapper.insert(any(UserConfigEntity.class))).thenAnswer(invocation -> {
             UserConfigEntity entity = invocation.getArgument(0);
@@ -91,9 +101,50 @@ class UserConfigServiceImplTest {
                 new UpdateUserConfigRequest(0, objectMapper.readTree("{\"theme\":\"light\"}")));
 
         assertThat(result.id()).isEqualTo(601L);
-        assertThat(result.version()).isZero();
+        assertThat(result.version()).isEqualTo(1);
         assertThat(result.gmtModified()).isNotNull();
-        verify(configMapper).insert(any(UserConfigEntity.class));
+        verify(configMapper).insert(org.mockito.ArgumentMatchers.<UserConfigEntity>argThat(
+                entity -> entity.getVersion() == 1));
+    }
+
+    /**
+     * 验证两个客户端都基于缺失态版本零创建时，唯一键竞争的失败方返回版本冲突。
+     *
+     * @throws Exception 测试 JSON 解析失败
+     */
+    @Test
+    void rejectsSecondMissingConfigCreateWhenUniqueKeyRaceIsLost() throws Exception {
+        CyclicBarrier insertBarrier = new CyclicBarrier(2);
+        AtomicBoolean isCreated = new AtomicBoolean();
+        when(configMapper.selectList(any())).thenReturn(List.of());
+        when(configMapper.insert(any(UserConfigEntity.class))).thenAnswer(invocation -> {
+            UserConfigEntity entity = invocation.getArgument(0);
+            insertBarrier.await(5, TimeUnit.SECONDS);
+            if (isCreated.compareAndSet(false, true)) {
+                entity.setId(601L);
+                return 1;
+            }
+            throw new DuplicateKeyException("duplicate user config");
+        });
+
+        List<Object> outcomes = runConcurrently(
+                () -> service.updateConfig(
+                        "sync.preferences",
+                        new UpdateUserConfigRequest(0, objectMapper.createObjectNode().put("enabled", true))),
+                () -> service.updateConfig(
+                        "sync.preferences",
+                        new UpdateUserConfigRequest(0, objectMapper.createObjectNode().put("enabled", false))));
+
+        assertThat(outcomes).filteredOn(UserConfigSaved.class::isInstance)
+                .singleElement()
+                .extracting(result -> ((UserConfigSaved) result).version())
+                .isEqualTo(1);
+        assertThat(outcomes).filteredOn(BusinessException.class::isInstance)
+                .singleElement()
+                .satisfies(result -> assertThat((BusinessException) result)
+                        .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CONFIG_VERSION_CONFLICT)
+                        .hasCauseInstanceOf(DuplicateKeyException.class));
+        verify(configMapper, times(2)).insert(any(UserConfigEntity.class));
     }
 
     /**
@@ -227,5 +278,40 @@ class UserConfigServiceImplTest {
         config.setVersion(version);
         config.setDeleted(0);
         return config;
+    }
+
+    /**
+     * 并发执行两个请求并收集成功值或运行时异常。
+     *
+     * @param first 第一个请求
+     * @param second 第二个请求
+     * @return 两个请求结果
+     * @throws Exception 等待并发任务失败
+     */
+    private List<Object> runConcurrently(Supplier<?> first, Supplier<?> second) throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            CompletableFuture<Object> firstResult = CompletableFuture.supplyAsync(() -> outcome(first), executor);
+            CompletableFuture<Object> secondResult = CompletableFuture.supplyAsync(() -> outcome(second), executor);
+            return List.of(
+                    firstResult.get(10, TimeUnit.SECONDS),
+                    secondResult.get(10, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    /**
+     * 将运行时异常转换为可断言的并发结果。
+     *
+     * @param action 待执行请求
+     * @return 成功值或运行时异常
+     */
+    private Object outcome(Supplier<?> action) {
+        try {
+            return action.get();
+        } catch (RuntimeException exception) {
+            return exception;
+        }
     }
 }
