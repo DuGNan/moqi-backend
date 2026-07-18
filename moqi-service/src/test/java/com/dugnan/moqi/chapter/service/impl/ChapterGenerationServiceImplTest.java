@@ -268,6 +268,8 @@ class ChapterGenerationServiceImplTest {
         String sql = String.join(" ", select.value()).replaceAll("\\s+", " ").trim();
 
         assertThat(sql)
+                .contains("brief_status")
+                .doesNotContain("brief_type")
                 .contains("ORDER BY gmt_modified DESC, id DESC")
                 .contains("LIMIT 1");
     }

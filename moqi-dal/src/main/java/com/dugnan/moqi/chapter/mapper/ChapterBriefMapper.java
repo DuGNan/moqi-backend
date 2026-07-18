@@ -23,7 +23,7 @@ public interface ChapterBriefMapper extends BaseMapper<ChapterBriefEntity> {
             SELECT id,
                    work_id,
                    chapter_id,
-                   brief_type,
+                   brief_status,
                    brief_content,
                    gmt_modified
             FROM chapter_briefs
