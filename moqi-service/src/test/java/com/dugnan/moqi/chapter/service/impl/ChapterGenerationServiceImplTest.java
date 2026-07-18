@@ -15,13 +15,19 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.json.JsonParseException;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.CreateGenerationRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.AcceptGenerationRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RegenerateRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RejectGenerationRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
+import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.generator.ChapterContentGenerator;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
@@ -103,6 +109,13 @@ class ChapterGenerationServiceImplTest {
         outline.setDeleted(0);
         when(outlineMapper.findLatest(12L)).thenReturn(outline);
 
+        ChapterBriefEntity brief = new ChapterBriefEntity();
+        brief.setId(501L);
+        brief.setChapterId(12L);
+        brief.setBriefContent("姚宁第一次改写自己的判断");
+        brief.setDeleted(0);
+        when(briefMapper.findLatestByChapterId(12L)).thenReturn(brief);
+
         when(aiTaskMapper.insert(any(AiTaskEntity.class))).thenAnswer(invocation -> {
             AiTaskEntity task = invocation.getArgument(0);
             task.setId(9003L);
@@ -115,6 +128,7 @@ class ChapterGenerationServiceImplTest {
             assertThat(generation.getGenerationMode()).isEqualTo("full_draft");
             assertThat(generation.getLengthPreset()).isEqualTo("about_3000");
             assertThat(generation.getBasisSnapshotJson()).contains("隐藏房间回应林风");
+            assertThat(generation.getBasisSnapshotJson()).contains("姚宁第一次改写自己的判断");
             assertThat(generation.getBasisSnapshotJson()).contains("房间\\t终于回答了");
             assertThat(generation.getGenerationStatus()).isEqualTo("draft");
             assertThat(generation.getAiTaskId()).isEqualTo(9003L);
@@ -141,6 +155,7 @@ class ChapterGenerationServiceImplTest {
         verify(aiTaskMapper).updateById(org.mockito.ArgumentMatchers.<AiTaskEntity>argThat(task ->
                 "succeeded".equals(task.getTaskStatus())
                         && Long.valueOf(7001L).equals(task.getResultGenerationId())));
+        verify(briefMapper).findLatestByChapterId(12L);
     }
 
     /**
@@ -206,6 +221,55 @@ class ChapterGenerationServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.GENERATION_NOT_FOUND);
+    }
+
+    /**
+     * 验证损坏的生成依据不会泄露创作内容，并保留原始 cause 和单条脱敏日志。
+     */
+    @Test
+    void protectsInvalidGenerationBasisContent() {
+        String sensitiveBasis = "{\"chapterTitle\":\"未闭合的完整创作内容：林风推开门";
+        ChapterGenerationEntity generation = generation(7001L, "preview", "预览正文");
+        generation.setBasisSnapshotJson(sensitiveBasis);
+        when(generationMapper.selectById(7001L)).thenReturn(generation);
+        Logger logger = (Logger) LoggerFactory.getLogger(ChapterGenerationServiceImpl.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            assertThatThrownBy(() -> service.getGeneration(7001L))
+                    .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                        assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.INTERNAL_ERROR);
+                        assertThat(exception.getData()).isEmpty();
+                        assertThat(exception.getCause()).isInstanceOf(JsonParseException.class);
+                    });
+            assertThat(appender.list).singleElement().satisfies(event -> {
+                assertThat(event.getFormattedMessage()).contains("generationId=7001");
+                assertThat(event.getFormattedMessage()).doesNotContain(sensitiveBasis, "林风推开门");
+                assertThat(event.getThrowableProxy()).isNull();
+            });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    /**
+     * 验证最新 brief 在数据库侧排序限一。
+     *
+     * @throws NoSuchMethodException Mapper 查询方法不存在
+     */
+    @Test
+    void latestBriefQuerySortsAndLimitsAtDatabase() throws NoSuchMethodException {
+        Select select = ChapterBriefMapper.class
+                .getMethod("findLatestByChapterId", Long.class)
+                .getAnnotation(Select.class);
+        String sql = String.join(" ", select.value()).replaceAll("\\s+", " ").trim();
+
+        assertThat(sql)
+                .contains("ORDER BY gmt_modified DESC, id DESC")
+                .contains("LIMIT 1");
     }
 
     /**

@@ -44,7 +44,34 @@ public class BusinessException extends RuntimeException {
      * @param data 错误附加数据
      */
     public BusinessException(ErrorCode errorCode, String message, Map<String, Object> data) {
-        super(message);
+        this(errorCode, message, data, null);
+    }
+
+    /**
+     * 使用指定错误码和原始 cause 创建异常。
+     *
+     * @param errorCode 统一错误码
+     * @param message 异常消息
+     * @param cause 原始异常
+     */
+    public BusinessException(ErrorCode errorCode, String message, Throwable cause) {
+        this(errorCode, message, Map.of(), cause);
+    }
+
+    /**
+     * 使用指定错误码、附加数据和原始 cause 创建异常。
+     *
+     * @param errorCode 统一错误码
+     * @param message 异常消息
+     * @param data 错误附加数据
+     * @param cause 原始异常
+     */
+    public BusinessException(
+            ErrorCode errorCode,
+            String message,
+            Map<String, Object> data,
+            Throwable cause) {
+        super(message, cause);
         this.errorCode = errorCode;
         this.data = data == null
                 ? Map.of()

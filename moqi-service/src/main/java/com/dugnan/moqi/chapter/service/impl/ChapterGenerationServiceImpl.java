@@ -1,11 +1,11 @@
 package com.dugnan.moqi.chapter.service.impl;
 
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.json.JsonParserFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,6 +49,7 @@ import com.dugnan.moqi.work.mapper.WorkMapper;
 @Service
 public class ChapterGenerationServiceImpl implements ChapterGenerationService {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(ChapterGenerationServiceImpl.class);
     private static final String STATUS_DRAFT = "draft";
     private static final String STATUS_PREVIEW = "preview";
     private static final String STATUS_ACCEPTED = "accepted";
@@ -225,7 +226,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         }
         ChapterEntity chapter = requireChapter(original.getChapterId());
         WorkEntity work = requireWork(chapter.getWorkId());
-        Map<String, Object> originalBasis = parseSnapshot(original.getBasisSnapshotJson());
+        Map<String, Object> originalBasis = parseSnapshot(original.getId(), original.getBasisSnapshotJson());
         String snapshotChapterTitle = snapshotText(
                 originalBasis.get("chapterTitle"),
                 chapter.getTitle());
@@ -359,13 +360,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     }
 
     private ChapterBriefEntity latestBrief(Long chapterId) {
-        List<ChapterBriefEntity> briefs = briefMapper.selectList(
-                new LambdaQueryWrapper<ChapterBriefEntity>()
-                        .eq(ChapterBriefEntity::getChapterId, chapterId)
-                        .eq(ChapterBriefEntity::getDeleted, 0)
-                        .orderByDesc(ChapterBriefEntity::getGmtModified)
-                        .orderByDesc(ChapterBriefEntity::getId));
-        return briefs.stream().findFirst().orElse(null);
+        return briefMapper.findLatestByChapterId(chapterId);
     }
 
     private ChapterEntity requireChapter(Long chapterId) {
@@ -466,17 +461,18 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 + ",\"feedback\":\"" + json(feedback) + "\"}";
     }
 
-    private Map<String, Object> parseSnapshot(String value) {
+    private Map<String, Object> parseSnapshot(Long generationId, String value) {
         if (!StringUtils.hasText(value)) {
             return Map.of();
         }
         try {
             return JsonParserFactory.getJsonParser().parseMap(value);
         } catch (IllegalArgumentException exception) {
+            LOGGER.error("生成依据快照解析失败，generationId={}", generationId);
             throw new BusinessException(
                     ErrorCode.INTERNAL_ERROR,
                     "生成依据快照无法读取",
-                    Map.of("generationBasis", value));
+                    exception);
         }
     }
 
@@ -491,7 +487,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 generation.getGenerationMode(),
                 generation.getLengthPreset(),
                 generation.getCustomWordCount(),
-                parseSnapshot(generation.getBasisSnapshotJson()),
+                parseSnapshot(generation.getId(), generation.getBasisSnapshotJson()),
                 generation.getGeneratedContent(),
                 generation.getWordCount(),
                 generation.getAiTaskId(),
