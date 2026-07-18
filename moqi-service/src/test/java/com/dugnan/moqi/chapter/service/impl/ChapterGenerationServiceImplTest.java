@@ -8,8 +8,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.LocalDateTime;
-import java.util.List;
 
+import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -119,10 +119,12 @@ class ChapterGenerationServiceImplTest {
             assertThat(generation.getGenerationStatus()).isEqualTo("draft");
             assertThat(generation.getAiTaskId()).isEqualTo(9003L);
             generation.setId(7001L);
-            generation.setGmtCreate(LocalDateTime.of(2026, 7, 18, 20, 0));
             return 1;
         });
         when(contentGenerator.generate(any())).thenReturn("怀表冷下去以后，楼里的风声反而更清楚了。");
+        ChapterGenerationEntity persisted = generation(7001L, "preview", "怀表冷下去以后，楼里的风声反而更清楚了。");
+        persisted.setGmtCreate(LocalDateTime.of(2026, 7, 18, 20, 0));
+        when(generationMapper.selectById(7001L)).thenReturn(persisted);
 
         var result = service.createGeneration(
                 12L,
@@ -131,6 +133,7 @@ class ChapterGenerationServiceImplTest {
         assertThat(result.generationId()).isEqualTo(7001L);
         assertThat(result.aiTaskId()).isEqualTo(9003L);
         assertThat(result.generationStatus()).isEqualTo("draft");
+        assertThat(result.gmtCreate()).isEqualTo(LocalDateTime.of(2026, 7, 18, 20, 0));
         verify(generationMapper).updateById(org.mockito.ArgumentMatchers.<ChapterGenerationEntity>argThat(generation ->
                 "preview".equals(generation.getGenerationStatus())
                         && "怀表冷下去以后，楼里的风声反而更清楚了。".equals(generation.getGeneratedContent())
@@ -211,13 +214,32 @@ class ChapterGenerationServiceImplTest {
     @Test
     void returnsEmptyLatestPreview() {
         when(chapterMapper.selectById(12L)).thenReturn(chapter(12L, "", 3));
-        when(generationMapper.selectList(any())).thenReturn(List.of());
+        when(generationMapper.findLatestPreview(12L)).thenReturn(null);
 
         var preview = service.getLatestPreview(12L);
 
         assertThat(preview.generationId()).isNull();
         assertThat(preview.chapterId()).isEqualTo(12L);
         assertThat(preview.generationStatus()).isNull();
+        verify(generationMapper).findLatestPreview(12L);
+    }
+
+    /**
+     * 验证最近预览在数据库侧排序限一，并避免读取正文长字段。
+     *
+     * @throws NoSuchMethodException Mapper 查询方法不存在
+     */
+    @Test
+    void latestPreviewQuerySortsAndLimitsAtDatabase() throws NoSuchMethodException {
+        Select select = ChapterGenerationMapper.class
+                .getMethod("findLatestPreview", Long.class)
+                .getAnnotation(Select.class);
+        String sql = String.join(" ", select.value()).replaceAll("\\s+", " ").trim();
+
+        assertThat(sql)
+                .contains("ORDER BY gmt_create DESC, id DESC")
+                .contains("LIMIT 1")
+                .doesNotContain("generated_content", "basis_snapshot_json");
     }
 
     /**
@@ -337,8 +359,9 @@ class ChapterGenerationServiceImplTest {
     @Test
     void regeneratesFromOriginalBasisWithFeedback() {
         ChapterGenerationEntity original = generation(7001L, "preview", "预览正文");
-        when(generationMapper.selectById(7001L)).thenReturn(original);
-        when(chapterMapper.selectById(12L)).thenReturn(chapter(12L, "", 3));
+        ChapterEntity renamedChapter = chapter(12L, "", 3);
+        renamedChapter.setTitle("改名后的章节");
+        when(chapterMapper.selectById(12L)).thenReturn(renamedChapter);
         when(workMapper.selectById(1L)).thenReturn(work());
         when(aiTaskMapper.insert(any(AiTaskEntity.class))).thenAnswer(invocation -> {
             AiTaskEntity task = invocation.getArgument(0);
@@ -351,6 +374,10 @@ class ChapterGenerationServiceImplTest {
             return 1;
         });
         when(contentGenerator.generate(any())).thenReturn("更克制的重写稿");
+        ChapterGenerationEntity persisted = generation(7002L, "preview", "更克制的重写稿");
+        persisted.setGmtCreate(LocalDateTime.of(2026, 7, 18, 21, 0));
+        when(generationMapper.selectById(7001L)).thenReturn(original);
+        when(generationMapper.selectById(7002L)).thenReturn(persisted);
 
         var result = service.regenerate(
                 7001L,
@@ -358,12 +385,16 @@ class ChapterGenerationServiceImplTest {
 
         assertThat(result.generationId()).isEqualTo(7002L);
         assertThat(result.generationStatus()).isEqualTo("draft");
+        assertThat(result.gmtCreate()).isEqualTo(LocalDateTime.of(2026, 7, 18, 21, 0));
         verify(contentGenerator).generate(org.mockito.ArgumentMatchers.argThat(input ->
                 "让姚宁的反应更克制".equals(input.feedback())
+                        && "房间终于回答了".equals(input.chapterTitle())
                         && input.outlineContent().contains("隐藏房间回应林风")));
         verify(generationMapper).insert(org.mockito.ArgumentMatchers.<ChapterGenerationEntity>argThat(generation ->
                 generation.getOutlineId().equals(1201L)
                         && generation.getOutlineRevision().equals(4)
+                        && generation.getBasisSnapshotJson().contains("房间终于回答了")
+                        && !generation.getBasisSnapshotJson().contains("改名后的章节")
                         && generation.getBasisSnapshotJson().contains("让姚宁的反应更克制")));
     }
 

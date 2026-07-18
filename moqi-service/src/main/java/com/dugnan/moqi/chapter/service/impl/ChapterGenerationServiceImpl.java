@@ -144,14 +144,15 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 options.customWordCount(),
                 null));
         completeGeneration(generation, task, generatedContent);
+        ChapterGenerationEntity persisted = requireGeneration(generation.getId());
 
         return new GenerationCreated(
-                generation.getId(),
+                persisted.getId(),
                 task.getId(),
                 chapter.getWorkId(),
                 chapterId,
                 STATUS_DRAFT,
-                generation.getGmtCreate());
+                persisted.getGmtCreate());
     }
 
     @Override
@@ -162,16 +163,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     @Override
     public LatestPreview getLatestPreview(Long chapterId) {
         requireChapter(chapterId);
-        ChapterGenerationEntity preview = generationMapper.selectList(
-                        new LambdaQueryWrapper<ChapterGenerationEntity>()
-                                .eq(ChapterGenerationEntity::getChapterId, chapterId)
-                                .eq(ChapterGenerationEntity::getGenerationStatus, STATUS_PREVIEW)
-                                .eq(ChapterGenerationEntity::getDeleted, 0)
-                                .orderByDesc(ChapterGenerationEntity::getGmtCreate)
-                                .orderByDesc(ChapterGenerationEntity::getId))
-                .stream()
-                .findFirst()
-                .orElse(null);
+        ChapterGenerationEntity preview = generationMapper.findLatestPreview(chapterId);
         if (preview == null) {
             return new LatestPreview(null, chapterId, null, null, null, null);
         }
@@ -234,6 +226,9 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         ChapterEntity chapter = requireChapter(original.getChapterId());
         WorkEntity work = requireWork(chapter.getWorkId());
         Map<String, Object> originalBasis = parseSnapshot(original.getBasisSnapshotJson());
+        String snapshotChapterTitle = snapshotText(
+                originalBasis.get("chapterTitle"),
+                chapter.getTitle());
         String feedback = optionalText(request == null ? null : request.feedback());
         GenerationOptions options = options(
                 request == null ? null : request.generationMode(),
@@ -253,7 +248,11 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         generation.setGenerationMode(options.generationMode());
         generation.setLengthPreset(options.lengthPreset());
         generation.setCustomWordCount(options.customWordCount());
-        generation.setBasisSnapshotJson(regeneratedSnapshot(originalBasis, options, feedback));
+        generation.setBasisSnapshotJson(regeneratedSnapshot(
+                originalBasis,
+                snapshotChapterTitle,
+                options,
+                feedback));
         generation.setWordCount(0);
         generation.setAiTaskId(task.getId());
         generation.setDeleted(0);
@@ -264,7 +263,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         String briefContent = String.valueOf(originalBasis.getOrDefault("briefContent", ""));
         String generatedContent = contentGenerator.generate(new GenerationInput(
                 work.getTitle(),
-                chapter.getTitle(),
+                snapshotChapterTitle,
                 briefContent,
                 outlineContent,
                 options.generationMode(),
@@ -272,13 +271,14 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 options.customWordCount(),
                 feedback));
         completeGeneration(generation, task, generatedContent);
+        ChapterGenerationEntity persisted = requireGeneration(generation.getId());
         return new GenerationCreated(
-                generation.getId(),
+                persisted.getId(),
                 task.getId(),
                 generation.getWorkId(),
                 generation.getChapterId(),
                 STATUS_DRAFT,
-                generation.getGmtCreate());
+                persisted.getGmtCreate());
     }
 
     @Override
@@ -452,11 +452,12 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
 
     private String regeneratedSnapshot(
             Map<String, Object> originalBasis,
+            String chapterTitle,
             GenerationOptions options,
             String feedback) {
         return "{\"outlineId\":" + number(originalBasis.get("outlineId"))
                 + ",\"outlineRevision\":" + number(originalBasis.get("outlineRevision"))
-                + ",\"chapterTitle\":\"" + json(stringValue(originalBasis.get("chapterTitle")))
+                + ",\"chapterTitle\":\"" + json(chapterTitle)
                 + "\",\"briefContent\":\"" + json(stringValue(originalBasis.get("briefContent")))
                 + "\",\"outlineContent\":\"" + json(stringValue(originalBasis.get("outlineContent")))
                 + "\",\"generationMode\":\"" + json(options.generationMode())
@@ -571,6 +572,11 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
 
     private String stringValue(Object value) {
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private String snapshotText(Object value, String defaultValue) {
+        String snapshotValue = stringValue(value);
+        return StringUtils.hasText(snapshotValue) ? snapshotValue : defaultValue;
     }
 
     private String number(Object value) {
