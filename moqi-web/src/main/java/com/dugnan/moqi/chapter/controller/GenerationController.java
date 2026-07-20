@@ -1,0 +1,92 @@
+package com.dugnan.moqi.chapter.controller;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.AcceptGenerationRequest;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationAccepted;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationCreated;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationDetail;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationRejected;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RegenerateRequest;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RejectGenerationRequest;
+import com.dugnan.moqi.chapter.service.ChapterGenerationService;
+import com.dugnan.moqi.common.api.ApiResponse;
+
+/**
+ * @author dgn
+ * @date 2026-07-18
+ * @description 提供生成资源查询及状态操作 HTTP 接口。
+ */
+@RestController
+@RequestMapping("/api/generations")
+public class GenerationController {
+
+    private final ChapterGenerationService chapterGenerationService;
+
+    /**
+     * 创建生成资源控制器。
+     *
+     * @param chapterGenerationService 章节生成服务
+     */
+    public GenerationController(ChapterGenerationService chapterGenerationService) {
+        this.chapterGenerationService = chapterGenerationService;
+    }
+
+    /**
+     * 查询生成详情。
+     *
+     * @param generationId 生成记录 ID
+     * @return 生成详情
+     */
+    @GetMapping("/{generationId}")
+    public ApiResponse<GenerationDetail> getGeneration(@PathVariable Long generationId) {
+        return ApiResponse.success(chapterGenerationService.getGeneration(generationId));
+    }
+
+    /**
+     * 采纳生成预览。
+     *
+     * @param generationId 生成记录 ID
+     * @param request 采纳请求
+     * @return 采纳结果
+     */
+    @PostMapping("/{generationId}/accept")
+    public ApiResponse<GenerationAccepted> acceptGeneration(
+            @PathVariable Long generationId,
+            @RequestBody AcceptGenerationRequest request) {
+        return ApiResponse.success(chapterGenerationService.acceptGeneration(generationId, request));
+    }
+
+    /**
+     * 拒绝生成预览。
+     *
+     * @param generationId 生成记录 ID
+     * @param request 拒绝请求
+     * @return 拒绝结果
+     */
+    @PostMapping("/{generationId}/reject")
+    public ApiResponse<GenerationRejected> rejectGeneration(
+            @PathVariable Long generationId,
+            @RequestBody RejectGenerationRequest request) {
+        return ApiResponse.success(chapterGenerationService.rejectGeneration(generationId, request));
+    }
+
+    /**
+     * 基于原有依据重新生成。
+     *
+     * @param generationId 原生成记录 ID
+     * @param request 重新生成请求
+     * @return 新生成记录
+     */
+    @PostMapping("/{generationId}/regenerate")
+    public ApiResponse<GenerationCreated> regenerate(
+            @PathVariable Long generationId,
+            @RequestBody RegenerateRequest request) {
+        return ApiResponse.success(chapterGenerationService.regenerate(generationId, request));
+    }
+}

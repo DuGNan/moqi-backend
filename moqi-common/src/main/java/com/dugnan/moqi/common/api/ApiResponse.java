@@ -2,6 +2,8 @@ package com.dugnan.moqi.common.api;
 
 import java.time.OffsetDateTime;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 /**
  * @author dgn
  * @date:2026-07-13
@@ -10,6 +12,7 @@ import java.time.OffsetDateTime;
 public record ApiResponse<T>(
         String code,
         String message,
+        @JsonInclude(JsonInclude.Include.ALWAYS)
         T data,
         OffsetDateTime timestamp) {
 

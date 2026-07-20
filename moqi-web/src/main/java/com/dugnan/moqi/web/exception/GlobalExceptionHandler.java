@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import com.dugnan.moqi.common.api.ApiResponse;
 import com.dugnan.moqi.common.api.ErrorCode;
@@ -37,12 +38,17 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Map<String, Object>>> handleBusinessException(BusinessException exception) {
         HttpStatus status = switch (exception.getErrorCode()) {
-            case WORK_NOT_FOUND, CHAPTER_NOT_FOUND, CONVERSATION_NOT_FOUND -> HttpStatus.NOT_FOUND;
-            case OUTLINE_REVISION_CONFLICT -> HttpStatus.CONFLICT;
+            case WORK_NOT_FOUND, CHAPTER_NOT_FOUND, CONVERSATION_NOT_FOUND,
+                    OUTLINE_NOT_FOUND, GENERATION_NOT_FOUND,
+                    SETTING_CANDIDATE_NOT_FOUND, SETTING_NOT_FOUND, AI_TASK_NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case OUTLINE_REVISION_CONFLICT, GENERATION_STATUS_CONFLICT,
+                    CHAPTER_VERSION_CONFLICT, CONFIG_VERSION_CONFLICT,
+                    SETTING_CANDIDATE_CONFLICT, AI_TASK_STATE_CONFLICT -> HttpStatus.CONFLICT;
+            case INTERNAL_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
             default -> HttpStatus.BAD_REQUEST;
         };
         ApiResponse<Map<String, Object>> response =
-                ApiResponse.failure(exception.getErrorCode(), exception.getMessage(), Map.of());
+                ApiResponse.failure(exception.getErrorCode(), exception.getMessage(), exception.getData());
         return ResponseEntity.status(status).body(response);
     }
 
@@ -70,6 +76,22 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Map<String, Object>> handleUnreadableMessage(HttpMessageNotReadableException exception) {
         return ApiResponse.failure(ErrorCode.BAD_REQUEST, "请求体不是有效 JSON", Map.of());
+    }
+
+    /**
+     * 处理请求参数类型转换失败。
+     *
+     * @param exception 参数类型转换异常
+     * @return 参数类型错误响应
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiResponse<Map<String, Object>> handleArgumentTypeMismatch(
+            MethodArgumentTypeMismatchException exception) {
+        return ApiResponse.failure(
+                ErrorCode.BAD_REQUEST,
+                "请求参数类型错误",
+                Map.of("parameter", exception.getName()));
     }
 
     /**
