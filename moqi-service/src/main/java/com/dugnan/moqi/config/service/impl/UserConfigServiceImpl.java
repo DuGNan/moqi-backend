@@ -107,11 +107,15 @@ public class UserConfigServiceImpl implements UserConfigService {
         String key = allowedKey(configKey);
         UserConfigEntity entity = findConfig(key);
         if (entity == null) {
+            ObjectNode emptyValue = objectMapper.createObjectNode();
+            if (MODEL_CONFIG_KEY.equals(key)) {
+                emptyValue.put("apiKeyConfigured", false);
+            }
             return new UserConfigDetail(
                     null,
                     LOCAL_USER,
                     key,
-                    objectMapper.createObjectNode(),
+                    emptyValue,
                     0,
                     null);
         }

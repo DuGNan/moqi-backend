@@ -85,6 +85,19 @@ class UserConfigServiceImplTest {
     }
 
     /**
+     * 验证模型配置缺失时也明确返回未配置 Key，且不伪造掩码。
+     */
+    @Test
+    void reportsApiKeyNotConfiguredWhenModelConfigIsMissing() {
+        when(configMapper.selectList(any())).thenReturn(List.of());
+
+        var result = service.getConfig("model.active");
+
+        assertThat(result.configValue().get("apiKeyConfigured").asBoolean()).isFalse();
+        assertThat(result.configValue().has("apiKeyMasked")).isFalse();
+    }
+
+    /**
      * 验证只允许四个公开配置键。
      */
     @Test
@@ -241,6 +254,48 @@ class UserConfigServiceImplTest {
                 .toList();
         assertThat((String) wrappers.get(0)).contains(TEST_API_KEY);
         assertThat((String) wrappers.get(1)).doesNotContain(TEST_API_KEY);
+    }
+
+    /**
+     * 验证非空新 Key 会替换数据库中的旧 Key。
+     */
+    @Test
+    void replacesStoredApiKey() {
+        String replacementKey = "replacement-test-key";
+        when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
+        when(configMapper.update(any(), any())).thenAnswer(invocation -> {
+            var wrapper = (com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<?>) invocation.getArgument(1);
+            String values = wrapper.getParamNameValuePairs().values().stream()
+                    .filter(String.class::isInstance)
+                    .map(String.class::cast)
+                    .collect(Collectors.joining(" "));
+            assertThat(values).contains(replacementKey).doesNotContain(TEST_API_KEY);
+            return 1;
+        });
+
+        service.updateConfig(
+                "model.active",
+                new UpdateUserConfigRequest(2, objectMapper.createObjectNode(), replacementKey, false));
+    }
+
+    /**
+     * 验证模型白名单之外的名称不会落库。
+     */
+    @Test
+    void rejectsUnsupportedDeepSeekModel() {
+        when(configMapper.selectList(any())).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.updateConfig(
+                        "model.active",
+                        new UpdateUserConfigRequest(
+                                0,
+                                objectMapper.createObjectNode().put("defaultModel", "deepseek-unknown"),
+                                TEST_API_KEY,
+                                false)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        verify(configMapper, never()).insert(any(UserConfigEntity.class));
     }
 
     /**
