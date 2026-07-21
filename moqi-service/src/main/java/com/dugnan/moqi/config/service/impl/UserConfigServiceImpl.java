@@ -39,7 +39,12 @@ public class UserConfigServiceImpl implements UserConfigService {
 
     private static final String LOCAL_USER = "local-user";
     private static final String MODEL_CONFIG_KEY = "model.active";
+    private static final String DEEPSEEK_PROVIDER = "deepseek";
+    private static final String DEEPSEEK_PROVIDER_NAME = "DeepSeek";
+    private static final String DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+    private static final String DEFAULT_MODEL = "deepseek-v4-flash";
     private static final String NOT_TESTED = "not_tested";
+    private static final Set<String> ALLOWED_MODELS = Set.of(DEFAULT_MODEL, "deepseek-v4-pro");
     private static final String MASKED_KEY_SUFFIX = "masked";
     private static final Pattern MASKED_SECRET_PATTERN = Pattern.compile(
             "^[A-Za-z0-9]{0,4}[-_:]?\\*{4,}[-_:]?[A-Za-z0-9]{0,4}$");
@@ -100,11 +105,14 @@ public class UserConfigServiceImpl implements UserConfigService {
                     0,
                     null);
         }
+        JsonNode publicValue = MODEL_CONFIG_KEY.equals(key)
+                ? sanitizeModelConfig(parse(entity.getConfigValue()))
+                : sanitize(parse(entity.getConfigValue()));
         return new UserConfigDetail(
                 entity.getId(),
                 entity.getUserId(),
                 entity.getConfigKey(),
-                sanitize(parse(entity.getConfigValue())),
+                publicValue,
                 version(entity),
                 entity.getGmtModified());
     }
@@ -125,9 +133,17 @@ public class UserConfigServiceImpl implements UserConfigService {
                     "configValue 包含敏感键、非法脱敏摘要或非法数值配置");
         }
 
+        if (!MODEL_CONFIG_KEY.equals(key)
+                && (request.apiKey() != null || request.clearApiKey() != null)) {
+            throw badRequest("只有 model.active 可以提交 apiKey 或 clearApiKey");
+        }
+
         UserConfigEntity entity = findConfig(key);
+        JsonNode valueToSave = MODEL_CONFIG_KEY.equals(key)
+                ? normalizeModelConfig(configValue, entity, request)
+                : configValue;
         if (entity == null) {
-            return createConfig(key, request.baseVersion(), configValue);
+            return createConfig(key, request.baseVersion(), valueToSave);
         }
         int currentVersion = version(entity);
         if (request.baseVersion() != currentVersion) {
@@ -142,7 +158,7 @@ public class UserConfigServiceImpl implements UserConfigService {
                 .eq("config_key", key)
                 .eq("version", currentVersion)
                 .eq("deleted", 0)
-                .set("config_value", write(configValue))
+                .set("config_value", write(valueToSave))
                 .set("version", nextVersion)
                 .set("gmt_modified", modifiedAt);
         if (configMapper.update(null, update) != 1) {
@@ -156,24 +172,102 @@ public class UserConfigServiceImpl implements UserConfigService {
         UserConfigEntity entity = findConfig(MODEL_CONFIG_KEY);
         JsonNode configValue = entity == null
                 ? objectMapper.createObjectNode()
-                : sanitize(parse(entity.getConfigValue()));
+                : parse(entity.getConfigValue());
         String provider = text(configValue, "provider");
         String providerName = text(configValue, "providerName");
         String baseUrl = text(configValue, "baseUrl");
         String activeModel = text(configValue, "defaultModel");
-        boolean isConfigured = StringUtils.hasText(provider)
-                && StringUtils.hasText(providerName)
-                && StringUtils.hasText(baseUrl)
-                && StringUtils.hasText(activeModel);
+        boolean isConfigured = StringUtils.hasText(text(configValue, "apiKey"))
+                && DEEPSEEK_PROVIDER.equals(provider)
+                && DEEPSEEK_PROVIDER_NAME.equals(providerName)
+                && DEEPSEEK_BASE_URL.equals(baseUrl)
+                && ALLOWED_MODELS.contains(activeModel);
+        String lastTestStatus = text(configValue, "lastTestStatus");
+        if (!StringUtils.hasText(lastTestStatus)) {
+            lastTestStatus = NOT_TESTED;
+        }
+        LocalDateTime checkedAt = parseDateTime(text(configValue, "lastTestedAt"));
+        boolean isAvailable = isConfigured && "success".equals(lastTestStatus);
         return new ModelStatus(
                 isConfigured,
-                false,
+                isAvailable,
                 isConfigured ? provider : null,
                 isConfigured ? providerName : null,
                 isConfigured ? activeModel : null,
-                NOT_TESTED,
-                null,
-                LocalDateTime.now());
+                lastTestStatus,
+                text(configValue, "lastError"),
+                checkedAt,
+                entity == null ? 0 : version(entity));
+    }
+
+    /**
+     * 规范化模型配置并应用密钥更新语义。
+     */
+    private JsonNode normalizeModelConfig(
+            JsonNode submitted,
+            UserConfigEntity existing,
+            UpdateUserConfigRequest request) {
+        boolean isClearRequested = Boolean.TRUE.equals(request.clearApiKey());
+        if (StringUtils.hasText(request.apiKey()) && isClearRequested) {
+            throw badRequest("apiKey 和 clearApiKey 不能同时提交");
+        }
+        ObjectNode normalized = (ObjectNode) sanitize(submitted);
+        normalized.remove(Set.of(
+                "apiKeyConfigured",
+                "apiKeyMasked",
+                "lastTestStatus",
+                "lastError",
+                "lastTestedAt"));
+        String model = text(normalized, "defaultModel");
+        if (!StringUtils.hasText(model)) {
+            model = DEFAULT_MODEL;
+        }
+        if (!ALLOWED_MODELS.contains(model)) {
+            throw badRequest("defaultModel 只允许 deepseek-v4-flash 或 deepseek-v4-pro");
+        }
+        normalized.put("provider", DEEPSEEK_PROVIDER);
+        normalized.put("providerName", DEEPSEEK_PROVIDER_NAME);
+        normalized.put("baseUrl", DEEPSEEK_BASE_URL);
+        normalized.put("defaultModel", model);
+        String storedApiKey = existing == null ? null : text(parse(existing.getConfigValue()), "apiKey");
+        String nextApiKey = StringUtils.hasText(request.apiKey()) ? request.apiKey().trim() : storedApiKey;
+        if (!isClearRequested && StringUtils.hasText(nextApiKey)) {
+            normalized.put("apiKey", nextApiKey);
+        }
+        normalized.put("lastTestStatus", NOT_TESTED);
+        return normalized;
+    }
+
+    /**
+     * 构造不含明文密钥的模型配置响应。
+     */
+    private JsonNode sanitizeModelConfig(JsonNode stored) {
+        ObjectNode sanitized = (ObjectNode) sanitize(stored);
+        String apiKey = text(stored, "apiKey");
+        boolean isConfigured = StringUtils.hasText(apiKey);
+        sanitized.put("apiKeyConfigured", isConfigured);
+        if (isConfigured) {
+            sanitized.put("apiKeyMasked", maskApiKey(apiKey));
+        } else {
+            sanitized.remove("apiKeyMasked");
+        }
+        return sanitized;
+    }
+
+    private String maskApiKey(String apiKey) {
+        int suffixLength = Math.min(4, apiKey.length());
+        return "****" + apiKey.substring(apiKey.length() - suffixLength);
+    }
+
+    private LocalDateTime parseDateTime(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        try {
+            return LocalDateTime.parse(value);
+        } catch (RuntimeException exception) {
+            return null;
+        }
     }
 
     /**

@@ -16,6 +16,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,6 +40,8 @@ import com.dugnan.moqi.config.mapper.UserConfigMapper;
  */
 @ExtendWith(MockitoExtension.class)
 class UserConfigServiceImplTest {
+
+    private static final String TEST_API_KEY = "test-only-deepseek-key";
 
     @Mock
     private UserConfigMapper configMapper;
@@ -105,6 +108,116 @@ class UserConfigServiceImplTest {
         assertThat(result.gmtModified()).isNotNull();
         verify(configMapper).insert(org.mockito.ArgumentMatchers.<UserConfigEntity>argThat(
                 entity -> entity.getVersion() == 1));
+    }
+
+    /**
+     * 验证模型配置创建时写入受控顶层 Key、固定 DeepSeek 元数据并重置测试状态。
+     */
+    @Test
+    void createsNormalizedDeepSeekModelConfigWithApiKey() {
+        when(configMapper.selectList(any())).thenReturn(List.of());
+        when(configMapper.insert(any(UserConfigEntity.class))).thenAnswer(invocation -> {
+            UserConfigEntity entity = invocation.getArgument(0);
+            entity.setId(602L);
+            return 1;
+        });
+
+        service.updateConfig(
+                "model.active",
+                new UpdateUserConfigRequest(
+                        0,
+                        objectMapper.createObjectNode().put("defaultModel", "deepseek-v4-pro"),
+                        TEST_API_KEY,
+                        false));
+
+        verify(configMapper).insert(org.mockito.ArgumentMatchers.<UserConfigEntity>argThat(entity -> {
+            String value = entity.getConfigValue();
+            return value.contains("\"provider\":\"deepseek\"")
+                    && value.contains("\"baseUrl\":\"https://api.deepseek.com\"")
+                    && value.contains("\"defaultModel\":\"deepseek-v4-pro\"")
+                    && value.contains("\"apiKey\":\"" + TEST_API_KEY + "\"")
+                    && value.contains("\"lastTestStatus\":\"not_tested\"");
+        }));
+    }
+
+    /**
+     * 验证读取模型配置时只返回 Key 配置标记与末四位摘要。
+     */
+    @Test
+    void masksStoredModelApiKeyOnRead() {
+        when(configMapper.selectList(any())).thenReturn(List.of(config(
+                602L,
+                "model.active",
+                "{\"provider\":\"deepseek\",\"apiKey\":\"" + TEST_API_KEY + "\"}",
+                3)));
+
+        var result = service.getConfig("model.active");
+
+        assertThat(result.configValue().has("apiKey")).isFalse();
+        assertThat(result.configValue().get("apiKeyConfigured").asBoolean()).isTrue();
+        assertThat(result.configValue().get("apiKeyMasked").asText()).isEqualTo("****-key");
+        assertThat(result.configValue().toString()).doesNotContain(TEST_API_KEY);
+    }
+
+    /**
+     * 验证同时提交 Key 和删除标记会被拒绝。
+     */
+    @Test
+    void rejectsApiKeyAndClearFlagTogether() {
+        assertThatThrownBy(() -> service.updateConfig(
+                        "model.active",
+                        new UpdateUserConfigRequest(0, objectMapper.createObjectNode(), TEST_API_KEY, true)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        verify(configMapper, never()).insert(any(UserConfigEntity.class));
+    }
+
+    /**
+     * 验证非模型配置不能使用模型密钥字段。
+     */
+    @Test
+    void rejectsApiKeyFieldsForNonModelConfig() {
+        assertThatThrownBy(() -> service.updateConfig(
+                        "writing.preferences",
+                        new UpdateUserConfigRequest(0, objectMapper.createObjectNode(), TEST_API_KEY, false)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        verify(configMapper, never()).insert(any(UserConfigEntity.class));
+    }
+
+    /**
+     * 验证空白 Key 保留旧值，显式删除会移除旧值。
+     */
+    @Test
+    void preservesOrClearsStoredApiKeyExplicitly() {
+        UserConfigEntity existing = config(
+                602L,
+                "model.active",
+                "{\"provider\":\"deepseek\",\"apiKey\":\"" + TEST_API_KEY + "\"}",
+                2);
+        when(configMapper.selectList(any())).thenReturn(List.of(existing));
+        when(configMapper.update(any(), any())).thenReturn(1);
+
+        service.updateConfig(
+                "model.active",
+                new UpdateUserConfigRequest(2, objectMapper.createObjectNode(), "  ", false));
+        service.updateConfig(
+                "model.active",
+                new UpdateUserConfigRequest(2, objectMapper.createObjectNode(), null, true));
+
+        var wrappers = org.mockito.Mockito.mockingDetails(configMapper).getInvocations().stream()
+                .filter(invocation -> invocation.getMethod().getName().equals("update"))
+                .map(invocation -> invocation.getArgument(1))
+                .map(com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper.class::cast)
+                .map(wrapper -> wrapper.getParamNameValuePairs().values().stream()
+                        .filter(String.class::isInstance)
+                        .map(String.class::cast)
+                        .collect(Collectors.joining(" ")))
+                .toList();
+        assertThat((String) wrappers.get(0)).contains(TEST_API_KEY);
+        assertThat((String) wrappers.get(1)).doesNotContain(TEST_API_KEY);
     }
 
     /**
@@ -317,7 +430,8 @@ class UserConfigServiceImplTest {
 
         assertThat(result.configValue().has("provider")).isTrue();
         assertThat(result.configValue().get("maxTokens").asInt()).isEqualTo(4096);
-        assertThat(result.configValue().get("apiKeyMasked").asText()).isEqualTo("sk-****");
+        assertThat(result.configValue().get("apiKeyConfigured").asBoolean()).isFalse();
+        assertThat(result.configValue().has("apiKeyMasked")).isFalse();
         assertThat(result.configValue().has("apikeymasked")).isFalse();
         assertThat(result.configValue().has("apiKeymasked")).isFalse();
         assertThat(result.configValue().has("APIKEYMASKED")).isFalse();
@@ -334,10 +448,11 @@ class UserConfigServiceImplTest {
         when(configMapper.selectList(any())).thenReturn(List.of(config(
                 601L,
                 "model.active",
-                "{\"provider\":\"openai_compatible\","
-                        + "\"providerName\":\"OpenAI Compatible\","
-                        + "\"baseUrl\":\"https://api.example.com/v1\","
-                        + "\"defaultModel\":\"gpt-4.1\"}",
+                "{\"provider\":\"deepseek\","
+                        + "\"providerName\":\"DeepSeek\","
+                        + "\"baseUrl\":\"https://api.deepseek.com\","
+                        + "\"defaultModel\":\"deepseek-v4-flash\","
+                        + "\"apiKey\":\"" + TEST_API_KEY + "\"}",
                 1)));
 
         var result = service.getModelStatus();
@@ -345,7 +460,8 @@ class UserConfigServiceImplTest {
         assertThat(result.configured()).isTrue();
         assertThat(result.available()).isFalse();
         assertThat(result.lastTestStatus()).isEqualTo("not_tested");
-        assertThat(result.activeModel()).isEqualTo("gpt-4.1");
+        assertThat(result.activeModel()).isEqualTo("deepseek-v4-flash");
+        assertThat(result.configVersion()).isEqualTo(1);
     }
 
     /**
@@ -356,7 +472,7 @@ class UserConfigServiceImplTest {
         when(configMapper.selectList(any())).thenReturn(List.of(config(
                 601L,
                 "model.active",
-                "{\"provider\":\"openai_compatible\",\"defaultModel\":\"gpt-4.1\"}",
+                "{\"provider\":\"deepseek\",\"defaultModel\":\"deepseek-v4-flash\"}",
                 1)));
 
         var result = service.getModelStatus();
