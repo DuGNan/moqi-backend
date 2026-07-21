@@ -143,8 +143,8 @@ public class UserConfigServiceImpl implements UserConfigService {
                     "configValue 包含敏感键、非法脱敏摘要或非法数值配置");
         }
 
-        if (!MODEL_CONFIG_KEY.equals(key)
-                && (request.apiKey() != null || request.clearApiKey() != null)) {
+        boolean hasModelSecretOperation = request.apiKey() != null || request.clearApiKey() != null;
+        if (!MODEL_CONFIG_KEY.equals(key) && hasModelSecretOperation) {
             throw badRequest("只有 model.active 可以提交 apiKey 或 clearApiKey");
         }
 

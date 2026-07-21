@@ -80,9 +80,7 @@ public class DeepSeekLlmProvider implements LlmProvider {
                     .maxTokens(request.maxTokens())
                     .build();
             ChatResponse response = chatModel.call(new Prompt(messages, options));
-            if (response == null || response.getResult() == null
-                    || response.getResult().getOutput() == null
-                    || !StringUtils.hasText(response.getResult().getOutput().getText())) {
+            if (isEmptyResponse(response)) {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
             return new LlmResponse(response.getResult().getOutput().getText());
@@ -116,9 +114,7 @@ public class DeepSeekLlmProvider implements LlmProvider {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
             ChatCompletionMessage answer = body.choices().get(0).message();
-            if (answer == null
-                    || (!StringUtils.hasText(answer.content())
-                    && !StringUtils.hasText(answer.reasoningContent()))) {
+            if (!hasUsableAnswer(answer)) {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
         } catch (RuntimeException exception) {
@@ -144,6 +140,22 @@ public class DeepSeekLlmProvider implements LlmProvider {
             return new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
         }
         return new LlmProviderException(LlmProviderError.NETWORK);
+    }
+
+    private boolean isEmptyResponse(ChatResponse response) {
+        if (response == null || response.getResult() == null) {
+            return true;
+        }
+        return response.getResult().getOutput() == null
+                || !StringUtils.hasText(response.getResult().getOutput().getText());
+    }
+
+    private boolean hasUsableAnswer(ChatCompletionMessage answer) {
+        if (answer == null) {
+            return false;
+        }
+        return StringUtils.hasText(answer.content())
+                || StringUtils.hasText(answer.reasoningContent());
     }
 
     private boolean hasCause(Throwable throwable, Class<? extends Throwable> causeType) {

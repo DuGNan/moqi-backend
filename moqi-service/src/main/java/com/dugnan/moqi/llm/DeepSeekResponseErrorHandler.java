@@ -14,6 +14,11 @@ import org.springframework.web.client.ResponseErrorHandler;
  */
 final class DeepSeekResponseErrorHandler implements ResponseErrorHandler {
 
+    private static final int HTTP_UNAUTHORIZED = 401;
+    private static final int HTTP_FORBIDDEN = 403;
+    private static final int HTTP_TOO_MANY_REQUESTS = 429;
+    private static final int HTTP_INTERNAL_SERVER_ERROR = 500;
+
     @Override
     public boolean hasError(ClientHttpResponse response) throws IOException {
         return response.getStatusCode().isError();
@@ -22,13 +27,13 @@ final class DeepSeekResponseErrorHandler implements ResponseErrorHandler {
     @Override
     public void handleError(URI url, HttpMethod method, ClientHttpResponse response) throws IOException {
         int status = response.getStatusCode().value();
-        if (status == 401 || status == 403) {
+        if (status == HTTP_UNAUTHORIZED || status == HTTP_FORBIDDEN) {
             throw new LlmProviderException(LlmProviderError.AUTHENTICATION);
         }
-        if (status == 429) {
+        if (status == HTTP_TOO_MANY_REQUESTS) {
             throw new LlmProviderException(LlmProviderError.RATE_LIMITED);
         }
-        if (status >= 500) {
+        if (status >= HTTP_INTERNAL_SERVER_ERROR) {
             throw new LlmProviderException(LlmProviderError.SERVICE_UNAVAILABLE);
         }
         throw new LlmProviderException(LlmProviderError.REQUEST_REJECTED);

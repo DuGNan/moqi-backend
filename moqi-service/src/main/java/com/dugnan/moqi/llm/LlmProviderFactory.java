@@ -7,5 +7,11 @@ package com.dugnan.moqi.llm;
  */
 public interface LlmProviderFactory {
 
+    /**
+     * 按不可变配置快照创建新的 Provider。
+     *
+     * @param config DeepSeek 配置快照
+     * @return 新 Provider
+     */
     LlmProvider create(DeepSeekProviderConfig config);
 }
