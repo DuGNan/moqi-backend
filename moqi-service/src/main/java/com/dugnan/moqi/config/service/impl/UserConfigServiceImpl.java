@@ -327,8 +327,11 @@ public class UserConfigServiceImpl implements UserConfigService {
     }
 
     private String maskApiKey(String apiKey) {
-        int suffixLength = Math.min(4, apiKey.length());
-        return "****" + apiKey.substring(apiKey.length() - suffixLength);
+        int visibleSuffixLength = 4;
+        if (apiKey.length() <= visibleSuffixLength) {
+            return "****";
+        }
+        return "****" + apiKey.substring(apiKey.length() - visibleSuffixLength);
     }
 
     private LocalDateTime parseDateTime(String value) {

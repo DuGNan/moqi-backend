@@ -113,7 +113,11 @@ public class DeepSeekLlmProvider implements LlmProvider {
             if (body == null || body.choices() == null || body.choices().isEmpty()) {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
-            ChatCompletionMessage answer = body.choices().get(0).message();
+            var firstChoice = body.choices().get(0);
+            if (firstChoice == null) {
+                throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
+            }
+            ChatCompletionMessage answer = firstChoice.message();
             if (!hasUsableAnswer(answer)) {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }

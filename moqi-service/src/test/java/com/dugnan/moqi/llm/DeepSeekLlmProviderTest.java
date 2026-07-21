@@ -92,6 +92,13 @@ class DeepSeekLlmProviderTest {
 
         start(exchange -> json(exchange, 200, completion("", "")));
         assertProviderError(provider(Duration.ofSeconds(2)), LlmProviderError.INVALID_RESPONSE);
+        stopServer();
+        server = null;
+
+        start(exchange -> json(exchange, 200,
+                "{\"id\":\"test\",\"object\":\"chat.completion\","
+                        + "\"created\":1,\"model\":\"deepseek-v4-flash\",\"choices\":[null]}"));
+        assertProviderError(provider(Duration.ofSeconds(2)), LlmProviderError.INVALID_RESPONSE);
     }
 
     /**

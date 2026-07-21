@@ -183,6 +183,23 @@ class UserConfigServiceImplTest {
     }
 
     /**
+     * 验证长度不超过四位的 Key 不会通过摘要被完整回显。
+     */
+    @Test
+    void fullyMasksShortStoredModelApiKey() {
+        when(configMapper.selectList(any())).thenReturn(List.of(config(
+                602L,
+                "model.active",
+                "{\"provider\":\"deepseek\",\"apiKey\":\"tiny\"}",
+                3)));
+
+        var result = service.getConfig("model.active");
+
+        assertThat(result.configValue().get("apiKeyMasked").asText()).isEqualTo("****");
+        assertThat(result.configValue().toString()).doesNotContain("tiny");
+    }
+
+    /**
      * 验证同时提交 Key 和删除标记会被拒绝。
      */
     @Test
