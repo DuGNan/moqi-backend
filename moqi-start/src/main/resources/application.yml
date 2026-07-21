@@ -1,6 +1,9 @@
 spring:
   application:
     name: moqi-backend
+  ai:
+    model:
+      chat: none
   profiles:
     active: local
   datasource:
