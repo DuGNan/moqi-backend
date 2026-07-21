@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -28,6 +29,9 @@ import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigSaved;
 import com.dugnan.moqi.config.entity.UserConfigEntity;
 import com.dugnan.moqi.config.mapper.UserConfigMapper;
 import com.dugnan.moqi.config.service.UserConfigService;
+import com.dugnan.moqi.llm.DeepSeekProviderConfig;
+import com.dugnan.moqi.llm.LlmProviderException;
+import com.dugnan.moqi.llm.LlmProviderFactory;
 
 /**
  * @author dgn
@@ -80,6 +84,7 @@ public class UserConfigServiceImpl implements UserConfigService {
 
     private final UserConfigMapper configMapper;
     private final ObjectMapper objectMapper;
+    private final LlmProviderFactory providerFactory;
 
     /**
      * 创建用户配置服务。
@@ -87,9 +92,14 @@ public class UserConfigServiceImpl implements UserConfigService {
      * @param configMapper 用户配置数据访问对象
      * @param objectMapper JSON 解析器
      */
-    public UserConfigServiceImpl(UserConfigMapper configMapper, ObjectMapper objectMapper) {
+    @Autowired
+    public UserConfigServiceImpl(
+            UserConfigMapper configMapper,
+            ObjectMapper objectMapper,
+            LlmProviderFactory providerFactory) {
         this.configMapper = configMapper;
         this.objectMapper = objectMapper;
+        this.providerFactory = providerFactory;
     }
 
     @Override
@@ -139,16 +149,19 @@ public class UserConfigServiceImpl implements UserConfigService {
         }
 
         UserConfigEntity entity = findConfig(key);
-        JsonNode valueToSave = MODEL_CONFIG_KEY.equals(key)
-                ? normalizeModelConfig(configValue, entity, request)
-                : configValue;
         if (entity == null) {
+            JsonNode valueToSave = MODEL_CONFIG_KEY.equals(key)
+                    ? normalizeModelConfig(configValue, null, request)
+                    : configValue;
             return createConfig(key, request.baseVersion(), valueToSave);
         }
         int currentVersion = version(entity);
         if (request.baseVersion() != currentVersion) {
             throw versionConflict();
         }
+        JsonNode valueToSave = MODEL_CONFIG_KEY.equals(key)
+                ? normalizeModelConfig(configValue, entity, request)
+                : configValue;
 
         int nextVersion = currentVersion + 1;
         LocalDateTime modifiedAt = LocalDateTime.now();
@@ -173,6 +186,61 @@ public class UserConfigServiceImpl implements UserConfigService {
         JsonNode configValue = entity == null
                 ? objectMapper.createObjectNode()
                 : parse(entity.getConfigValue());
+        return toModelStatus(entity, configValue, entity == null ? 0 : version(entity));
+    }
+
+    @Override
+    public ModelStatus testModelConnection(Integer baseVersion) {
+        if (baseVersion == null) {
+            throw badRequest("baseVersion 不能为空");
+        }
+        UserConfigEntity entity = findConfig(MODEL_CONFIG_KEY);
+        if (entity == null || version(entity) != baseVersion) {
+            throw versionConflict();
+        }
+        JsonNode configValue = parse(entity.getConfigValue());
+        String apiKey = text(configValue, "apiKey");
+        String model = text(configValue, "defaultModel");
+        if (!StringUtils.hasText(apiKey) || !ALLOWED_MODELS.contains(model)) {
+            throw badRequest("DeepSeek 模型尚未配置");
+        }
+
+        String testStatus = "success";
+        String safeError = null;
+        try {
+            providerFactory.create(new DeepSeekProviderConfig(DEEPSEEK_BASE_URL, apiKey, model))
+                    .testConnection();
+        } catch (LlmProviderException exception) {
+            testStatus = "failed";
+            safeError = exception.getMessage();
+        }
+
+        LocalDateTime testedAt = LocalDateTime.now();
+        ObjectNode testedConfig = (ObjectNode) configValue.deepCopy();
+        testedConfig.put("lastTestStatus", testStatus);
+        testedConfig.put("lastTestedAt", testedAt.toString());
+        if (safeError == null) {
+            testedConfig.remove("lastError");
+        } else {
+            testedConfig.put("lastError", safeError);
+        }
+        int nextVersion = baseVersion + 1;
+        UpdateWrapper<UserConfigEntity> update = new UpdateWrapper<UserConfigEntity>()
+                .eq("id", entity.getId())
+                .eq("user_id", LOCAL_USER)
+                .eq("config_key", MODEL_CONFIG_KEY)
+                .eq("version", baseVersion)
+                .eq("deleted", 0)
+                .set("config_value", write(testedConfig))
+                .set("version", nextVersion)
+                .set("gmt_modified", testedAt);
+        if (configMapper.update(null, update) != 1) {
+            throw versionConflict();
+        }
+        return toModelStatus(entity, testedConfig, nextVersion);
+    }
+
+    private ModelStatus toModelStatus(UserConfigEntity entity, JsonNode configValue, int configVersion) {
         String provider = text(configValue, "provider");
         String providerName = text(configValue, "providerName");
         String baseUrl = text(configValue, "baseUrl");
@@ -197,7 +265,7 @@ public class UserConfigServiceImpl implements UserConfigService {
                 lastTestStatus,
                 text(configValue, "lastError"),
                 checkedAt,
-                entity == null ? 0 : version(entity));
+                configVersion);
     }
 
     /**
@@ -208,7 +276,7 @@ public class UserConfigServiceImpl implements UserConfigService {
             UserConfigEntity existing,
             UpdateUserConfigRequest request) {
         boolean isClearRequested = Boolean.TRUE.equals(request.clearApiKey());
-        if (StringUtils.hasText(request.apiKey()) && isClearRequested) {
+        if (request.apiKey() != null && isClearRequested) {
             throw badRequest("apiKey 和 clearApiKey 不能同时提交");
         }
         ObjectNode normalized = (ObjectNode) sanitize(submitted);

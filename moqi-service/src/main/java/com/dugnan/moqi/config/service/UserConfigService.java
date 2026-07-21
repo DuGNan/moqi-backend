@@ -35,4 +35,12 @@ public interface UserConfigService {
      * @return 模型状态
      */
     ModelStatus getModelStatus();
+
+    /**
+     * 按当前配置版本测试模型连接并持久化结果。
+     *
+     * @param baseVersion 配置基础版本
+     * @return 测试后的模型状态
+     */
+    ModelStatus testModelConnection(Integer baseVersion);
 }

@@ -32,6 +32,10 @@ import com.dugnan.moqi.config.dto.UserConfigModels.UpdateUserConfigRequest;
 import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigSaved;
 import com.dugnan.moqi.config.entity.UserConfigEntity;
 import com.dugnan.moqi.config.mapper.UserConfigMapper;
+import com.dugnan.moqi.llm.LlmProvider;
+import com.dugnan.moqi.llm.LlmProviderError;
+import com.dugnan.moqi.llm.LlmProviderException;
+import com.dugnan.moqi.llm.LlmProviderFactory;
 
 /**
  * @author dgn
@@ -46,6 +50,12 @@ class UserConfigServiceImplTest {
     @Mock
     private UserConfigMapper configMapper;
 
+    @Mock
+    private LlmProviderFactory providerFactory;
+
+    @Mock
+    private LlmProvider provider;
+
     private ObjectMapper objectMapper;
     private UserConfigServiceImpl service;
 
@@ -55,7 +65,7 @@ class UserConfigServiceImplTest {
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        service = new UserConfigServiceImpl(configMapper, objectMapper);
+        service = new UserConfigServiceImpl(configMapper, objectMapper, providerFactory);
     }
 
     /**
@@ -171,6 +181,19 @@ class UserConfigServiceImplTest {
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.BAD_REQUEST);
         verify(configMapper, never()).insert(any(UserConfigEntity.class));
+    }
+
+    /**
+     * 验证空白 Key 与删除标记同时出现也按字段冲突处理。
+     */
+    @Test
+    void rejectsBlankApiKeyAndClearFlagTogether() {
+        assertThatThrownBy(() -> service.updateConfig(
+                        "model.active",
+                        new UpdateUserConfigRequest(0, objectMapper.createObjectNode(), " ", true)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
     }
 
     /**
@@ -483,6 +506,78 @@ class UserConfigServiceImplTest {
     }
 
     /**
+     * 验证未配置 Key 时不创建 Provider，也不访问网络。
+     */
+    @Test
+    void rejectsConnectionTestWithoutApiKeyBeforeProviderCall() {
+        when(configMapper.selectList(any())).thenReturn(List.of(config(
+                602L,
+                "model.active",
+                "{\"provider\":\"deepseek\",\"defaultModel\":\"deepseek-v4-flash\"}",
+                2)));
+
+        assertThatThrownBy(() -> service.testModelConnection(2))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        verify(providerFactory, never()).create(any());
+    }
+
+    /**
+     * 验证 Fake Provider 成功后持久化 success 并递增配置版本。
+     */
+    @Test
+    void persistsSuccessfulConnectionTest() {
+        when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(configMapper.update(any(), any())).thenReturn(1);
+
+        var result = service.testModelConnection(2);
+
+        assertThat(result.configured()).isTrue();
+        assertThat(result.available()).isTrue();
+        assertThat(result.lastTestStatus()).isEqualTo("success");
+        assertThat(result.lastError()).isNull();
+        assertThat(result.checkedAt()).isNotNull();
+        assertThat(result.configVersion()).isEqualTo(3);
+        verify(provider).testConnection();
+    }
+
+    /**
+     * 验证可预期 Provider 失败只持久化安全中文错误并正常返回 failed 状态。
+     */
+    @Test
+    void persistsSafeFailedConnectionTest() {
+        when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
+        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.doThrow(new LlmProviderException(LlmProviderError.AUTHENTICATION))
+                .when(provider).testConnection();
+        when(configMapper.update(any(), any())).thenReturn(1);
+
+        var result = service.testModelConnection(2);
+
+        assertThat(result.available()).isFalse();
+        assertThat(result.lastTestStatus()).isEqualTo("failed");
+        assertThat(result.lastError()).isEqualTo("DeepSeek 鉴权失败");
+        assertThat(result.lastError()).doesNotContain(TEST_API_KEY);
+    }
+
+    /**
+     * 验证远程请求期间配置发生变化时不会覆盖新配置。
+     */
+    @Test
+    void rejectsConnectionTestWriteBackWhenConfigVersionChanged() {
+        when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(configMapper.update(any(), any())).thenReturn(0);
+
+        assertThatThrownBy(() -> service.testModelConnection(2))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.CONFIG_VERSION_CONFLICT);
+    }
+
+    /**
      * 构造测试配置。
      *
      * @param id 配置 ID
@@ -500,6 +595,19 @@ class UserConfigServiceImplTest {
         config.setVersion(version);
         config.setDeleted(0);
         return config;
+    }
+
+    private UserConfigEntity deepSeekConfig(int version) {
+        return config(
+                602L,
+                "model.active",
+                "{\"provider\":\"deepseek\","
+                        + "\"providerName\":\"DeepSeek\","
+                        + "\"baseUrl\":\"https://api.deepseek.com\","
+                        + "\"defaultModel\":\"deepseek-v4-flash\","
+                        + "\"apiKey\":\"" + TEST_API_KEY + "\","
+                        + "\"lastTestStatus\":\"not_tested\"}",
+                version);
     }
 
     /**

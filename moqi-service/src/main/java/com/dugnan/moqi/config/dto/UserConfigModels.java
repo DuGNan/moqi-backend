@@ -79,4 +79,7 @@ public final class UserConfigModels {
                     0);
         }
     }
+
+    public record TestModelConnectionRequest(Integer baseVersion) {
+    }
 }

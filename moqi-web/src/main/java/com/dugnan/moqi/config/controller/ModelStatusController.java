@@ -1,11 +1,14 @@
 package com.dugnan.moqi.config.controller;
 
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.dugnan.moqi.common.api.ApiResponse;
 import com.dugnan.moqi.config.dto.UserConfigModels.ModelStatus;
+import com.dugnan.moqi.config.dto.UserConfigModels.TestModelConnectionRequest;
 import com.dugnan.moqi.config.service.UserConfigService;
 
 /**
@@ -36,5 +39,17 @@ public class ModelStatusController {
     @GetMapping("/model-status")
     public ApiResponse<ModelStatus> modelStatus() {
         return ApiResponse.success(userConfigService.getModelStatus());
+    }
+
+    /**
+     * 使用已保存配置测试 DeepSeek 连接并持久化结果。
+     *
+     * @param request 测试请求
+     * @return 测试后的模型状态
+     */
+    @PostMapping("/model-status/test")
+    public ApiResponse<ModelStatus> testModelConnection(@RequestBody TestModelConnectionRequest request) {
+        return ApiResponse.success(userConfigService.testModelConnection(
+                request == null ? null : request.baseVersion()));
     }
 }
