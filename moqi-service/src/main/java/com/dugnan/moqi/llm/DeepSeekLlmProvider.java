@@ -5,6 +5,8 @@ import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import org.springframework.ai.chat.messages.Message;
@@ -70,20 +72,34 @@ public class DeepSeekLlmProvider implements LlmProvider {
     @Override
     public LlmResponse generate(LlmRequest request) {
         try {
-            List<Message> messages = new ArrayList<>();
-            if (StringUtils.hasText(request.systemPrompt())) {
-                messages.add(new SystemMessage(request.systemPrompt()));
-            }
-            messages.add(new UserMessage(request.userPrompt()));
             DeepSeekChatOptions options = DeepSeekChatOptions.builder()
                     .model(model)
                     .maxTokens(request.maxTokens())
                     .build();
-            ChatResponse response = chatModel.call(new Prompt(messages, options));
+            ChatResponse response = chatModel.call(new Prompt(messages(request), options));
             if (isEmptyResponse(response)) {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
             return new LlmResponse(response.getResult().getOutput().getText());
+        } catch (RuntimeException exception) {
+            throw mapException(exception);
+        }
+    }
+
+    @Override
+    public void stream(LlmRequest request, Consumer<LlmStreamDelta> consumer) {
+        try {
+            DeepSeekChatOptions options = DeepSeekChatOptions.builder()
+                    .model(model)
+                    .maxTokens(request.maxTokens())
+                    .build();
+            AtomicBoolean hasText = new AtomicBoolean(false);
+            chatModel.stream(new Prompt(messages(request), options))
+                    .doOnNext(response -> forwardDelta(response, consumer, hasText))
+                    .blockLast();
+            if (!hasText.get()) {
+                throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
+            }
         } catch (RuntimeException exception) {
             throw mapException(exception);
         }
@@ -144,6 +160,27 @@ public class DeepSeekLlmProvider implements LlmProvider {
             return new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
         }
         return new LlmProviderException(LlmProviderError.NETWORK);
+    }
+
+    private List<Message> messages(LlmRequest request) {
+        List<Message> messages = new ArrayList<>();
+        if (StringUtils.hasText(request.systemPrompt())) {
+            messages.add(new SystemMessage(request.systemPrompt()));
+        }
+        messages.add(new UserMessage(request.userPrompt()));
+        return messages;
+    }
+
+    private void forwardDelta(
+            ChatResponse response,
+            Consumer<LlmStreamDelta> consumer,
+            AtomicBoolean hasText) {
+        if (isEmptyResponse(response)) {
+            return;
+        }
+        String text = response.getResult().getOutput().getText();
+        hasText.set(true);
+        consumer.accept(new LlmStreamDelta(text));
     }
 
     private boolean isEmptyResponse(ChatResponse response) {
