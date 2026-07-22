@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageCreated;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineRequest;
@@ -25,6 +26,7 @@ import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
@@ -56,6 +58,8 @@ class ChapterCollaborationServiceImplTest {
     private ChapterOutlineQueryMapper outlineMapper;
     @Mock
     private AiTaskMapper aiTaskMapper;
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
 
     private ChapterCollaborationServiceImpl service;
 
@@ -71,7 +75,8 @@ class ChapterCollaborationServiceImplTest {
                 messageMapper,
                 briefMapper,
                 outlineMapper,
-                aiTaskMapper);
+                aiTaskMapper,
+                eventPublisher);
     }
 
     /**
@@ -117,6 +122,9 @@ class ChapterCollaborationServiceImplTest {
         assertThat(result.id()).isEqualTo(11L);
         assertThat(result.aiTaskId()).isEqualTo(12L);
         verify(messageMapper).updateById(any(ChapterConversationMessageEntity.class));
+        verify(eventPublisher).publishEvent(new ConversationReplyTaskSubmittedEvent(12L));
+        verify(aiTaskMapper).insert(org.mockito.ArgumentMatchers.<AiTaskEntity>argThat(task ->
+                task.getResultMessageId() == null));
     }
 
     /**

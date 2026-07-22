@@ -5,6 +5,7 @@ import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -26,6 +27,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.chapter.service.ChapterCollaborationService;
+import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
@@ -60,6 +62,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     private final ChapterBriefMapper briefMapper;
     private final ChapterOutlineQueryMapper outlineMapper;
     private final AiTaskMapper aiTaskMapper;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 创建章节共创服务。
@@ -79,7 +82,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             ChapterConversationMessageMapper messageMapper,
             ChapterBriefMapper briefMapper,
             ChapterOutlineQueryMapper outlineMapper,
-            AiTaskMapper aiTaskMapper) {
+            AiTaskMapper aiTaskMapper,
+            ApplicationEventPublisher eventPublisher) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.conversationMapper = conversationMapper;
@@ -87,6 +91,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         this.briefMapper = briefMapper;
         this.outlineMapper = outlineMapper;
         this.aiTaskMapper = aiTaskMapper;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -155,12 +160,13 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             aiTask.setTaskStatus(AI_TASK_STATUS);
             aiTask.setWorkId(conversation.getWorkId());
             aiTask.setChapterId(conversation.getChapterId());
-            aiTask.setResultMessageId(message.getId());
+            aiTask.setResultMessageId(null);
             aiTask.setDeleted(0);
             aiTask.setVersion(0);
             aiTaskMapper.insert(aiTask);
             message.setAiTaskId(aiTask.getId());
             messageMapper.updateById(message);
+            eventPublisher.publishEvent(new ConversationReplyTaskSubmittedEvent(aiTask.getId()));
         }
         return messageCreated(message);
     }

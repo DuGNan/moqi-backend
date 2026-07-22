@@ -32,6 +32,7 @@ import com.dugnan.moqi.config.dto.UserConfigModels.UpdateUserConfigRequest;
 import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigSaved;
 import com.dugnan.moqi.config.entity.UserConfigEntity;
 import com.dugnan.moqi.config.mapper.UserConfigMapper;
+import com.dugnan.moqi.llm.DeepSeekProviderConfig;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderError;
 import com.dugnan.moqi.llm.LlmProviderException;
@@ -557,6 +558,42 @@ class UserConfigServiceImplTest {
         assertThat(result.lastTestStatus()).isEqualTo("not_tested");
         assertThat(result.activeModel()).isEqualTo("deepseek-v4-flash");
         assertThat(result.configVersion()).isEqualTo(1);
+    }
+
+    /**
+     * 验证讨论任务只能读取已连通的 DeepSeek 运行时配置。
+     */
+    @Test
+    void returnsAvailableDeepSeekRuntimeConfig() {
+        when(configMapper.selectList(any())).thenReturn(List.of(config(
+                601L,
+                "model.active",
+                "{\"provider\":\"deepseek\","
+                        + "\"providerName\":\"DeepSeek\","
+                        + "\"baseUrl\":\"https://api.deepseek.com\","
+                        + "\"defaultModel\":\"deepseek-v4-flash\","
+                        + "\"apiKey\":\"" + TEST_API_KEY + "\","
+                        + "\"lastTestStatus\":\"success\"}",
+                1)));
+
+        DeepSeekProviderConfig result = service.requireAvailableDeepSeekConfig();
+
+        assertThat(result.baseUrl()).isEqualTo("https://api.deepseek.com");
+        assertThat(result.apiKey()).isEqualTo(TEST_API_KEY);
+        assertThat(result.model()).isEqualTo("deepseek-v4-flash");
+    }
+
+    /**
+     * 验证尚未连通测试的模型配置不能用于发起真实 AI 任务。
+     */
+    @Test
+    void rejectsUnavailableDeepSeekRuntimeConfig() {
+        when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(1)));
+
+        assertThatThrownBy(() -> service.requireAvailableDeepSeekConfig())
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.MODEL_UNAVAILABLE);
     }
 
     /**

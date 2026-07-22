@@ -34,6 +34,7 @@ public enum ErrorCode {
     CHAPTER_VERSION_CONFLICT,
     /** 用户配置版本冲突。 */
     CONFIG_VERSION_CONFLICT,
+    MODEL_UNAVAILABLE,
     /** 设定候选状态冲突。 */
     SETTING_CANDIDATE_CONFLICT,
     /** AI 任务状态冲突。 */

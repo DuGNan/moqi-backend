@@ -4,6 +4,7 @@ import com.dugnan.moqi.config.dto.UserConfigModels.ModelStatus;
 import com.dugnan.moqi.config.dto.UserConfigModels.UpdateUserConfigRequest;
 import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigDetail;
 import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigSaved;
+import com.dugnan.moqi.llm.DeepSeekProviderConfig;
 
 /**
  * @author dgn
@@ -43,4 +44,6 @@ public interface UserConfigService {
      * @return 测试后的模型状态
      */
     ModelStatus testModelConnection(Integer baseVersion);
+
+    DeepSeekProviderConfig requireAvailableDeepSeekConfig();
 }
