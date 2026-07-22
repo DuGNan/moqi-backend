@@ -270,6 +270,31 @@ class KnowledgeConfigTaskControllerTest {
     }
 
     /**
+     * 验证模型连接测试端点传递配置版本并返回持久化后的状态。
+     */
+    @Test
+    void exposesModelConnectionTest() throws Exception {
+        when(userConfigService.testModelConnection(3)).thenReturn(new ModelStatus(
+                true,
+                true,
+                "deepseek",
+                "DeepSeek",
+                "deepseek-v4-flash",
+                "success",
+                null,
+                java.time.LocalDateTime.of(2026, 7, 22, 1, 0),
+                4));
+
+        mvc.perform(post("/api/system/model-status/test")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"baseVersion\":3}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.available").value(true))
+                .andExpect(jsonPath("$.data.lastTestStatus").value("success"))
+                .andExpect(jsonPath("$.data.configVersion").value(4));
+    }
+
+    /**
      * 验证 AI 任务查询与取消接口。
      *
      * @throws Exception MockMvc 请求执行失败

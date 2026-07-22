@@ -28,7 +28,15 @@ public final class UserConfigModels {
             LocalDateTime gmtModified) {
     }
 
-    public record UpdateUserConfigRequest(Integer baseVersion, JsonNode configValue) {
+    public record UpdateUserConfigRequest(
+            Integer baseVersion,
+            JsonNode configValue,
+            String apiKey,
+            Boolean clearApiKey) {
+
+        public UpdateUserConfigRequest(Integer baseVersion, JsonNode configValue) {
+            this(baseVersion, configValue, null, null);
+        }
     }
 
     public record UserConfigSaved(
@@ -47,6 +55,31 @@ public final class UserConfigModels {
             String activeModel,
             String lastTestStatus,
             String lastError,
-            LocalDateTime checkedAt) {
+            LocalDateTime checkedAt,
+            Integer configVersion) {
+
+        public ModelStatus(
+                boolean configured,
+                boolean available,
+                String provider,
+                String providerName,
+                String activeModel,
+                String lastTestStatus,
+                String lastError,
+                LocalDateTime checkedAt) {
+            this(
+                    configured,
+                    available,
+                    provider,
+                    providerName,
+                    activeModel,
+                    lastTestStatus,
+                    lastError,
+                    checkedAt,
+                    0);
+        }
+    }
+
+    public record TestModelConnectionRequest(Integer baseVersion) {
     }
 }
