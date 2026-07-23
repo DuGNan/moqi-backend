@@ -5,11 +5,13 @@ import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.stream.ChapterReplyEvent;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.task.dto.AiTaskModels.AiTaskCanceled;
@@ -32,14 +34,16 @@ public class AiTaskServiceImpl implements AiTaskService {
     private static final int MAX_CANCEL_ATTEMPTS = 3;
 
     private final AiTaskMapper taskMapper;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 创建 AI 任务服务。
      *
      * @param taskMapper AI 任务数据访问对象
      */
-    public AiTaskServiceImpl(AiTaskMapper taskMapper) {
+    public AiTaskServiceImpl(AiTaskMapper taskMapper, ApplicationEventPublisher eventPublisher) {
         this.taskMapper = taskMapper;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -57,6 +61,7 @@ public class AiTaskServiceImpl implements AiTaskService {
             }
             AiTaskCanceled canceled = tryCancel(task);
             if (canceled != null) {
+                publishCanceled(task);
                 return canceled;
             }
             task = requireTask(taskId);
@@ -136,5 +141,11 @@ public class AiTaskServiceImpl implements AiTaskService {
      */
     private AiTaskCanceled cancelResult(AiTaskEntity task) {
         return new AiTaskCanceled(task.getId(), task.getTaskStatus(), task.getGmtModified());
+    }
+
+    private void publishCanceled(AiTaskEntity task) {
+        if ("conversation_reply".equals(task.getTaskType())) {
+            eventPublisher.publishEvent(ChapterReplyEvent.canceled(task.getChapterId(), task.getId()));
+        }
     }
 }

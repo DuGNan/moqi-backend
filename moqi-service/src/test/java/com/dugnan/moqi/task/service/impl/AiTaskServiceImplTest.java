@@ -14,9 +14,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.stream.ChapterReplyEvent;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 
@@ -30,6 +32,8 @@ class AiTaskServiceImplTest {
 
     @Mock
     private AiTaskMapper taskMapper;
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
 
     private AiTaskServiceImpl service;
 
@@ -38,7 +42,7 @@ class AiTaskServiceImplTest {
      */
     @BeforeEach
     void setUp() {
-        service = new AiTaskServiceImpl(taskMapper);
+        service = new AiTaskServiceImpl(taskMapper, eventPublisher);
     }
 
     /**
@@ -69,6 +73,7 @@ class AiTaskServiceImplTest {
 
         assertThat(result.taskStatus()).isEqualTo("canceled");
         verify(taskMapper).update(any(), any());
+        verify(eventPublisher).publishEvent(ChapterReplyEvent.canceled(12L, 9001L));
     }
 
     /**

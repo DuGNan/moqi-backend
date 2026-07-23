@@ -244,6 +244,23 @@ public class UserConfigServiceImpl implements UserConfigService {
         return toModelStatus(entity, testedConfig, nextVersion);
     }
 
+    @Override
+    public DeepSeekProviderConfig requireAvailableDeepSeekConfig() {
+        UserConfigEntity entity = findConfig(MODEL_CONFIG_KEY);
+        if (entity == null) {
+            throw modelUnavailable();
+        }
+        JsonNode configValue = parse(entity.getConfigValue());
+        ModelStatus modelStatus = toModelStatus(entity, configValue, version(entity));
+        if (!modelStatus.available()) {
+            throw modelUnavailable();
+        }
+        return new DeepSeekProviderConfig(
+                text(configValue, "baseUrl"),
+                text(configValue, "apiKey"),
+                text(configValue, "defaultModel"));
+    }
+
     private ModelStatus toModelStatus(UserConfigEntity entity, JsonNode configValue, int configVersion) {
         String provider = text(configValue, "provider");
         String providerName = text(configValue, "providerName");
@@ -653,5 +670,11 @@ public class UserConfigServiceImpl implements UserConfigService {
                 ErrorCode.CONFIG_VERSION_CONFLICT,
                 "配置已被更新，请刷新后重试",
                 cause);
+    }
+
+    private BusinessException modelUnavailable() {
+        return new BusinessException(
+                ErrorCode.MODEL_UNAVAILABLE,
+                "DeepSeek 模型尚未配置完成或未通过连通测试");
     }
 }

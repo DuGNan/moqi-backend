@@ -1,5 +1,7 @@
 package com.dugnan.moqi.llm;
 
+import java.util.function.Consumer;
+
 /**
  * @author dgn
  * @date 2026-07-22
@@ -14,6 +16,14 @@ public interface LlmProvider {
      * @return 模型回复
      */
     LlmResponse generate(LlmRequest request);
+
+    /**
+     * 流式生成模型回复。
+     *
+     * @param request 模型请求
+     * @param consumer 文本增量消费者
+     */
+    void stream(LlmRequest request, Consumer<LlmStreamDelta> consumer);
 
     /**
      * 发送最小请求验证当前 Provider 可用性。

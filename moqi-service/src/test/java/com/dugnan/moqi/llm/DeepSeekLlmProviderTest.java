@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -128,6 +130,46 @@ class DeepSeekLlmProviderTest {
         assertProviderError(provider(Duration.ofSeconds(2)), LlmProviderError.NETWORK);
     }
 
+    /**
+     * 验证 DeepSeek SSE 文本增量按上游到达顺序转发给调用方。
+     */
+    @Test
+    void streamsTextDeltasInArrivalOrder() throws Exception {
+        AtomicReference<String> authorization = new AtomicReference<>();
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        start(exchange -> {
+            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            requestBody.set(OBJECT_MAPPER.readTree(exchange.getRequestBody()));
+            eventStream(exchange,
+                    "data: {\"id\":\"stream-test\",\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
+                            + "data: {\"id\":\"stream-test\",\"choices\":[{\"delta\":{\"content\":\"，墨契\"}}]}\n\n"
+                            + "data: [DONE]\n\n");
+        });
+        List<LlmStreamDelta> deltas = new ArrayList<>();
+
+        provider(Duration.ofSeconds(2)).stream(
+                new LlmRequest("系统提示", "用户问题", 128), deltas::add);
+
+        assertThat(authorization.get()).isEqualTo("Bearer " + TEST_API_KEY);
+        assertThat(requestBody.get().get("stream").asBoolean()).isTrue();
+        assertThat(requestBody.get().get("model").asText()).isEqualTo(MODEL);
+        assertThat(requestBody.get().get("max_tokens").asInt()).isEqualTo(128);
+        assertThat(deltas).extracting(LlmStreamDelta::text).containsExactly("你好", "，墨契");
+    }
+
+    /**
+     * 验证配置对象字符串表示不会泄露 API Key。
+     */
+    @Test
+    void masksApiKeyInProviderConfigToString() {
+        DeepSeekProviderConfig config = new DeepSeekProviderConfig(
+                "https://api.deepseek.com", TEST_API_KEY, MODEL);
+
+        assertThat(config.toString())
+                .contains("apiKey=****")
+                .doesNotContain(TEST_API_KEY);
+    }
+
     private void assertStatusError(int status, LlmProviderError expected) throws Exception {
         start(exchange -> json(exchange, status, "upstream-body-must-not-leak"));
         assertProviderError(provider(Duration.ofSeconds(2)), expected);
@@ -193,6 +235,14 @@ class DeepSeekLlmProviderTest {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
         exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
+    private void eventStream(HttpExchange exchange, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+        exchange.sendResponseHeaders(200, 0);
         exchange.getResponseBody().write(bytes);
         exchange.close();
     }
