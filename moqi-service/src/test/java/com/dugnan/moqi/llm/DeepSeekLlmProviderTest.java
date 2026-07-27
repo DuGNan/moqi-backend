@@ -143,18 +143,30 @@ class DeepSeekLlmProviderTest {
             eventStream(exchange,
                     "data: {\"id\":\"stream-test\",\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
                             + "data: {\"id\":\"stream-test\",\"choices\":[{\"delta\":{\"content\":\"，墨契\"}}]}\n\n"
+                            + "data: {\"id\":\"stream-test\",\"model\":\"deepseek-v4-flash\","
+                            + "\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],"
+                            + "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n"
                             + "data: [DONE]\n\n");
         });
-        List<LlmStreamDelta> deltas = new ArrayList<>();
+        List<LlmStreamEvent> events = new ArrayList<>();
 
-        provider(Duration.ofSeconds(2)).stream(
-                new LlmRequest("系统提示", "用户问题", 128), deltas::add);
+        LlmStreamResult result = provider(Duration.ofSeconds(2))
+                .stream(request(128), events::add)
+                .await();
 
         assertThat(authorization.get()).isEqualTo("Bearer " + TEST_API_KEY);
         assertThat(requestBody.get().get("stream").asBoolean()).isTrue();
         assertThat(requestBody.get().get("model").asText()).isEqualTo(MODEL);
         assertThat(requestBody.get().get("max_tokens").asInt()).isEqualTo(128);
-        assertThat(deltas).extracting(LlmStreamDelta::text).containsExactly("你好", "，墨契");
+        assertThat(result.status()).isEqualTo(LlmStreamStatus.COMPLETED);
+        assertThat(events.stream()
+                .filter(LlmStreamEvent.TextDelta.class::isInstance)
+                .map(LlmStreamEvent.TextDelta.class::cast)
+                .map(LlmStreamEvent.TextDelta::text))
+                .containsExactly("你好", "，墨契");
+        assertThat(events).anyMatch(LlmStreamEvent.Metadata.class::isInstance);
+        assertThat(events).anyMatch(LlmStreamEvent.Completed.class::isInstance);
+        assertThat(result.metadata().totalTokens()).isEqualTo(10);
     }
 
     /**
@@ -162,8 +174,8 @@ class DeepSeekLlmProviderTest {
      */
     @Test
     void masksApiKeyInProviderConfigToString() {
-        DeepSeekProviderConfig config = new DeepSeekProviderConfig(
-                "https://api.deepseek.com", TEST_API_KEY, MODEL);
+        LlmProviderRuntimeConfig config = new LlmProviderRuntimeConfig(
+                "deepseek", "https://api.deepseek.com", TEST_API_KEY, MODEL);
 
         assertThat(config.toString())
                 .contains("apiKey=****")
@@ -189,8 +201,97 @@ class DeepSeekLlmProviderTest {
     }
 
     private DeepSeekLlmProvider provider(Duration readTimeout) {
-        DeepSeekProviderConfig config = new DeepSeekProviderConfig(baseUrl(), TEST_API_KEY, MODEL);
+        LlmProviderRuntimeConfig config =
+                new LlmProviderRuntimeConfig("deepseek", baseUrl(), TEST_API_KEY, MODEL);
         return new DeepSeekLlmProvider(config, Duration.ofSeconds(1), readTimeout);
+    }
+
+    /**
+     * 验证多轮顺序、通用选项、JSON object 与完整响应元数据。
+     */
+    @Test
+    void generatesStructuredResponseWithMetadata() throws Exception {
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        start(exchange -> {
+            requestBody.set(OBJECT_MAPPER.readTree(exchange.getRequestBody()));
+            json(exchange, 200, completion("{\"answer\":\"OK\"}", null));
+        });
+        LlmRequest request = new LlmRequest(
+                request(128).messages(),
+                new LlmOptions(128, 0.5, List.of("停止"), LlmResponseFormat.JSON_OBJECT));
+
+        LlmResponse response = provider(Duration.ofSeconds(2)).generate(request);
+
+        assertThat(requestBody.get().get("messages"))
+                .extracting(node -> node.get("role").asText())
+                .containsExactly("system", "user", "assistant", "user");
+        assertThat(requestBody.get().get("temperature").asDouble()).isEqualTo(0.5);
+        assertThat(requestBody.get().get("stop").get(0).asText()).isEqualTo("停止");
+        assertThat(requestBody.get().get("response_format").get("type").asText())
+                .isEqualTo("json_object");
+        assertThat(response.structuredContent().get("answer").asText()).isEqualTo("OK");
+        assertThat(response.metadata().provider()).isEqualTo("deepseek");
+        assertThat(response.metadata().model()).isEqualTo(MODEL);
+        assertThat(response.metadata().finishReason()).isEqualTo("stop");
+        assertThat(response.metadata().inputTokens()).isEqualTo(7);
+        assertThat(response.metadata().outputTokens()).isEqualTo(3);
+        assertThat(response.metadata().totalTokens()).isEqualTo(10);
+        assertThat(response.metadata().providerRequestId()).isEqualTo("test-response");
+    }
+
+    /**
+     * 验证能力声明只包含当前实现实际接入的能力。
+     */
+    @Test
+    void declaresImplementedCapabilities() throws Exception {
+        start(exchange -> json(exchange, 200, completion("OK", null)));
+
+        LlmProviderCapabilities capabilities = provider(Duration.ofSeconds(2)).capabilities();
+
+        assertThat(capabilities.streaming()).isTrue();
+        assertThat(capabilities.structuredOutput()).isTrue();
+        assertThat(capabilities.toolCalling()).isFalse();
+        assertThat(capabilities.maxContextTokens()).isEqualTo(1_000_000);
+        assertThat(capabilities.maxOutputTokens()).isEqualTo(384_000);
+    }
+
+    /**
+     * 验证调用方可在首个 token 之前主动取消 Reactor 上游订阅。
+     */
+    @Test
+    void cancelsStreamBeforeFirstToken() throws Exception {
+        start(exchange -> {
+            try {
+                Thread.sleep(500);
+                eventStream(exchange,
+                        "data: {\"id\":\"late\",\"choices\":[{\"delta\":{\"content\":\"迟到\"}}]}\n\n"
+                                + "data: [DONE]\n\n");
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        LlmStreamCall call = provider(Duration.ofSeconds(2)).stream(request(128), ignored -> {
+        });
+        boolean isFirstCancellation = call.cancel();
+
+        assertThat(isFirstCancellation).isTrue();
+        assertThat(call.await().status()).isEqualTo(LlmStreamStatus.CANCELED);
+        assertThat(call.isDone()).isTrue();
+    }
+
+    private LlmRequest request(Integer maxTokens) {
+        return new LlmRequest(
+                List.of(
+                        new LlmMessage(LlmRole.SYSTEM, "系统提示"),
+                        new LlmMessage(LlmRole.USER, "第一问"),
+                        new LlmMessage(LlmRole.ASSISTANT, "第一答"),
+                        new LlmMessage(LlmRole.USER, "用户问题")),
+                new LlmOptions(
+                        maxTokens,
+                        0.5,
+                        List.of("停止"),
+                        LlmResponseFormat.TEXT));
     }
 
     private void start(ThrowingHandler handler) throws IOException {
@@ -228,6 +329,10 @@ class DeepSeekLlmProviderTest {
         if (reasoningContent != null) {
             message.put("reasoning_content", reasoningContent);
         }
+        root.putObject("usage")
+                .put("prompt_tokens", 7)
+                .put("completion_tokens", 3)
+                .put("total_tokens", 10);
         return OBJECT_MAPPER.writeValueAsString(root);
     }
 

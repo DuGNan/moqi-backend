@@ -37,6 +37,12 @@ public final class UserConfigModels {
         public UpdateUserConfigRequest(Integer baseVersion, JsonNode configValue) {
             this(baseVersion, configValue, null, null);
         }
+
+        @Override
+        public String toString() {
+            return "UpdateUserConfigRequest[baseVersion=" + baseVersion
+                    + ", configValue=****, apiKey=****, clearApiKey=" + clearApiKey + "]";
+        }
     }
 
     public record UserConfigSaved(
