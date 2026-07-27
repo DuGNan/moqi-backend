@@ -5,51 +5,64 @@ import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.deepseek.DeepSeekChatModel;
-import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletion;
+import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionChunk;
+import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionFinishReason;
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionMessage;
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionMessage.Role;
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionRequest;
+import org.springframework.ai.deepseek.api.DeepSeekApi.Usage;
+import org.springframework.ai.deepseek.api.ResponseFormat;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.converter.HttpMessageConversionException;
-import org.springframework.retry.support.RetryTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+
+import reactor.core.Disposable;
 
 /**
  * @author dgn
- * @date 2026-07-22
- * @description 使用 Spring AI DeepSeekApi 与 DeepSeekChatModel 调用 DeepSeek。
+ * @date 2026-07-27
+ * @description 使用现有 Spring AI DeepSeekApi 实现 Provider V2 与可取消流式调用。
  */
 public class DeepSeekLlmProvider implements LlmProvider {
 
     static final int CONNECTION_TEST_MAX_TOKENS = 64;
+    private static final int MAX_STOP_SEQUENCES = 16;
+    private static final int MAX_CONTEXT_TOKENS = 1_000_000;
+    private static final int MAX_OUTPUT_TOKENS = 384_000;
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration READ_TIMEOUT = Duration.ofSeconds(60);
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final LlmProviderCapabilities CAPABILITIES =
+            new LlmProviderCapabilities(true, true, false, MAX_CONTEXT_TOKENS, MAX_OUTPUT_TOKENS);
 
     private final DeepSeekApi deepSeekApi;
-    private final DeepSeekChatModel chatModel;
     private final String model;
 
-    public DeepSeekLlmProvider(DeepSeekProviderConfig config) {
+    public DeepSeekLlmProvider(LlmProviderRuntimeConfig config) {
         this(config, CONNECT_TIMEOUT, READ_TIMEOUT);
     }
 
-    DeepSeekLlmProvider(DeepSeekProviderConfig config, Duration connectTimeout, Duration readTimeout) {
+    DeepSeekLlmProvider(
+            LlmProviderRuntimeConfig config,
+            Duration connectTimeout,
+            Duration readTimeout) {
         HttpClient httpClient = HttpClient.newBuilder().connectTimeout(connectTimeout).build();
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
         requestFactory.setReadTimeout(readTimeout);
@@ -60,81 +73,69 @@ public class DeepSeekLlmProvider implements LlmProvider {
                 .restClientBuilder(restClientBuilder)
                 .responseErrorHandler(new DeepSeekResponseErrorHandler())
                 .build();
-        DeepSeekChatOptions options = DeepSeekChatOptions.builder().model(config.model()).build();
-        this.chatModel = DeepSeekChatModel.builder()
-                .deepSeekApi(deepSeekApi)
-                .defaultOptions(options)
-                .retryTemplate(RetryTemplate.builder().maxAttempts(1).noBackoff().build())
-                .build();
         this.model = config.model();
     }
 
     @Override
     public LlmResponse generate(LlmRequest request) {
         try {
-            DeepSeekChatOptions options = DeepSeekChatOptions.builder()
-                    .model(model)
-                    .maxTokens(request.maxTokens())
-                    .build();
-            ChatResponse response = chatModel.call(new Prompt(messages(request), options));
-            if (isEmptyResponse(response)) {
-                throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
-            }
-            return new LlmResponse(response.getResult().getOutput().getText());
-        } catch (RuntimeException exception) {
-            throw mapException(exception);
-        }
-    }
-
-    @Override
-    public void stream(LlmRequest request, Consumer<LlmStreamDelta> consumer) {
-        try {
-            DeepSeekChatOptions options = DeepSeekChatOptions.builder()
-                    .model(model)
-                    .maxTokens(request.maxTokens())
-                    .build();
-            AtomicBoolean hasText = new AtomicBoolean(false);
-            chatModel.stream(new Prompt(messages(request), options))
-                    .doOnNext(response -> forwardDelta(response, consumer, hasText))
-                    .blockLast();
-            if (!hasText.get()) {
-                throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
-            }
-        } catch (RuntimeException exception) {
-            throw mapException(exception);
-        }
-    }
-
-    @Override
-    public void testConnection() {
-        ChatCompletionMessage message = new ChatCompletionMessage("仅回复 OK", Role.USER);
-        ChatCompletionRequest request = new ChatCompletionRequest(
-                List.of(message),
-                model,
-                null,
-                CONNECTION_TEST_MAX_TOKENS,
-                null,
-                null,
-                null,
-                false,
-                null,
-                null,
-                false,
-                null,
-                null,
-                null);
-        try {
-            ResponseEntity<ChatCompletion> response = deepSeekApi.chatCompletionEntity(request);
+            ResponseEntity<ChatCompletion> response =
+                    deepSeekApi.chatCompletionEntity(apiRequest(request, false));
             ChatCompletion body = response.getBody();
             if (body == null || body.choices() == null || body.choices().isEmpty()) {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
-            var firstChoice = body.choices().get(0);
-            if (firstChoice == null) {
+            ChatCompletion.Choice choice = body.choices().get(0);
+            if (choice == null || choice.message() == null
+                    || !StringUtils.hasText(choice.message().content())) {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
-            ChatCompletionMessage answer = firstChoice.message();
-            if (!hasUsableAnswer(answer)) {
+            String content = choice.message().content();
+            JsonNode structuredContent = structuredContent(request, content);
+            return new LlmResponse(
+                    content,
+                    structuredContent,
+                    metadata(body.id(), body.model(), choice.finishReason(), body.usage()));
+        } catch (RuntimeException exception) {
+            throw mapException(exception);
+        }
+    }
+
+    @Override
+    public LlmStreamCall stream(LlmRequest request, Consumer<LlmStreamEvent> consumer) {
+        if (consumer == null) {
+            throw new IllegalArgumentException("流式事件消费者不能为空");
+        }
+        try {
+            DeepSeekStreamCall call = new DeepSeekStreamCall(consumer);
+            Disposable disposable = deepSeekApi.chatCompletionStream(apiRequest(request, true))
+                    .subscribe(call::onChunk, call::onError, call::onComplete);
+            call.bind(disposable);
+            return call;
+        } catch (RuntimeException exception) {
+            throw mapException(exception);
+        }
+    }
+
+    @Override
+    public LlmProviderCapabilities capabilities() {
+        return CAPABILITIES;
+    }
+
+    @Override
+    public void testConnection() {
+        LlmRequest request = new LlmRequest(
+                List.of(new LlmMessage(LlmRole.USER, "仅回复 OK")),
+                new LlmOptions(CONNECTION_TEST_MAX_TOKENS, null, List.of(), LlmResponseFormat.TEXT));
+        try {
+            ResponseEntity<ChatCompletion> response =
+                    deepSeekApi.chatCompletionEntity(apiRequest(request, false));
+            ChatCompletion body = response.getBody();
+            if (body == null || body.choices() == null || body.choices().isEmpty()) {
+                throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
+            }
+            ChatCompletion.Choice choice = body.choices().get(0);
+            if (!hasConnectionTestContent(choice)) {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
         } catch (RuntimeException exception) {
@@ -142,7 +143,85 @@ public class DeepSeekLlmProvider implements LlmProvider {
         }
     }
 
-    private LlmProviderException mapException(RuntimeException exception) {
+    private boolean hasConnectionTestContent(ChatCompletion.Choice choice) {
+        if (choice == null || choice.message() == null) {
+            return false;
+        }
+        return StringUtils.hasText(choice.message().content())
+                || StringUtils.hasText(choice.message().reasoningContent());
+    }
+
+    private ChatCompletionRequest apiRequest(LlmRequest request, boolean isStream) {
+        if (request.options().stopSequences().size() > MAX_STOP_SEQUENCES) {
+            throw new LlmProviderException(LlmProviderError.REQUEST_REJECTED);
+        }
+        List<ChatCompletionMessage> messages = new ArrayList<>();
+        for (LlmMessage message : request.messages()) {
+            if (message.role() == LlmRole.TOOL) {
+                throw new LlmProviderException(LlmProviderError.UNSUPPORTED_CAPABILITY);
+            }
+            messages.add(new ChatCompletionMessage(message.content(), role(message.role())));
+        }
+        LlmOptions options = request.options();
+        return new ChatCompletionRequest(
+                messages,
+                model,
+                null,
+                options.maxOutputTokens(),
+                null,
+                responseFormat(options.responseFormat()),
+                options.stopSequences().isEmpty() ? null : options.stopSequences(),
+                isStream,
+                options.temperature(),
+                null,
+                null,
+                null,
+                null,
+                null);
+    }
+
+    private Role role(LlmRole role) {
+        return Role.valueOf(role.name());
+    }
+
+    private ResponseFormat responseFormat(LlmResponseFormat responseFormat) {
+        ResponseFormat.Type type = responseFormat == LlmResponseFormat.JSON_OBJECT
+                ? ResponseFormat.Type.JSON_OBJECT
+                : ResponseFormat.Type.TEXT;
+        return ResponseFormat.builder().type(type).build();
+    }
+
+    private JsonNode structuredContent(LlmRequest request, String content) {
+        if (request.options().responseFormat() != LlmResponseFormat.JSON_OBJECT) {
+            return null;
+        }
+        try {
+            JsonNode parsed = OBJECT_MAPPER.readTree(content);
+            if (parsed == null || !parsed.isObject()) {
+                throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
+            }
+            return parsed;
+        } catch (JsonProcessingException exception) {
+            throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
+        }
+    }
+
+    private LlmResponseMetadata metadata(
+            String requestId,
+            String responseModel,
+            ChatCompletionFinishReason finishReason,
+            Usage usage) {
+        return new LlmResponseMetadata(
+                "deepseek",
+                StringUtils.hasText(responseModel) ? responseModel : model,
+                finishReason == null ? null : finishReason.name().toLowerCase(Locale.ROOT),
+                usage == null ? null : usage.promptTokens(),
+                usage == null ? null : usage.completionTokens(),
+                usage == null ? null : usage.totalTokens(),
+                requestId);
+    }
+
+    private LlmProviderException mapException(Throwable exception) {
         if (exception instanceof LlmProviderException providerException) {
             return providerException;
         }
@@ -151,6 +230,9 @@ public class DeepSeekLlmProvider implements LlmProvider {
         }
         if (exception instanceof ResourceAccessException) {
             return new LlmProviderException(LlmProviderError.NETWORK);
+        }
+        if (exception instanceof WebClientResponseException responseException) {
+            return statusError(responseException.getStatusCode().value());
         }
         if (exception instanceof HttpMessageConversionException
                 || hasCause(exception, JsonProcessingException.class)) {
@@ -162,41 +244,17 @@ public class DeepSeekLlmProvider implements LlmProvider {
         return new LlmProviderException(LlmProviderError.NETWORK);
     }
 
-    private List<Message> messages(LlmRequest request) {
-        List<Message> messages = new ArrayList<>();
-        if (StringUtils.hasText(request.systemPrompt())) {
-            messages.add(new SystemMessage(request.systemPrompt()));
+    private LlmProviderException statusError(int status) {
+        if (status == HttpStatus.UNAUTHORIZED.value() || status == HttpStatus.FORBIDDEN.value()) {
+            return new LlmProviderException(LlmProviderError.AUTHENTICATION);
         }
-        messages.add(new UserMessage(request.userPrompt()));
-        return messages;
-    }
-
-    private void forwardDelta(
-            ChatResponse response,
-            Consumer<LlmStreamDelta> consumer,
-            AtomicBoolean hasText) {
-        if (isEmptyResponse(response)) {
-            return;
+        if (status == HttpStatus.TOO_MANY_REQUESTS.value()) {
+            return new LlmProviderException(LlmProviderError.RATE_LIMITED);
         }
-        String text = response.getResult().getOutput().getText();
-        hasText.set(true);
-        consumer.accept(new LlmStreamDelta(text));
-    }
-
-    private boolean isEmptyResponse(ChatResponse response) {
-        if (response == null || response.getResult() == null) {
-            return true;
+        if (status >= HttpStatus.INTERNAL_SERVER_ERROR.value()) {
+            return new LlmProviderException(LlmProviderError.SERVICE_UNAVAILABLE);
         }
-        return response.getResult().getOutput() == null
-                || !StringUtils.hasText(response.getResult().getOutput().getText());
-    }
-
-    private boolean hasUsableAnswer(ChatCompletionMessage answer) {
-        if (answer == null) {
-            return false;
-        }
-        return StringUtils.hasText(answer.content())
-                || StringUtils.hasText(answer.reasoningContent());
+        return new LlmProviderException(LlmProviderError.REQUEST_REJECTED);
     }
 
     private boolean hasCause(Throwable throwable, Class<? extends Throwable> causeType) {
@@ -208,5 +266,119 @@ public class DeepSeekLlmProvider implements LlmProvider {
             current = current.getCause();
         }
         return false;
+    }
+
+    private final class DeepSeekStreamCall implements LlmStreamCall {
+
+        private final Consumer<LlmStreamEvent> consumer;
+        private final CountDownLatch completion = new CountDownLatch(1);
+        private final AtomicReference<Disposable> disposable = new AtomicReference<>();
+        private final AtomicReference<LlmStreamStatus> status =
+                new AtomicReference<>(LlmStreamStatus.RUNNING);
+        private final AtomicReference<LlmResponseMetadata> finalMetadata = new AtomicReference<>();
+        private final AtomicReference<LlmProviderError> error = new AtomicReference<>();
+        private final AtomicBoolean hasText = new AtomicBoolean(false);
+
+        private String requestId;
+        private String responseModel;
+        private ChatCompletionFinishReason finishReason;
+        private Usage usage;
+
+        private DeepSeekStreamCall(Consumer<LlmStreamEvent> consumer) {
+            this.consumer = consumer;
+        }
+
+        private void bind(Disposable subscription) {
+            disposable.set(subscription);
+            if (status.get() == LlmStreamStatus.CANCELED) {
+                subscription.dispose();
+            }
+        }
+
+        private void onChunk(ChatCompletionChunk chunk) {
+            if (status.get() != LlmStreamStatus.RUNNING || chunk == null) {
+                return;
+            }
+            requestId = chunk.id();
+            responseModel = chunk.model();
+            if (chunk.usage() != null) {
+                usage = chunk.usage();
+            }
+            if (chunk.choices() != null && !chunk.choices().isEmpty()) {
+                ChatCompletionChunk.ChunkChoice choice = chunk.choices().get(0);
+                if (choice != null) {
+                    if (choice.finishReason() != null) {
+                        finishReason = choice.finishReason();
+                    }
+                    if (choice.delta() != null && StringUtils.hasText(choice.delta().content())) {
+                        hasText.set(true);
+                        consumer.accept(new LlmStreamEvent.TextDelta(choice.delta().content()));
+                    }
+                }
+            }
+            if (usage != null || finishReason != null) {
+                LlmResponseMetadata current = currentMetadata();
+                finalMetadata.set(current);
+                consumer.accept(new LlmStreamEvent.Metadata(current));
+            }
+        }
+
+        private void onError(Throwable throwable) {
+            if (!status.compareAndSet(LlmStreamStatus.RUNNING, LlmStreamStatus.FAILED)) {
+                return;
+            }
+            error.set(mapException(throwable).getError());
+            completion.countDown();
+        }
+
+        private void onComplete() {
+            if (!hasText.get()) {
+                onError(new LlmProviderException(LlmProviderError.INVALID_RESPONSE));
+                return;
+            }
+            if (!status.compareAndSet(LlmStreamStatus.RUNNING, LlmStreamStatus.COMPLETED)) {
+                return;
+            }
+            LlmResponseMetadata current = currentMetadata();
+            finalMetadata.set(current);
+            try {
+                consumer.accept(new LlmStreamEvent.Completed(current));
+            } finally {
+                completion.countDown();
+            }
+        }
+
+        private LlmResponseMetadata currentMetadata() {
+            return metadata(requestId, responseModel, finishReason, usage);
+        }
+
+        @Override
+        public boolean cancel() {
+            if (!status.compareAndSet(LlmStreamStatus.RUNNING, LlmStreamStatus.CANCELED)) {
+                return false;
+            }
+            Disposable subscription = disposable.get();
+            if (subscription != null) {
+                subscription.dispose();
+            }
+            completion.countDown();
+            return true;
+        }
+
+        @Override
+        public LlmStreamResult await() {
+            try {
+                completion.await();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                cancel();
+            }
+            return new LlmStreamResult(status.get(), finalMetadata.get(), error.get());
+        }
+
+        @Override
+        public boolean isDone() {
+            return status.get() != LlmStreamStatus.RUNNING;
+        }
     }
 }
