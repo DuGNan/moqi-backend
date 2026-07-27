@@ -18,16 +18,7 @@ import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderFactory;
-import com.dugnan.moqi.llm.LlmMessage;
-import com.dugnan.moqi.llm.LlmOptions;
-import com.dugnan.moqi.llm.LlmRole;
 import com.dugnan.moqi.llm.LlmRequest;
-import com.dugnan.moqi.llm.LlmResponseFormat;
-import com.dugnan.moqi.llm.LlmStreamCall;
-import com.dugnan.moqi.llm.LlmStreamCallRegistry;
-import com.dugnan.moqi.llm.LlmStreamEvent;
-import com.dugnan.moqi.llm.LlmStreamResult;
-import com.dugnan.moqi.llm.LlmStreamStatus;
 
 /**
  * @author dgn
@@ -49,7 +40,6 @@ public class ConversationReplyTaskRunner {
     private final LlmProviderFactory providerFactory;
     private final ConversationReplyPersistenceService persistenceService;
     private final ApplicationEventPublisher eventPublisher;
-    private final LlmStreamCallRegistry callRegistry;
 
     public ConversationReplyTaskRunner(
             AiTaskMapper taskMapper,
@@ -57,15 +47,13 @@ public class ConversationReplyTaskRunner {
             UserConfigService userConfigService,
             LlmProviderFactory providerFactory,
             ConversationReplyPersistenceService persistenceService,
-            ApplicationEventPublisher eventPublisher,
-            LlmStreamCallRegistry callRegistry) {
+            ApplicationEventPublisher eventPublisher) {
         this.taskMapper = taskMapper;
         this.messageMapper = messageMapper;
         this.userConfigService = userConfigService;
         this.providerFactory = providerFactory;
         this.persistenceService = persistenceService;
         this.eventPublisher = eventPublisher;
-        this.callRegistry = callRegistry;
     }
 
     public void run(Long taskId) {
@@ -74,31 +62,21 @@ public class ConversationReplyTaskRunner {
                 || !TASK_TYPE.equals(task.getTaskType()) || !claim(task)) {
             return;
         }
-        LlmStreamCall call = null;
         try {
             ChapterConversationMessageEntity input = requireInputMessage(task.getId());
-            LlmProvider provider = providerFactory.create(userConfigService.requireAvailableModelConfig());
+            LlmProvider provider = providerFactory.create(userConfigService.requireAvailableDeepSeekConfig());
             StringBuilder response = new StringBuilder();
             eventPublisher.publishEvent(ChapterReplyEvent.started(task.getChapterId(), task.getId()));
-            call = provider.stream(
-                    request(input),
-                    event -> {
-                        if (event instanceof LlmStreamEvent.TextDelta delta
-                                && !callRegistry.isCancellationRequested(task.getId())
-                                && StringUtils.hasText(delta.text())) {
+            provider.stream(
+                    new LlmRequest("你是墨契的章节共创助手，请围绕用户当前问题给出清晰、可执行的创作建议。", input.getContent(), null),
+                    delta -> {
+                        ensureRunning(task);
+                        if (StringUtils.hasText(delta.text())) {
                             response.append(delta.text());
                             eventPublisher.publishEvent(ChapterReplyEvent.delta(
                                     task.getChapterId(), task.getId(), delta.text()));
                         }
                     });
-            callRegistry.register(task.getId(), call);
-            LlmStreamResult streamResult = call.await();
-            if (streamResult.status() == LlmStreamStatus.CANCELED) {
-                throw new ConversationReplyTaskCanceledException();
-            }
-            if (streamResult.status() == LlmStreamStatus.FAILED) {
-                throw new LlmProviderException(streamResult.error());
-            }
             ensureRunning(task);
             Long messageId = persistenceService.complete(task, input, response.toString());
             eventPublisher.publishEvent(ChapterReplyEvent.completed(task.getChapterId(), task.getId(), messageId));
@@ -110,8 +88,6 @@ public class ConversationReplyTaskRunner {
             fail(task, exception.getErrorCode().name(), exception.getMessage());
         } catch (RuntimeException exception) {
             fail(task, "INTERNAL_ERROR", "AI 回复生成失败，请稍后重试");
-        } finally {
-            callRegistry.unregister(task.getId(), call);
         }
     }
 
@@ -170,24 +146,10 @@ public class ConversationReplyTaskRunner {
     }
 
     private void ensureRunning(AiTaskEntity task) {
-        if (!isRunning(task)) {
+        AiTaskEntity latest = taskMapper.selectById(task.getId());
+        if (latest == null || !STATUS_RUNNING.equals(latest.getTaskStatus())) {
             throw new ConversationReplyTaskCanceledException();
         }
-    }
-
-    private boolean isRunning(AiTaskEntity task) {
-        AiTaskEntity latest = taskMapper.selectById(task.getId());
-        return latest != null && STATUS_RUNNING.equals(latest.getTaskStatus());
-    }
-
-    private LlmRequest request(ChapterConversationMessageEntity input) {
-        return new LlmRequest(
-                List.of(
-                        new LlmMessage(
-                                LlmRole.SYSTEM,
-                                "你是墨契的章节共创助手，请围绕用户当前问题给出清晰、可执行的创作建议。"),
-                        new LlmMessage(LlmRole.USER, input.getContent())),
-                new LlmOptions(null, null, List.of(), LlmResponseFormat.TEXT));
     }
 
     private void fail(AiTaskEntity task, String errorCode, String errorMessage) {

@@ -22,16 +22,8 @@ public interface LlmProvider {
      *
      * @param request 模型请求
      * @param consumer 文本增量消费者
-     * @return 可取消并可等待终态的调用句柄
      */
-    LlmStreamCall stream(LlmRequest request, Consumer<LlmStreamEvent> consumer);
-
-    /**
-     * 返回当前实现真实接入的能力。
-     *
-     * @return Provider 能力
-     */
-    LlmProviderCapabilities capabilities();
+    void stream(LlmRequest request, Consumer<LlmStreamDelta> consumer);
 
     /**
      * 发送最小请求验证当前 Provider 可用性。

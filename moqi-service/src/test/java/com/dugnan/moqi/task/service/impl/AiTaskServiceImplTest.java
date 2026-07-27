@@ -19,7 +19,6 @@ import org.springframework.context.ApplicationEventPublisher;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.stream.ChapterReplyEvent;
-import com.dugnan.moqi.task.event.AiTaskCancellationSignal;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 
@@ -74,21 +73,6 @@ class AiTaskServiceImplTest {
 
         assertThat(result.taskStatus()).isEqualTo("canceled");
         verify(taskMapper).update(any(), any());
-        verify(eventPublisher).publishEvent(ChapterReplyEvent.canceled(12L, 9001L));
-    }
-
-    /**
-     * 验证运行中任务取消会发布独立的 Provider 取消信号。
-     */
-    @Test
-    void cancelsRunningProviderCall() {
-        AiTaskEntity task = task(9001L, "running");
-        when(taskMapper.selectById(9001L)).thenReturn(task);
-        when(taskMapper.update(any(), any())).thenReturn(1);
-
-        service.cancelTask(9001L);
-
-        verify(eventPublisher).publishEvent(new AiTaskCancellationSignal(9001L));
         verify(eventPublisher).publishEvent(ChapterReplyEvent.canceled(12L, 9001L));
     }
 

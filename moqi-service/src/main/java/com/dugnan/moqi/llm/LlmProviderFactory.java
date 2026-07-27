@@ -10,8 +10,8 @@ public interface LlmProviderFactory {
     /**
      * 按不可变配置快照创建新的 Provider。
      *
-     * @param config 供应商无关配置快照
+     * @param config DeepSeek 配置快照
      * @return 新 Provider
      */
-    LlmProvider create(LlmProviderRuntimeConfig config);
+    LlmProvider create(DeepSeekProviderConfig config);
 }

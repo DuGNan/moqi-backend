@@ -44,9 +44,3 @@ logging:
   level:
     root: INFO
     com.dugnan.moqi: INFO
-
-moqi:
-  security:
-    credentials:
-      active-key-id: ${MOQI_CREDENTIAL_ACTIVE_KEY_ID:}
-      keys: ${MOQI_CREDENTIAL_KEYS:}

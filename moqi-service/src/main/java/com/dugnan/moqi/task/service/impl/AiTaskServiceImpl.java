@@ -16,7 +16,6 @@ import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.task.dto.AiTaskModels.AiTaskCanceled;
 import com.dugnan.moqi.task.dto.AiTaskModels.AiTaskDetail;
-import com.dugnan.moqi.task.event.AiTaskCancellationSignal;
 import com.dugnan.moqi.task.service.AiTaskService;
 
 /**
@@ -27,10 +26,8 @@ import com.dugnan.moqi.task.service.AiTaskService;
 @Service
 public class AiTaskServiceImpl implements AiTaskService {
 
-    private static final String TASK_TYPE_CONVERSATION_REPLY = "conversation_reply";
-    private static final String STATUS_RUNNING = "running";
     private static final String STATUS_CANCELED = "canceled";
-    private static final Set<String> NON_TERMINAL_STATUSES = Set.of("queued", STATUS_RUNNING);
+    private static final Set<String> NON_TERMINAL_STATUSES = Set.of("queued", "running");
     private static final Set<String> TERMINAL_STATUSES = Set.of("succeeded", "failed", STATUS_CANCELED);
     private static final Set<String> TASK_STATUSES =
             Set.of("queued", "running", "succeeded", "failed", STATUS_CANCELED);
@@ -64,7 +61,6 @@ public class AiTaskServiceImpl implements AiTaskService {
             }
             AiTaskCanceled canceled = tryCancel(task);
             if (canceled != null) {
-                publishProviderCancellation(task);
                 publishCanceled(task);
                 return canceled;
             }
@@ -148,14 +144,8 @@ public class AiTaskServiceImpl implements AiTaskService {
     }
 
     private void publishCanceled(AiTaskEntity task) {
-        if (TASK_TYPE_CONVERSATION_REPLY.equals(task.getTaskType())) {
+        if ("conversation_reply".equals(task.getTaskType())) {
             eventPublisher.publishEvent(ChapterReplyEvent.canceled(task.getChapterId(), task.getId()));
-        }
-    }
-
-    private void publishProviderCancellation(AiTaskEntity task) {
-        if (STATUS_RUNNING.equals(task.getTaskStatus())) {
-            eventPublisher.publishEvent(new AiTaskCancellationSignal(task.getId()));
         }
     }
 }
