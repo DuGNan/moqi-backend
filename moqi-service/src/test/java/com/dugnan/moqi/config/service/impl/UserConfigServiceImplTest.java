@@ -16,7 +16,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,7 +31,8 @@ import com.dugnan.moqi.config.dto.UserConfigModels.UpdateUserConfigRequest;
 import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigSaved;
 import com.dugnan.moqi.config.entity.UserConfigEntity;
 import com.dugnan.moqi.config.mapper.UserConfigMapper;
-import com.dugnan.moqi.llm.DeepSeekProviderConfig;
+import com.dugnan.moqi.credential.CredentialSummary;
+import com.dugnan.moqi.credential.LlmCredentialService;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderError;
 import com.dugnan.moqi.llm.LlmProviderException;
@@ -57,6 +57,9 @@ class UserConfigServiceImplTest {
     @Mock
     private LlmProvider provider;
 
+    @Mock
+    private LlmCredentialService credentialService;
+
     private ObjectMapper objectMapper;
     private UserConfigServiceImpl service;
 
@@ -66,7 +69,14 @@ class UserConfigServiceImplTest {
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        service = new UserConfigServiceImpl(configMapper, objectMapper, providerFactory);
+        org.mockito.Mockito.lenient()
+                .when(credentialService.summary(any()))
+                .thenReturn(CredentialSummary.missing());
+        service = new UserConfigServiceImpl(
+                configMapper,
+                objectMapper,
+                providerFactory,
+                credentialService);
     }
 
     /**
@@ -135,7 +145,7 @@ class UserConfigServiceImplTest {
     }
 
     /**
-     * 验证模型配置创建时写入受控顶层 Key、固定 DeepSeek 元数据并重置测试状态。
+     * 验证模型配置创建时只写非敏感元数据，并把 Key 交给独立凭据服务。
      */
     @Test
     void createsNormalizedDeepSeekModelConfigWithApiKey() {
@@ -159,9 +169,11 @@ class UserConfigServiceImplTest {
             return value.contains("\"provider\":\"deepseek\"")
                     && value.contains("\"baseUrl\":\"https://api.deepseek.com\"")
                     && value.contains("\"defaultModel\":\"deepseek-v4-pro\"")
-                    && value.contains("\"apiKey\":\"" + TEST_API_KEY + "\"")
+                    && !value.contains("apiKey")
+                    && !value.contains(TEST_API_KEY)
                     && value.contains("\"lastTestStatus\":\"not_tested\"");
         }));
+        verify(credentialService).store(any(), org.mockito.ArgumentMatchers.eq(TEST_API_KEY));
     }
 
     /**
@@ -169,6 +181,8 @@ class UserConfigServiceImplTest {
      */
     @Test
     void masksStoredModelApiKeyOnRead() {
+        when(credentialService.summary(any()))
+                .thenReturn(new CredentialSummary(true, "****-key", 1));
         when(configMapper.selectList(any())).thenReturn(List.of(config(
                 602L,
                 "model.active",
@@ -188,6 +202,8 @@ class UserConfigServiceImplTest {
      */
     @Test
     void fullyMasksShortStoredModelApiKey() {
+        when(credentialService.summary(any()))
+                .thenReturn(new CredentialSummary(true, "****", 1));
         when(configMapper.selectList(any())).thenReturn(List.of(config(
                 602L,
                 "model.active",
@@ -242,7 +258,7 @@ class UserConfigServiceImplTest {
     }
 
     /**
-     * 验证空白 Key 保留旧值，显式删除会移除旧值。
+     * 验证空白 Key 不触碰凭据，显式删除由独立凭据服务执行。
      */
     @Test
     void preservesOrClearsStoredApiKeyExplicitly() {
@@ -261,39 +277,24 @@ class UserConfigServiceImplTest {
                 "model.active",
                 new UpdateUserConfigRequest(2, objectMapper.createObjectNode(), null, true));
 
-        var wrappers = org.mockito.Mockito.mockingDetails(configMapper).getInvocations().stream()
-                .filter(invocation -> invocation.getMethod().getName().equals("update"))
-                .map(invocation -> invocation.getArgument(1))
-                .map(com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper.class::cast)
-                .map(wrapper -> wrapper.getParamNameValuePairs().values().stream()
-                        .filter(String.class::isInstance)
-                        .map(String.class::cast)
-                        .collect(Collectors.joining(" ")))
-                .toList();
-        assertThat((String) wrappers.get(0)).contains(TEST_API_KEY);
-        assertThat((String) wrappers.get(1)).doesNotContain(TEST_API_KEY);
+        verify(credentialService, never()).store(any(), any());
+        verify(credentialService).clear(any());
     }
 
     /**
-     * 验证非空新 Key 会替换数据库中的旧 Key。
+     * 验证非空新 Key 只交给独立凭据服务替换。
      */
     @Test
     void replacesStoredApiKey() {
         String replacementKey = "replacement-test-key";
         when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
-        when(configMapper.update(any(), any())).thenAnswer(invocation -> {
-            var wrapper = (com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<?>) invocation.getArgument(1);
-            String values = wrapper.getParamNameValuePairs().values().stream()
-                    .filter(String.class::isInstance)
-                    .map(String.class::cast)
-                    .collect(Collectors.joining(" "));
-            assertThat(values).contains(replacementKey).doesNotContain(TEST_API_KEY);
-            return 1;
-        });
+        when(configMapper.update(any(), any())).thenReturn(1);
 
         service.updateConfig(
                 "model.active",
                 new UpdateUserConfigRequest(2, objectMapper.createObjectNode(), replacementKey, false));
+
+        verify(credentialService).store(any(), org.mockito.ArgumentMatchers.eq(replacementKey));
     }
 
     /**
@@ -541,6 +542,7 @@ class UserConfigServiceImplTest {
      */
     @Test
     void reportsConfiguredModelAsNotTestedAndUnavailable() {
+        configureStoredCredential();
         when(configMapper.selectList(any())).thenReturn(List.of(config(
                 601L,
                 "model.active",
@@ -565,6 +567,7 @@ class UserConfigServiceImplTest {
      */
     @Test
     void returnsAvailableDeepSeekRuntimeConfig() {
+        configureStoredCredential();
         when(configMapper.selectList(any())).thenReturn(List.of(config(
                 601L,
                 "model.active",
@@ -576,7 +579,7 @@ class UserConfigServiceImplTest {
                         + "\"lastTestStatus\":\"success\"}",
                 1)));
 
-        DeepSeekProviderConfig result = service.requireAvailableDeepSeekConfig();
+        var result = service.requireAvailableModelConfig();
 
         assertThat(result.baseUrl()).isEqualTo("https://api.deepseek.com");
         assertThat(result.apiKey()).isEqualTo(TEST_API_KEY);
@@ -588,9 +591,10 @@ class UserConfigServiceImplTest {
      */
     @Test
     void rejectsUnavailableDeepSeekRuntimeConfig() {
+        configureStoredCredential();
         when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(1)));
 
-        assertThatThrownBy(() -> service.requireAvailableDeepSeekConfig())
+        assertThatThrownBy(() -> service.requireAvailableModelConfig())
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.MODEL_UNAVAILABLE);
@@ -637,6 +641,7 @@ class UserConfigServiceImplTest {
      */
     @Test
     void persistsSuccessfulConnectionTest() {
+        configureStoredCredential();
         when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
         when(providerFactory.create(any())).thenReturn(provider);
         when(configMapper.update(any(), any())).thenReturn(1);
@@ -657,6 +662,7 @@ class UserConfigServiceImplTest {
      */
     @Test
     void persistsSafeFailedConnectionTest() {
+        configureStoredCredential();
         when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
         when(providerFactory.create(any())).thenReturn(provider);
         org.mockito.Mockito.doThrow(new LlmProviderException(LlmProviderError.AUTHENTICATION))
@@ -676,6 +682,7 @@ class UserConfigServiceImplTest {
      */
     @Test
     void rejectsConnectionTestWriteBackWhenConfigVersionChanged() {
+        configureStoredCredential();
         when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
         when(providerFactory.create(any())).thenReturn(provider);
         when(configMapper.update(any(), any())).thenReturn(0);
@@ -714,9 +721,32 @@ class UserConfigServiceImplTest {
                         + "\"providerName\":\"DeepSeek\","
                         + "\"baseUrl\":\"https://api.deepseek.com\","
                         + "\"defaultModel\":\"deepseek-v4-flash\","
-                        + "\"apiKey\":\"" + TEST_API_KEY + "\","
                         + "\"lastTestStatus\":\"not_tested\"}",
                 version);
+    }
+
+    /**
+     * 验证包含 Key 的 API 请求对象字符串表示不会泄露请求内容。
+     */
+    @Test
+    void masksApiKeyInUpdateRequestToString() {
+        UpdateUserConfigRequest request = new UpdateUserConfigRequest(
+                1,
+                objectMapper.createObjectNode().put("nested", "private-value"),
+                TEST_API_KEY,
+                false);
+
+        assertThat(request.toString())
+                .contains("apiKey=****", "configValue=****")
+                .doesNotContain(TEST_API_KEY, "private-value");
+    }
+
+    private void configureStoredCredential() {
+        when(credentialService.summary(any()))
+                .thenReturn(new CredentialSummary(true, "****-key", 1));
+        org.mockito.Mockito.lenient()
+                .when(credentialService.requirePlaintext(any()))
+                .thenReturn(TEST_API_KEY);
     }
 
     /**

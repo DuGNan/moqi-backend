@@ -4,7 +4,7 @@ import com.dugnan.moqi.config.dto.UserConfigModels.ModelStatus;
 import com.dugnan.moqi.config.dto.UserConfigModels.UpdateUserConfigRequest;
 import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigDetail;
 import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigSaved;
-import com.dugnan.moqi.llm.DeepSeekProviderConfig;
+import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 
 /**
  * @author dgn
@@ -45,5 +45,10 @@ public interface UserConfigService {
      */
     ModelStatus testModelConnection(Integer baseVersion);
 
-    DeepSeekProviderConfig requireAvailableDeepSeekConfig();
+    /**
+     * 获取已配置且已通过连接测试的供应商无关运行时配置。
+     *
+     * @return 运行时配置
+     */
+    LlmProviderRuntimeConfig requireAvailableModelConfig();
 }
