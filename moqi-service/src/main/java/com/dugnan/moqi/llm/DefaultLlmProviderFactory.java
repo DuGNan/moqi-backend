@@ -5,18 +5,13 @@ import org.springframework.stereotype.Component;
 /**
  * @author dgn
  * @date 2026-07-22
- * @description 根据供应商无关配置动态创建 Provider。
+ * @description 每次按配置快照创建新的 DeepSeek Provider。
  */
 @Component
 public class DefaultLlmProviderFactory implements LlmProviderFactory {
 
-    private static final String DEEPSEEK_PROVIDER = "deepseek";
-
     @Override
-    public LlmProvider create(LlmProviderRuntimeConfig config) {
-        if (!DEEPSEEK_PROVIDER.equals(config.provider())) {
-            throw new LlmProviderException(LlmProviderError.UNSUPPORTED_PROVIDER);
-        }
+    public LlmProvider create(DeepSeekProviderConfig config) {
         return new DeepSeekLlmProvider(config);
     }
 }

@@ -29,14 +29,9 @@ import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigSaved;
 import com.dugnan.moqi.config.entity.UserConfigEntity;
 import com.dugnan.moqi.config.mapper.UserConfigMapper;
 import com.dugnan.moqi.config.service.UserConfigService;
-import com.dugnan.moqi.credential.CredentialIdentity;
-import com.dugnan.moqi.credential.CredentialSecurityException;
-import com.dugnan.moqi.credential.CredentialStateConflictException;
-import com.dugnan.moqi.credential.CredentialSummary;
-import com.dugnan.moqi.credential.LlmCredentialService;
+import com.dugnan.moqi.llm.DeepSeekProviderConfig;
 import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderFactory;
-import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 
 /**
  * @author dgn
@@ -50,7 +45,6 @@ public class UserConfigServiceImpl implements UserConfigService {
     private static final String MODEL_CONFIG_KEY = "model.active";
     private static final String DEEPSEEK_PROVIDER = "deepseek";
     private static final String DEEPSEEK_PROVIDER_NAME = "DeepSeek";
-    private static final String API_KEY_CREDENTIAL_TYPE = "api_key";
     private static final String DEEPSEEK_BASE_URL = "https://api.deepseek.com";
     private static final String DEFAULT_MODEL = "deepseek-v4-flash";
     private static final String NOT_TESTED = "not_tested";
@@ -91,7 +85,6 @@ public class UserConfigServiceImpl implements UserConfigService {
     private final UserConfigMapper configMapper;
     private final ObjectMapper objectMapper;
     private final LlmProviderFactory providerFactory;
-    private final LlmCredentialService credentialService;
 
     /**
      * 创建用户配置服务。
@@ -103,12 +96,10 @@ public class UserConfigServiceImpl implements UserConfigService {
     public UserConfigServiceImpl(
             UserConfigMapper configMapper,
             ObjectMapper objectMapper,
-            LlmProviderFactory providerFactory,
-            LlmCredentialService credentialService) {
+            LlmProviderFactory providerFactory) {
         this.configMapper = configMapper;
         this.objectMapper = objectMapper;
         this.providerFactory = providerFactory;
-        this.credentialService = credentialService;
     }
 
     @Override
@@ -129,9 +120,7 @@ public class UserConfigServiceImpl implements UserConfigService {
                     null);
         }
         JsonNode publicValue = MODEL_CONFIG_KEY.equals(key)
-                ? sanitizeModelConfig(
-                        parse(entity.getConfigValue()),
-                        credentialService.summary(modelCredentialIdentity()))
+                ? sanitizeModelConfig(parse(entity.getConfigValue()))
                 : sanitize(parse(entity.getConfigValue()));
         return new UserConfigDetail(
                 entity.getId(),
@@ -166,18 +155,16 @@ public class UserConfigServiceImpl implements UserConfigService {
         UserConfigEntity entity = findConfig(key);
         if (entity == null) {
             JsonNode valueToSave = MODEL_CONFIG_KEY.equals(key)
-                    ? normalizeModelConfig(configValue, request)
+                    ? normalizeModelConfig(configValue, null, request)
                     : configValue;
-            UserConfigSaved saved = createConfig(key, request.baseVersion(), valueToSave);
-            applyCredentialOperation(key, request);
-            return saved;
+            return createConfig(key, request.baseVersion(), valueToSave);
         }
         int currentVersion = version(entity);
         if (request.baseVersion() != currentVersion) {
             throw versionConflict();
         }
         JsonNode valueToSave = MODEL_CONFIG_KEY.equals(key)
-                ? normalizeModelConfig(configValue, request)
+                ? normalizeModelConfig(configValue, entity, request)
                 : configValue;
 
         int nextVersion = currentVersion + 1;
@@ -194,7 +181,6 @@ public class UserConfigServiceImpl implements UserConfigService {
         if (configMapper.update(null, update) != 1) {
             throw versionConflict();
         }
-        applyCredentialOperation(key, request);
         return new UserConfigSaved(entity.getId(), key, nextVersion, modifiedAt);
     }
 
@@ -204,10 +190,7 @@ public class UserConfigServiceImpl implements UserConfigService {
         JsonNode configValue = entity == null
                 ? objectMapper.createObjectNode()
                 : parse(entity.getConfigValue());
-        return toModelStatus(
-                configValue,
-                credentialService.summary(modelCredentialIdentity()),
-                entity == null ? 0 : version(entity));
+        return toModelStatus(entity, configValue, entity == null ? 0 : version(entity));
     }
 
     @Override
@@ -220,22 +203,20 @@ public class UserConfigServiceImpl implements UserConfigService {
             throw versionConflict();
         }
         JsonNode configValue = parse(entity.getConfigValue());
+        String apiKey = text(configValue, "apiKey");
         String model = text(configValue, "defaultModel");
-        CredentialSummary credential = credentialService.summary(modelCredentialIdentity());
-        if (!credential.configured() || !ALLOWED_MODELS.contains(model)) {
+        if (!StringUtils.hasText(apiKey) || !ALLOWED_MODELS.contains(model)) {
             throw badRequest("DeepSeek 模型尚未配置");
         }
 
         String testStatus = "success";
         String safeError = null;
         try {
-            providerFactory.create(runtimeConfig(configValue))
+            providerFactory.create(new DeepSeekProviderConfig(DEEPSEEK_BASE_URL, apiKey, model))
                     .testConnection();
         } catch (LlmProviderException exception) {
             testStatus = "failed";
             safeError = exception.getMessage();
-        } catch (CredentialSecurityException exception) {
-            throw modelCredentialUnavailable(exception);
         }
 
         LocalDateTime testedAt = LocalDateTime.now();
@@ -260,37 +241,32 @@ public class UserConfigServiceImpl implements UserConfigService {
         if (configMapper.update(null, update) != 1) {
             throw versionConflict();
         }
-        return toModelStatus(testedConfig, credential, nextVersion);
+        return toModelStatus(entity, testedConfig, nextVersion);
     }
 
     @Override
-    public LlmProviderRuntimeConfig requireAvailableModelConfig() {
+    public DeepSeekProviderConfig requireAvailableDeepSeekConfig() {
         UserConfigEntity entity = findConfig(MODEL_CONFIG_KEY);
         if (entity == null) {
             throw modelUnavailable();
         }
         JsonNode configValue = parse(entity.getConfigValue());
-        CredentialSummary credential = credentialService.summary(modelCredentialIdentity());
-        ModelStatus modelStatus = toModelStatus(configValue, credential, version(entity));
+        ModelStatus modelStatus = toModelStatus(entity, configValue, version(entity));
         if (!modelStatus.available()) {
             throw modelUnavailable();
         }
-        try {
-            return runtimeConfig(configValue);
-        } catch (CredentialSecurityException exception) {
-            throw modelCredentialUnavailable(exception);
-        }
+        return new DeepSeekProviderConfig(
+                text(configValue, "baseUrl"),
+                text(configValue, "apiKey"),
+                text(configValue, "defaultModel"));
     }
 
-    private ModelStatus toModelStatus(
-            JsonNode configValue,
-            CredentialSummary credential,
-            int configVersion) {
+    private ModelStatus toModelStatus(UserConfigEntity entity, JsonNode configValue, int configVersion) {
         String provider = text(configValue, "provider");
         String providerName = text(configValue, "providerName");
         String baseUrl = text(configValue, "baseUrl");
         String activeModel = text(configValue, "defaultModel");
-        boolean isConfigured = credential.configured()
+        boolean isConfigured = StringUtils.hasText(text(configValue, "apiKey"))
                 && DEEPSEEK_PROVIDER.equals(provider)
                 && DEEPSEEK_PROVIDER_NAME.equals(providerName)
                 && DEEPSEEK_BASE_URL.equals(baseUrl)
@@ -318,6 +294,7 @@ public class UserConfigServiceImpl implements UserConfigService {
      */
     private JsonNode normalizeModelConfig(
             JsonNode submitted,
+            UserConfigEntity existing,
             UpdateUserConfigRequest request) {
         boolean isClearRequested = Boolean.TRUE.equals(request.clearApiKey());
         if (request.apiKey() != null && isClearRequested) {
@@ -341,6 +318,11 @@ public class UserConfigServiceImpl implements UserConfigService {
         normalized.put("providerName", DEEPSEEK_PROVIDER_NAME);
         normalized.put("baseUrl", DEEPSEEK_BASE_URL);
         normalized.put("defaultModel", model);
+        String storedApiKey = existing == null ? null : text(parse(existing.getConfigValue()), "apiKey");
+        String nextApiKey = StringUtils.hasText(request.apiKey()) ? request.apiKey().trim() : storedApiKey;
+        if (!isClearRequested && StringUtils.hasText(nextApiKey)) {
+            normalized.put("apiKey", nextApiKey);
+        }
         normalized.put("lastTestStatus", NOT_TESTED);
         return normalized;
     }
@@ -348,47 +330,25 @@ public class UserConfigServiceImpl implements UserConfigService {
     /**
      * 构造不含明文密钥的模型配置响应。
      */
-    private JsonNode sanitizeModelConfig(JsonNode stored, CredentialSummary credential) {
+    private JsonNode sanitizeModelConfig(JsonNode stored) {
         ObjectNode sanitized = (ObjectNode) sanitize(stored);
-        sanitized.put("apiKeyConfigured", credential.configured());
-        if (credential.configured()) {
-            sanitized.put("apiKeyMasked", credential.maskedValue());
+        String apiKey = text(stored, "apiKey");
+        boolean isConfigured = StringUtils.hasText(apiKey);
+        sanitized.put("apiKeyConfigured", isConfigured);
+        if (isConfigured) {
+            sanitized.put("apiKeyMasked", maskApiKey(apiKey));
         } else {
             sanitized.remove("apiKeyMasked");
         }
         return sanitized;
     }
 
-    private void applyCredentialOperation(String key, UpdateUserConfigRequest request) {
-        if (!MODEL_CONFIG_KEY.equals(key)) {
-            return;
+    private String maskApiKey(String apiKey) {
+        int visibleSuffixLength = 4;
+        if (apiKey.length() <= visibleSuffixLength) {
+            return "****";
         }
-        try {
-            if (Boolean.TRUE.equals(request.clearApiKey())) {
-                credentialService.clear(modelCredentialIdentity());
-            } else if (StringUtils.hasText(request.apiKey())) {
-                credentialService.store(modelCredentialIdentity(), request.apiKey().trim());
-            }
-        } catch (CredentialStateConflictException exception) {
-            throw versionConflict(exception);
-        } catch (CredentialSecurityException exception) {
-            throw modelCredentialUnavailable(exception);
-        }
-    }
-
-    private LlmProviderRuntimeConfig runtimeConfig(JsonNode configValue) {
-        return new LlmProviderRuntimeConfig(
-                text(configValue, "provider"),
-                text(configValue, "baseUrl"),
-                credentialService.requirePlaintext(modelCredentialIdentity()),
-                text(configValue, "defaultModel"));
-    }
-
-    private CredentialIdentity modelCredentialIdentity() {
-        return new CredentialIdentity(
-                LOCAL_USER,
-                DEEPSEEK_PROVIDER,
-                API_KEY_CREDENTIAL_TYPE);
+        return "****" + apiKey.substring(apiKey.length() - visibleSuffixLength);
     }
 
     private LocalDateTime parseDateTime(String value) {
@@ -716,12 +676,5 @@ public class UserConfigServiceImpl implements UserConfigService {
         return new BusinessException(
                 ErrorCode.MODEL_UNAVAILABLE,
                 "DeepSeek 模型尚未配置完成或未通过连通测试");
-    }
-
-    private BusinessException modelCredentialUnavailable(Throwable cause) {
-        return new BusinessException(
-                ErrorCode.MODEL_UNAVAILABLE,
-                "模型凭据安全配置不可用，请联系管理员",
-                cause);
     }
 }

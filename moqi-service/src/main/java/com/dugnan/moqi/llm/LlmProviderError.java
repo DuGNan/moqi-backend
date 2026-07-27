@@ -19,11 +19,7 @@ public enum LlmProviderError {
     /** 其他客户端请求被拒绝。 */
     REQUEST_REJECTED("请求被 DeepSeek 拒绝"),
     /** 无法建立或维持网络连接。 */
-    NETWORK("无法连接 DeepSeek"),
-    /** 当前 Provider 不支持请求能力。 */
-    UNSUPPORTED_CAPABILITY("当前模型供应商不支持请求的能力"),
-    /** 尚未接入指定 Provider。 */
-    UNSUPPORTED_PROVIDER("当前模型供应商尚未接入");
+    NETWORK("无法连接 DeepSeek");
 
     private final String safeMessage;
 
