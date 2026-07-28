@@ -28,6 +28,8 @@ public class AiTaskEntity extends BaseEntity {
 
     private Long resultSuggestionId;
 
+    private Long contextSnapshotId;
+
     private String errorCode;
 
     private String errorMessage;

@@ -20,9 +20,17 @@ import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.config.service.UserConfigService;
+import com.dugnan.moqi.context.StoryContextBuildCommand;
+import com.dugnan.moqi.context.StoryContextItem;
+import com.dugnan.moqi.context.StoryContextProfile;
+import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextSourceType;
+import com.dugnan.moqi.context.StoryContextTaskBindingService;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
+import com.dugnan.moqi.llm.LlmProviderCapabilities;
+import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.llm.LlmStreamCall;
 import com.dugnan.moqi.llm.LlmStreamCallRegistry;
 import com.dugnan.moqi.llm.LlmStreamEvent;
@@ -49,6 +57,8 @@ class ConversationReplyTaskRunnerTest {
     private LlmProvider provider;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private StoryContextTaskBindingService contextBindingService;
 
     @Test
     void streamsReplyThenPersistsAssistantMessage() {
@@ -126,6 +136,49 @@ class ConversationReplyTaskRunnerTest {
         verify(eventPublisher, never()).publishEvent(
                 ChapterReplyEvent.delta(2L, 12L, "取消后的迟到增量"));
         assertThat(callRegistry.isCancellationRequested(12L)).isFalse();
+    }
+
+    @Test
+    void buildsAndSendsStoryContextBeforeStreaming() {
+        AiTaskEntity task = task("queued", 0);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        when(userConfigService.requireAvailableModelConfig()).thenReturn(
+                new LlmProviderRuntimeConfig("deepseek", "https://api.deepseek.com", "test-key", "deepseek-v4-flash"));
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, true, false, 16384, 8192));
+        StoryContextSnapshot snapshot = new StoryContextSnapshot(
+                88L, "chapter_discussion:1:2:8", 1L, 2L, 8L,
+                StoryContextProfile.CHAPTER_DISCUSSION, 1, 1, 16384, 4096, 12288, 12,
+                "hash", List.of(
+                        new StoryContextItem(StoryContextSourceType.SYSTEM_RULE, "system", "v1", null,
+                                "SYSTEM", "系统规则", true, 1000, 0, 2, 2, "INCLUDED"),
+                        new StoryContextItem(StoryContextSourceType.USER_INPUT, "11", null, null,
+                                "USER", "讨论本章目标", true, 1000, 500, 3, 3, "INCLUDED")),
+                List.of(), null);
+        when(contextBindingService.buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class)))
+                .thenReturn(snapshot);
+        org.mockito.Mockito.doAnswer(invocation -> new CompletedCall())
+                .when(provider).stream(any(), any());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(99L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper, messageMapper, userConfigService, providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher, new LlmStreamCallRegistry(), contextBindingService).run(12L);
+
+        ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).stream(requestCaptor.capture(), any());
+        assertThat(requestCaptor.getValue().messages()).extracting(message -> message.content())
+                .containsExactly("系统规则", "讨论本章目标");
+        assertThat(requestCaptor.getValue().options().maxOutputTokens()).isEqualTo(4096);
+        org.mockito.Mockito.verify(contextBindingService)
+                .buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class));
     }
 
     private AiTaskEntity task(String status, int version) {
