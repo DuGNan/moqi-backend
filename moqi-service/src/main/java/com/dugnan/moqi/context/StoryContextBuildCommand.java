@@ -13,7 +13,36 @@ public record StoryContextBuildCommand(
         String currentInput,
         String targetText,
         int contextWindowTokens,
-        int outputReserveTokens) {
+        int outputReserveTokens,
+        StoryContextFocus discussionFocus) {
+
+    /**
+     * 保留不含讨论对焦的旧构造入口。
+     */
+    public StoryContextBuildCommand(
+            StoryContextProfile profile,
+            Long workId,
+            Long chapterId,
+            Long conversationId,
+            Long currentMessageId,
+            String taskInstruction,
+            String currentInput,
+            String targetText,
+            int contextWindowTokens,
+            int outputReserveTokens) {
+        this(
+                profile,
+                workId,
+                chapterId,
+                conversationId,
+                currentMessageId,
+                taskInstruction,
+                currentInput,
+                targetText,
+                contextWindowTokens,
+                outputReserveTokens,
+                null);
+    }
 
     public StoryContextBuildCommand {
         if (profile == null || workId == null || workId <= 0

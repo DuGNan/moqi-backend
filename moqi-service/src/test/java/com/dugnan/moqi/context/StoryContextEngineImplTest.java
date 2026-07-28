@@ -152,6 +152,51 @@ class StoryContextEngineImplTest {
                 && item.selectionReason().startsWith("TRUNCATED"));
     }
 
+    /**
+     * 验证待决、当前共识和来源讨论以固定来源类型进入上下文。
+     */
+    @Test
+    void includesDiscussionFocusBeforeCurrentUserInput() {
+        WorkEntity work = new WorkEntity();
+        work.setId(1L);
+        work.setTitle("墨契");
+        work.setDeleted(0);
+        ChapterEntity chapter = chapter(2L, 1L);
+        ChapterConversationEntity conversation = conversation(3L, 1L, 2L);
+        ChapterConversationMessageEntity message = message(4L, 3L, 2L, "我倾向先救人");
+        when(workMapper.selectById(1L)).thenReturn(work);
+        when(chapterMapper.selectById(2L)).thenReturn(chapter);
+        when(conversationMapper.selectById(3L)).thenReturn(conversation);
+        when(messageMapper.selectById(4L)).thenReturn(message);
+        StoryContextFocus focus = new StoryContextFocus(
+                21L,
+                0,
+                "protagonist_choice",
+                "待决：主角选择",
+                "{\"schemaVersion\":1}",
+                List.of(new StoryContextFocus.StoryContextFocusSource(11L, "user", "先救人")));
+
+        StoryContextSnapshot result = engine.build(new StoryContextBuildCommand(
+                StoryContextProfile.CHAPTER_DISCUSSION,
+                1L,
+                2L,
+                3L,
+                4L,
+                "围绕待决讨论",
+                "我倾向先救人",
+                null,
+                4096,
+                512,
+                focus));
+
+        assertThat(result.items()).extracting(StoryContextItem::sourceType)
+                .containsSubsequence(
+                        StoryContextSourceType.DECISION_FOCUS,
+                        StoryContextSourceType.CHAPTER_CONSENSUS,
+                        StoryContextSourceType.DECISION_SOURCE_MESSAGE)
+                .endsWith(StoryContextSourceType.USER_INPUT);
+    }
+
     private ChapterEntity chapter(Long id, Long workId) {
         ChapterEntity chapter = new ChapterEntity();
         chapter.setId(id);

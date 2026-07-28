@@ -26,10 +26,41 @@ public final class AiTaskModels {
             Long chapterId,
             Long resultMessageId,
             Long resultGenerationId,
+            Long resultBriefId,
             String errorCode,
             String errorMessage,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
+
+        /**
+         * 保留不含 Brief 结果引用的旧构造入口。
+         */
+        public AiTaskDetail(
+                Long id,
+                String taskType,
+                String taskStatus,
+                Long workId,
+                Long chapterId,
+                Long resultMessageId,
+                Long resultGenerationId,
+                String errorCode,
+                String errorMessage,
+                LocalDateTime gmtCreate,
+                LocalDateTime gmtModified) {
+            this(
+                    id,
+                    taskType,
+                    taskStatus,
+                    workId,
+                    chapterId,
+                    resultMessageId,
+                    resultGenerationId,
+                    null,
+                    errorCode,
+                    errorMessage,
+                    gmtCreate,
+                    gmtModified);
+        }
     }
 
     public record AiTaskCanceled(

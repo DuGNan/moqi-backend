@@ -23,7 +23,20 @@ public final class ChapterGenerationModels {
             Integer baseRevision,
             String generationMode,
             String lengthPreset,
-            Integer customWordCount) {
+            Integer customWordCount,
+            Long confirmedBriefId) {
+
+        /**
+         * 保留不显式选择 confirmed Brief 的旧构造入口。
+         */
+        public CreateGenerationRequest(
+                Long outlineId,
+                Integer baseRevision,
+                String generationMode,
+                String lengthPreset,
+                Integer customWordCount) {
+            this(outlineId, baseRevision, generationMode, lengthPreset, customWordCount, null);
+        }
     }
 
     public record GenerationCreated(
