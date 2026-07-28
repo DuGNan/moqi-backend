@@ -6,6 +6,7 @@ import java.util.List;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -15,6 +16,11 @@ import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
+import com.dugnan.moqi.context.StoryContextBuildCommand;
+import com.dugnan.moqi.context.StoryContextProfile;
+import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextTaskBindingException;
+import com.dugnan.moqi.context.StoryContextTaskBindingService;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderFactory;
@@ -50,7 +56,31 @@ public class ConversationReplyTaskRunner {
     private final ConversationReplyPersistenceService persistenceService;
     private final ApplicationEventPublisher eventPublisher;
     private final LlmStreamCallRegistry callRegistry;
+    private final StoryContextTaskBindingService contextBindingService;
 
+    @Autowired
+    public ConversationReplyTaskRunner(
+            AiTaskMapper taskMapper,
+            ChapterConversationMessageMapper messageMapper,
+            UserConfigService userConfigService,
+            LlmProviderFactory providerFactory,
+            ConversationReplyPersistenceService persistenceService,
+            ApplicationEventPublisher eventPublisher,
+            LlmStreamCallRegistry callRegistry,
+            StoryContextTaskBindingService contextBindingService) {
+        this.taskMapper = taskMapper;
+        this.messageMapper = messageMapper;
+        this.userConfigService = userConfigService;
+        this.providerFactory = providerFactory;
+        this.persistenceService = persistenceService;
+        this.eventPublisher = eventPublisher;
+        this.callRegistry = callRegistry;
+        this.contextBindingService = contextBindingService;
+    }
+
+    /**
+     * 保留无上下文引擎的构造入口，供既有单元测试和轻量调用方使用。
+     */
     public ConversationReplyTaskRunner(
             AiTaskMapper taskMapper,
             ChapterConversationMessageMapper messageMapper,
@@ -59,13 +89,8 @@ public class ConversationReplyTaskRunner {
             ConversationReplyPersistenceService persistenceService,
             ApplicationEventPublisher eventPublisher,
             LlmStreamCallRegistry callRegistry) {
-        this.taskMapper = taskMapper;
-        this.messageMapper = messageMapper;
-        this.userConfigService = userConfigService;
-        this.providerFactory = providerFactory;
-        this.persistenceService = persistenceService;
-        this.eventPublisher = eventPublisher;
-        this.callRegistry = callRegistry;
+        this(taskMapper, messageMapper, userConfigService, providerFactory, persistenceService,
+                eventPublisher, callRegistry, null);
     }
 
     public void run(Long taskId) {
@@ -79,9 +104,10 @@ public class ConversationReplyTaskRunner {
             ChapterConversationMessageEntity input = requireInputMessage(task.getId());
             LlmProvider provider = providerFactory.create(userConfigService.requireAvailableModelConfig());
             StringBuilder response = new StringBuilder();
+            StoryContextSnapshot contextSnapshot = buildContext(task, input, provider);
             eventPublisher.publishEvent(ChapterReplyEvent.started(task.getChapterId(), task.getId()));
             call = provider.stream(
-                    request(input),
+                    contextSnapshot == null ? request(input) : request(contextSnapshot),
                     event -> {
                         if (event instanceof LlmStreamEvent.TextDelta delta
                                 && !callRegistry.isCancellationRequested(task.getId())
@@ -104,6 +130,8 @@ public class ConversationReplyTaskRunner {
             eventPublisher.publishEvent(ChapterReplyEvent.completed(task.getChapterId(), task.getId(), messageId));
         } catch (ConversationReplyTaskCanceledException exception) {
             // 取消事件由取消服务发布，执行器不覆盖已取消状态。
+        } catch (StoryContextTaskBindingException exception) {
+            // 快照关联竞争失败时保持任务终态，不调用模型。
         } catch (LlmProviderException exception) {
             fail(task, exception.getError().name(), exception.getMessage());
         } catch (BusinessException exception) {
@@ -178,6 +206,38 @@ public class ConversationReplyTaskRunner {
     private boolean isRunning(AiTaskEntity task) {
         AiTaskEntity latest = taskMapper.selectById(task.getId());
         return latest != null && STATUS_RUNNING.equals(latest.getTaskStatus());
+    }
+
+    private StoryContextSnapshot buildContext(
+            AiTaskEntity task,
+            ChapterConversationMessageEntity input,
+            LlmProvider provider) {
+        if (contextBindingService == null) {
+            return null;
+        }
+        int contextWindow = provider.capabilities().maxContextTokens() == null
+                ? 32768 : provider.capabilities().maxContextTokens();
+        int outputReserve = StoryContextProfile.CHAPTER_DISCUSSION.defaultOutputReserveTokens();
+        if (provider.capabilities().maxOutputTokens() != null) {
+            outputReserve = Math.min(outputReserve, provider.capabilities().maxOutputTokens());
+        }
+        return contextBindingService.buildAndAttach(new StoryContextBuildCommand(
+                StoryContextProfile.CHAPTER_DISCUSSION,
+                task.getWorkId(),
+                task.getChapterId(),
+                input.getConversationId(),
+                input.getId(),
+                "围绕用户当前问题给出清晰、可执行的章节共创建议。",
+                input.getContent(),
+                null,
+                contextWindow,
+                outputReserve), task);
+    }
+
+    private LlmRequest request(StoryContextSnapshot snapshot) {
+        return new LlmRequest(
+                snapshot.toMessages(),
+                new LlmOptions(snapshot.outputReserveTokens(), null, List.of(), LlmResponseFormat.TEXT));
     }
 
     private LlmRequest request(ChapterConversationMessageEntity input) {

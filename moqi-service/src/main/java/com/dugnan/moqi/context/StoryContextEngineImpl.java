@@ -1,0 +1,659 @@
+package com.dugnan.moqi.context;
+
+import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
+
+import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
+import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
+import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.exception.BusinessException;
+import com.dugnan.moqi.context.entity.StoryContextSnapshotEntity;
+import com.dugnan.moqi.context.mapper.StoryContextSnapshotMapper;
+import com.dugnan.moqi.knowledge.entity.ChapterKeyEventEntity;
+import com.dugnan.moqi.knowledge.entity.ChapterSummaryEntity;
+import com.dugnan.moqi.knowledge.entity.ForeshadowingItemEntity;
+import com.dugnan.moqi.knowledge.entity.SettingEntryEntity;
+import com.dugnan.moqi.knowledge.mapper.ChapterKeyEventMapper;
+import com.dugnan.moqi.knowledge.mapper.ChapterSummaryMapper;
+import com.dugnan.moqi.knowledge.mapper.ForeshadowingItemMapper;
+import com.dugnan.moqi.knowledge.mapper.SettingEntryMapper;
+import com.dugnan.moqi.work.entity.ChapterEntity;
+import com.dugnan.moqi.work.entity.ChapterOutlineEntity;
+import com.dugnan.moqi.work.entity.WorkEntity;
+import com.dugnan.moqi.work.mapper.ChapterMapper;
+import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
+import com.dugnan.moqi.work.mapper.WorkMapper;
+
+/**
+ * Story Context Engine V1 的确定性实现。
+ *
+ * @author dgn
+ */
+@Service
+public class StoryContextEngineImpl implements StoryContextEngine {
+
+    private static final int SETTING_LIMIT = 100;
+    private static final int FORESHADOWING_LIMIT = 100;
+    private static final int SUMMARY_LIMIT = 50;
+    private static final int KEY_EVENT_LIMIT = 200;
+    private static final int MESSAGE_LIMIT = 100;
+    private static final int MAX_VERSION_INSERT_RETRIES = 3;
+    private static final String SYSTEM_RULE =
+            "你是墨契的章节共创助手。请严格遵循已确认的故事设定，围绕当前任务给出清晰、可执行的创作建议。";
+
+    private final WorkMapper workMapper;
+    private final ChapterMapper chapterMapper;
+    private final ChapterBriefMapper briefMapper;
+    private final ChapterOutlineQueryMapper outlineMapper;
+    private final SettingEntryMapper settingMapper;
+    private final ForeshadowingItemMapper foreshadowingMapper;
+    private final ChapterSummaryMapper summaryMapper;
+    private final ChapterKeyEventMapper eventMapper;
+    private final ChapterConversationMapper conversationMapper;
+    private final ChapterConversationMessageMapper messageMapper;
+    private final StoryContextSnapshotMapper snapshotMapper;
+    private final TokenEstimator tokenEstimator;
+    private final ObjectMapper objectMapper;
+
+    public StoryContextEngineImpl(
+            WorkMapper workMapper,
+            ChapterMapper chapterMapper,
+            ChapterBriefMapper briefMapper,
+            ChapterOutlineQueryMapper outlineMapper,
+            SettingEntryMapper settingMapper,
+            ForeshadowingItemMapper foreshadowingMapper,
+            ChapterSummaryMapper summaryMapper,
+            ChapterKeyEventMapper eventMapper,
+            ChapterConversationMapper conversationMapper,
+            ChapterConversationMessageMapper messageMapper,
+            StoryContextSnapshotMapper snapshotMapper,
+            TokenEstimator tokenEstimator,
+            ObjectMapper objectMapper) {
+        this.workMapper = workMapper;
+        this.chapterMapper = chapterMapper;
+        this.briefMapper = briefMapper;
+        this.outlineMapper = outlineMapper;
+        this.settingMapper = settingMapper;
+        this.foreshadowingMapper = foreshadowingMapper;
+        this.summaryMapper = summaryMapper;
+        this.eventMapper = eventMapper;
+        this.conversationMapper = conversationMapper;
+        this.messageMapper = messageMapper;
+        this.snapshotMapper = snapshotMapper;
+        this.tokenEstimator = tokenEstimator;
+        this.objectMapper = objectMapper;
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public StoryContextSnapshot build(StoryContextBuildCommand command) {
+        validateBudget(command);
+        WorkEntity work = requireWork(command.workId());
+        ChapterEntity chapter = command.chapterId() == null ? null : requireChapter(command.chapterId());
+        validateScope(command, chapter);
+        ChapterConversationEntity conversation = command.conversationId() == null
+                ? null : requireConversation(command.conversationId());
+        validateConversationScope(conversation, command, chapter);
+        validateCurrentMessage(command, conversation, chapter);
+
+        List<Candidate> candidates = collectCandidates(command, work, chapter, conversation);
+        Selection selection = select(command, candidates);
+        String canonical = canonicalContent(command, selection);
+        String hash = sha256(canonical);
+        String scopeKey = scopeKey(command);
+        StoryContextSnapshotEntity existing = snapshotMapper.selectOne(new LambdaQueryWrapper<StoryContextSnapshotEntity>()
+                .eq(StoryContextSnapshotEntity::getScopeKey, scopeKey)
+                .eq(StoryContextSnapshotEntity::getContentHash, hash)
+                .eq(StoryContextSnapshotEntity::getDeleted, 0));
+        if (existing != null) {
+            return snapshot(existing);
+        }
+        long version = nextVersion(scopeKey);
+        StoryContextSnapshotEntity entity = new StoryContextSnapshotEntity();
+        entity.setScopeKey(scopeKey);
+        entity.setWorkId(command.workId());
+        entity.setChapterId(command.chapterId());
+        entity.setConversationId(command.conversationId());
+        entity.setProfile(command.profile().name());
+        entity.setSchemaVersion(1);
+        entity.setSnapshotVersion(version);
+        entity.setContextWindowTokens(command.contextWindowTokens());
+        entity.setOutputReserveTokens(command.outputReserveTokens());
+        entity.setInputBudgetTokens(command.inputBudgetTokens());
+        entity.setEstimatedInputTokens(selection.estimatedTokens());
+        entity.setContentHash(hash);
+        entity.setSnapshotJson(snapshotJson(selection));
+        entity.setDeleted(0);
+        entity.setVersion(0);
+        for (int attempt = 0; attempt < MAX_VERSION_INSERT_RETRIES; attempt++) {
+            try {
+                snapshotMapper.insert(entity);
+                return new StoryContextSnapshot(
+                        entity.getId(), scopeKey, command.workId(), command.chapterId(), command.conversationId(),
+                        command.profile(), 1, entity.getSnapshotVersion(), command.contextWindowTokens(),
+                        command.outputReserveTokens(), command.inputBudgetTokens(), selection.estimatedTokens(), hash,
+                        selection.items(), selection.decisions(), entity.getGmtCreate());
+            } catch (DuplicateKeyException exception) {
+                StoryContextSnapshotEntity concurrent = snapshotMapper.selectOne(
+                        new LambdaQueryWrapper<StoryContextSnapshotEntity>()
+                                .eq(StoryContextSnapshotEntity::getScopeKey, scopeKey)
+                                .eq(StoryContextSnapshotEntity::getContentHash, hash)
+                                .eq(StoryContextSnapshotEntity::getDeleted, 0));
+                if (concurrent != null) {
+                    return snapshot(concurrent);
+                }
+                entity.setSnapshotVersion(nextVersion(scopeKey));
+            }
+        }
+        throw new BusinessException(ErrorCode.INTERNAL_ERROR, "上下文快照版本并发写入失败");
+    }
+
+    private List<Candidate> collectCandidates(
+            StoryContextBuildCommand command,
+            WorkEntity work,
+            ChapterEntity chapter,
+            ChapterConversationEntity conversation) {
+        List<Candidate> candidates = new ArrayList<>();
+        add(candidates, StoryContextSourceType.SYSTEM_RULE, "system-v1", "SYSTEM", SYSTEM_RULE,
+                true, 1000, 0, null, null, Category.STRUCTURE);
+        if (StringUtils.hasText(command.taskInstruction())) {
+            add(candidates, StoryContextSourceType.TASK_RULE, "task", "SYSTEM", command.taskInstruction(),
+                    true, 990, 1, null, null, Category.STRUCTURE);
+        }
+        add(candidates, StoryContextSourceType.WORK_METADATA, id(work.getId()), "SYSTEM",
+                "作品：" + work.getTitle(), false, 900, 10, work.getVersion(), work.getGmtModified(), Category.STRUCTURE);
+        if (chapter != null) {
+            addBrief(candidates, command, chapter);
+            addOutline(candidates, command, chapter);
+            if (StringUtils.hasText(chapter.getContent())) {
+                add(candidates, StoryContextSourceType.CHAPTER_CONTENT, id(chapter.getId()), "SYSTEM",
+                        chapter.getContent(), false, 700, 300, chapter.getVersion(), chapter.getGmtModified(), Category.CURRENT);
+            }
+        }
+        addKnowledge(candidates, command, chapter);
+        if (StringUtils.hasText(command.targetText())) {
+            add(candidates, StoryContextSourceType.TARGET_TEXT, "target", "SYSTEM", command.targetText(),
+                    command.profile() != StoryContextProfile.CHAPTER_DISCUSSION, 850, 310, null, null, Category.CURRENT);
+        }
+        addConversationHistory(candidates, command, conversation);
+        if (StringUtils.hasText(command.currentInput())) {
+            add(candidates, StoryContextSourceType.USER_INPUT, id(command.currentMessageId()), "USER",
+                    command.currentInput(), true, 1000, 500, null, null, Category.CURRENT);
+        }
+        return candidates;
+    }
+
+    private void addBrief(List<Candidate> candidates, StoryContextBuildCommand command, ChapterEntity chapter) {
+        List<ChapterBriefEntity> briefs = briefMapper.selectList(new LambdaQueryWrapper<ChapterBriefEntity>()
+                .eq(ChapterBriefEntity::getChapterId, chapter.getId())
+                .eq(ChapterBriefEntity::getDeleted, 0)
+                .in(ChapterBriefEntity::getBriefStatus, List.of("confirmed", "draft"))
+                .orderByAsc(ChapterBriefEntity::getBriefStatus)
+                .orderByDesc(ChapterBriefEntity::getGmtModified)
+                .orderByDesc(ChapterBriefEntity::getId)
+                .last("LIMIT 1"));
+        if (!briefs.isEmpty()) {
+            ChapterBriefEntity brief = briefs.get(0);
+            add(candidates, StoryContextSourceType.CHAPTER_BRIEF, id(brief.getId()), "SYSTEM", brief.getBriefContent(),
+                    false, "confirmed".equals(brief.getBriefStatus()) ? 900 : 650, 100,
+                    brief.getVersion(), brief.getGmtModified(), Category.STRUCTURE);
+        }
+    }
+
+    private void addOutline(List<Candidate> candidates, StoryContextBuildCommand command, ChapterEntity chapter) {
+        List<ChapterOutlineEntity> outlines = outlineMapper.selectList(new LambdaQueryWrapper<ChapterOutlineEntity>()
+                .eq(ChapterOutlineEntity::getChapterId, chapter.getId())
+                .eq(ChapterOutlineEntity::getDeleted, 0)
+                .ne(ChapterOutlineEntity::getOutlineStatus, "outdated")
+                .orderByAsc(ChapterOutlineEntity::getOutlineStatus)
+                .orderByDesc(ChapterOutlineEntity::getRevision)
+                .orderByDesc(ChapterOutlineEntity::getId)
+                .last("LIMIT 1"));
+        if (!outlines.isEmpty()) {
+            ChapterOutlineEntity outline = outlines.get(0);
+            add(candidates, StoryContextSourceType.CHAPTER_OUTLINE, id(outline.getId()), "SYSTEM",
+                    outline.getOutlineContent(), false, "confirmed".equals(outline.getOutlineStatus()) ? 900 : 650, 110,
+                    outline.getVersion() + ":" + outline.getRevision(), outline.getGmtModified(), Category.STRUCTURE);
+        }
+    }
+
+    private void addKnowledge(List<Candidate> candidates, StoryContextBuildCommand command, ChapterEntity chapter) {
+        settingMapper.selectList(new LambdaQueryWrapper<SettingEntryEntity>()
+                        .eq(SettingEntryEntity::getWorkId, command.workId())
+                        .eq(SettingEntryEntity::getEntryStatus, "active")
+                        .eq(SettingEntryEntity::getDeleted, 0)
+                        .orderByDesc(SettingEntryEntity::getGmtModified)
+                        .orderByDesc(SettingEntryEntity::getId)
+                        .last("LIMIT " + SETTING_LIMIT))
+                .forEach(setting -> add(candidates, StoryContextSourceType.SETTING_ENTRY, id(setting.getId()), "SYSTEM",
+                        setting.getName() + "：" + setting.getContent(), false, 800, 200,
+                        setting.getVersion(), setting.getGmtModified(), Category.KNOWLEDGE));
+        foreshadowingMapper.selectList(new LambdaQueryWrapper<ForeshadowingItemEntity>()
+                        .eq(ForeshadowingItemEntity::getWorkId, command.workId())
+                        .ne(ForeshadowingItemEntity::getStatus, "abandoned")
+                        .eq(ForeshadowingItemEntity::getDeleted, 0)
+                        .orderByDesc(ForeshadowingItemEntity::getGmtModified)
+                        .orderByDesc(ForeshadowingItemEntity::getId)
+                        .last("LIMIT " + FORESHADOWING_LIMIT))
+                .forEach(item -> add(candidates, StoryContextSourceType.FORESHADOWING, id(item.getId()), "SYSTEM",
+                        item.getTitle() + "：" + item.getDescription(), false, 780, 220,
+                        item.getVersion(), item.getGmtModified(), Category.KNOWLEDGE));
+        summaryMapper.selectList(new LambdaQueryWrapper<ChapterSummaryEntity>()
+                        .eq(ChapterSummaryEntity::getWorkId, command.workId())
+                        .eq(ChapterSummaryEntity::getSummaryStatus, "confirmed")
+                        .eq(ChapterSummaryEntity::getDeleted, 0)
+                        .orderByDesc(ChapterSummaryEntity::getGmtModified)
+                        .orderByDesc(ChapterSummaryEntity::getId)
+                        .last("LIMIT " + SUMMARY_LIMIT))
+                .forEach(summary -> add(candidates, StoryContextSourceType.CHAPTER_SUMMARY, id(summary.getId()), "SYSTEM",
+                        "章节摘要：" + summary.getSummary(), false, 760, 230,
+                        summary.getVersion() + ":" + summary.getContentRevision(), summary.getGmtModified(), Category.KNOWLEDGE));
+        eventMapper.selectList(new LambdaQueryWrapper<ChapterKeyEventEntity>()
+                        .eq(ChapterKeyEventEntity::getWorkId, command.workId())
+                        .eq(ChapterKeyEventEntity::getDeleted, 0)
+                        .orderByDesc(ChapterKeyEventEntity::getGmtModified)
+                        .orderByDesc(ChapterKeyEventEntity::getId)
+                        .last("LIMIT " + KEY_EVENT_LIMIT))
+                .forEach(event -> add(candidates, StoryContextSourceType.CHAPTER_KEY_EVENT, id(event.getId()), "SYSTEM",
+                        event.getEventTitle() + "：" + event.getEventContent(), false, 700, 240,
+                        event.getVersion(), event.getGmtModified(), Category.KNOWLEDGE));
+    }
+
+    private void addConversationHistory(
+            List<Candidate> candidates,
+            StoryContextBuildCommand command,
+            ChapterConversationEntity conversation) {
+        if (conversation == null) {
+            return;
+        }
+        List<ChapterConversationMessageEntity> messages = new ArrayList<>(messageMapper.selectList(
+                new LambdaQueryWrapper<ChapterConversationMessageEntity>()
+                        .eq(ChapterConversationMessageEntity::getConversationId, conversation.getId())
+                        .eq(ChapterConversationMessageEntity::getDeleted, 0)
+                        .lt(command.currentMessageId() != null, ChapterConversationMessageEntity::getId, command.currentMessageId())
+                        .orderByDesc(ChapterConversationMessageEntity::getId)
+                        .last("LIMIT " + MESSAGE_LIMIT)));
+        messages.sort(Comparator.comparing(ChapterConversationMessageEntity::getId));
+        for (int index = 0; index + 1 < messages.size(); index++) {
+            ChapterConversationMessageEntity user = messages.get(index);
+            ChapterConversationMessageEntity assistant = messages.get(index + 1);
+            if (!"user".equals(user.getMessageRole()) || !"assistant".equals(assistant.getMessageRole())) {
+                continue;
+            }
+            add(candidates, StoryContextSourceType.CONVERSATION_TURN,
+                    user.getId() + ":" + assistant.getId(), "USER",
+                    "用户：" + user.getContent() + "\n助手：" + assistant.getContent(), false,
+                    600, 400, user.getVersion() + ":" + assistant.getVersion(), assistant.getGmtModified(), Category.HISTORY);
+            index++;
+        }
+    }
+
+    private Selection select(StoryContextBuildCommand command, List<Candidate> candidates) {
+        Map<String, Candidate> sourceDeduplicated = candidates.stream()
+                .collect(Collectors.toMap(Candidate::dedupeKey, Function.identity(), this::prefer, LinkedHashMap::new));
+        List<Candidate> unique = new ArrayList<>(sourceDeduplicated.values());
+        Set<String> contentKeys = new HashSet<>();
+        List<Candidate> deduplicated = new ArrayList<>();
+        List<StoryContextSelectionDecision> decisions = new ArrayList<>();
+        for (Candidate candidate : unique) {
+            String contentKey = normalize(candidate.content());
+            if (!contentKeys.add(contentKey)) {
+                decisions.add(decision(candidate, "DUPLICATE_CONTENT"));
+            } else {
+                deduplicated.add(candidate);
+            }
+        }
+        int budget = command.inputBudgetTokens();
+        List<Candidate> selected = new ArrayList<>();
+        for (Candidate candidate : deduplicated.stream().filter(Candidate::required).sorted(byOrder()).toList()) {
+            Candidate fitted = fitRequired(candidate, budget);
+            if (fitted == null) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "必需上下文超过模型输入预算");
+            }
+            selected.add(fitted);
+            budget -= fitted.selectedTokens();
+        }
+        List<Candidate> optional = deduplicated.stream().filter(candidate -> !candidate.required()).toList();
+        Map<Category, Integer> quotas = quotas(command.profile(), Math.max(0, budget));
+        for (Category category : Category.values()) {
+            int quota = quotas.get(category);
+            for (Candidate candidate : optional.stream().filter(item -> item.category() == category)
+                    .sorted(byPriority()).toList()) {
+                Candidate fitted = fitOptional(candidate, Math.min(quota, budget));
+                if (fitted != null) {
+                    selected.add(fitted);
+                    quota -= fitted.selectedTokens();
+                    budget -= fitted.selectedTokens();
+                } else {
+                    decisions.add(decision(candidate, "PARTITION_BUDGET"));
+                }
+            }
+        }
+        for (Candidate candidate : optional.stream().filter(item -> !selected.contains(item))
+                .sorted(byPriority()).toList()) {
+            if (candidate.tokens() <= budget) {
+                selected.add(candidate);
+                budget -= candidate.tokens();
+            } else {
+                decisions.add(decision(candidate, "INPUT_BUDGET"));
+            }
+        }
+        selected.sort(byOrder());
+        List<StoryContextItem> items = selected.stream().map(Candidate::item).toList();
+        return new Selection(items, decisions, items.stream().mapToInt(StoryContextItem::selectedTokenEstimate).sum());
+    }
+
+    private Candidate fitOptional(Candidate candidate, int budget) {
+        if (candidate.tokens() <= budget) {
+            return candidate;
+        }
+        if (budget <= 0 || !isTruncatable(candidate.sourceType())) {
+            return null;
+        }
+        String truncated = tokenEstimator.truncate(candidate.content(), budget);
+        int selectedTokens = tokenEstimator.estimate(truncated);
+        return StringUtils.hasText(truncated) && selectedTokens <= budget
+                ? candidate.withContent(truncated, selectedTokens, "TRUNCATED_TO_PARTITION") : null;
+    }
+
+    private boolean isTruncatable(StoryContextSourceType sourceType) {
+        return sourceType == StoryContextSourceType.CHAPTER_CONTENT
+                || sourceType == StoryContextSourceType.CHAPTER_BRIEF
+                || sourceType == StoryContextSourceType.CHAPTER_OUTLINE
+                || sourceType == StoryContextSourceType.TARGET_TEXT;
+    }
+
+    private Candidate fitRequired(Candidate candidate, int budget) {
+        if (candidate.tokens() <= budget) {
+            return candidate;
+        }
+        if (candidate.sourceType() == StoryContextSourceType.USER_INPUT
+                || candidate.sourceType() == StoryContextSourceType.SYSTEM_RULE
+                || candidate.sourceType() == StoryContextSourceType.TASK_RULE) {
+            return null;
+        }
+        String truncated = tokenEstimator.truncate(candidate.content(), budget);
+        if (!StringUtils.hasText(truncated) || tokenEstimator.estimate(truncated) > budget) {
+            return null;
+        }
+        return candidate.withContent(truncated, tokenEstimator.estimate(truncated), "TRUNCATED_TO_FIT");
+    }
+
+    private Map<Category, Integer> quotas(StoryContextProfile profile, int budget) {
+        Map<Category, Integer> result = new LinkedHashMap<>();
+        result.put(Category.STRUCTURE, budget * profile.structurePercent() / 100);
+        result.put(Category.KNOWLEDGE, budget * profile.knowledgePercent() / 100);
+        result.put(Category.CURRENT, budget * profile.currentTextPercent() / 100);
+        result.put(Category.HISTORY, budget * profile.historyPercent() / 100);
+        return result;
+    }
+
+    private void add(
+            List<Candidate> candidates,
+            StoryContextSourceType sourceType,
+            String sourceId,
+            String role,
+            String content,
+            boolean required,
+            int priority,
+            int order,
+            Object contentVersion,
+            LocalDateTime updatedAt,
+            Category category) {
+        if (!StringUtils.hasText(content)) {
+            return;
+        }
+        candidates.add(new Candidate(sourceType, sourceId, contentVersion == null ? null : String.valueOf(contentVersion),
+                updatedAt, role, content, required, priority, order, tokenEstimator.estimate(content),
+                tokenEstimator.estimate(content), "INCLUDED", category));
+    }
+
+    private Candidate prefer(Candidate first, Candidate second) {
+        return first.priority() >= second.priority() ? first : second;
+    }
+
+    private String canonicalContent(StoryContextBuildCommand command, Selection selection) {
+        Map<String, Object> canonical = new LinkedHashMap<>();
+        canonical.put("profile", command.profile().name());
+        canonical.put("contextWindowTokens", command.contextWindowTokens());
+        canonical.put("outputReserveTokens", command.outputReserveTokens());
+        canonical.put("items", selection.items());
+        canonical.put("decisions", selection.decisions());
+        try {
+            return objectMapper.writeValueAsString(canonical);
+        } catch (JsonProcessingException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "上下文快照序列化失败", exception);
+        }
+    }
+
+    private String snapshotJson(Selection selection) {
+        Map<String, Object> payload = Map.of("items", selection.items(), "decisions", selection.decisions());
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "上下文快照序列化失败", exception);
+        }
+    }
+
+    private long nextVersion(String scopeKey) {
+        StoryContextSnapshotEntity latest = snapshotMapper.selectOne(new LambdaQueryWrapper<StoryContextSnapshotEntity>()
+                .eq(StoryContextSnapshotEntity::getScopeKey, scopeKey)
+                .eq(StoryContextSnapshotEntity::getDeleted, 0)
+                .orderByDesc(StoryContextSnapshotEntity::getSnapshotVersion)
+                .last("LIMIT 1"));
+        return latest == null || latest.getSnapshotVersion() == null ? 1 : latest.getSnapshotVersion() + 1;
+    }
+
+    private StoryContextSnapshot snapshot(StoryContextSnapshotEntity entity) {
+        try {
+            SnapshotPayload payload = objectMapper.readValue(entity.getSnapshotJson(), SnapshotPayload.class);
+            return new StoryContextSnapshot(entity.getId(), entity.getScopeKey(), entity.getWorkId(), entity.getChapterId(),
+                    entity.getConversationId(), StoryContextProfile.valueOf(entity.getProfile()), entity.getSchemaVersion(),
+                    entity.getSnapshotVersion(), entity.getContextWindowTokens(), entity.getOutputReserveTokens(),
+                    entity.getInputBudgetTokens(), entity.getEstimatedInputTokens(), entity.getContentHash(),
+                    payload.items(), payload.decisions(), entity.getGmtCreate());
+        } catch (JsonProcessingException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "上下文快照读取失败", exception);
+        }
+    }
+
+    private void validateBudget(StoryContextBuildCommand command) {
+        if (command.inputBudgetTokens() <= 0) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "模型没有可用的上下文输入预算");
+        }
+    }
+
+    private WorkEntity requireWork(Long workId) {
+        WorkEntity work = workMapper.selectById(workId);
+        if (work == null || Integer.valueOf(1).equals(work.getDeleted())) {
+            throw new BusinessException(ErrorCode.WORK_NOT_FOUND, "作品不存在");
+        }
+        return work;
+    }
+
+    private ChapterEntity requireChapter(Long chapterId) {
+        ChapterEntity chapter = chapterMapper.selectById(chapterId);
+        if (chapter == null || Integer.valueOf(1).equals(chapter.getDeleted())) {
+            throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
+        }
+        return chapter;
+    }
+
+    private ChapterConversationEntity requireConversation(Long conversationId) {
+        ChapterConversationEntity conversation = conversationMapper.selectById(conversationId);
+        if (conversation == null || Integer.valueOf(1).equals(conversation.getDeleted())) {
+            throw new BusinessException(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在");
+        }
+        return conversation;
+    }
+
+    private void validateScope(StoryContextBuildCommand command, ChapterEntity chapter) {
+        if (chapter != null && !command.workId().equals(chapter.getWorkId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "章节不属于当前作品");
+        }
+    }
+
+    private void validateCurrentMessage(
+            StoryContextBuildCommand command,
+            ChapterConversationEntity conversation,
+            ChapterEntity chapter) {
+        if (!StringUtils.hasText(command.currentInput())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "当前用户输入不能为空");
+        }
+        if (command.currentMessageId() == null) {
+            return;
+        }
+        ChapterConversationMessageEntity message = messageMapper.selectById(command.currentMessageId());
+        if (!belongsToCurrentScope(message, conversation, chapter)
+                || !normalize(command.currentInput()).equals(normalize(message.getContent()))) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "当前消息不属于上下文作用域");
+        }
+    }
+
+    private boolean belongsToCurrentScope(
+            ChapterConversationMessageEntity message,
+            ChapterConversationEntity conversation,
+            ChapterEntity chapter) {
+        if (message == null || Integer.valueOf(1).equals(message.getDeleted())
+                || !"user".equals(message.getMessageRole()) || conversation == null) {
+            return false;
+        }
+        if (!conversation.getId().equals(message.getConversationId())) {
+            return false;
+        }
+        return chapter == null || chapter.getId().equals(message.getChapterId());
+    }
+
+    private void validateConversationScope(
+            ChapterConversationEntity conversation,
+            StoryContextBuildCommand command,
+            ChapterEntity chapter) {
+        if (conversation == null) {
+            return;
+        }
+        if (!command.workId().equals(conversation.getWorkId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "会话不属于当前作品或章节");
+        }
+        if (chapter != null && !chapter.getId().equals(conversation.getChapterId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "会话不属于当前作品或章节");
+        }
+    }
+
+    private String scopeKey(StoryContextBuildCommand command) {
+        return command.profile().name().toLowerCase(Locale.ROOT) + ":" + command.workId()
+                + ":" + String.valueOf(command.chapterId()) + ":" + String.valueOf(command.conversationId());
+    }
+
+    private String normalize(String content) {
+        return Normalizer.normalize(content, Normalizer.Form.NFKC)
+                .replace("\r\n", "\n").trim().replaceAll("\\s+", " ");
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(64);
+            for (byte item : digest) {
+                result.append(String.format(Locale.ROOT, "%02x", item));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "上下文快照哈希算法不可用", exception);
+        }
+    }
+
+    private String id(Long value) {
+        return value == null ? "unknown" : String.valueOf(value);
+    }
+
+    private StoryContextSelectionDecision decision(Candidate candidate, String reason) {
+        return new StoryContextSelectionDecision(candidate.sourceType(), candidate.sourceId(), candidate.tokens(), reason);
+    }
+
+    private Comparator<Candidate> byOrder() {
+        return Comparator.comparingInt(Candidate::order).thenComparing(Candidate::sourceId);
+    }
+
+    private Comparator<Candidate> byPriority() {
+        return Comparator.comparingInt(Candidate::priority).reversed()
+                .thenComparingInt(Candidate::order).thenComparing(Candidate::sourceId);
+    }
+
+    private enum Category {
+        /** 作品和章节结构。 */
+        STRUCTURE,
+        /** 正式知识层。 */
+        KNOWLEDGE,
+        /** 当前正文或目标。 */
+        CURRENT,
+        /** 历史对话。 */
+        HISTORY
+    }
+
+    private record Candidate(
+            StoryContextSourceType sourceType,
+            String sourceId,
+            String contentVersion,
+            LocalDateTime updatedAt,
+            String role,
+            String content,
+            boolean required,
+            int priority,
+            int order,
+            int tokens,
+            int selectedTokens,
+            String reason,
+            Category category) {
+
+        private Candidate withContent(String value, int selectedTokenCount, String selectionReason) {
+            return new Candidate(sourceType, sourceId, contentVersion, updatedAt, role, value, required,
+                    priority, order, tokens, selectedTokenCount, selectionReason, category);
+        }
+
+        private String dedupeKey() {
+            return sourceType + ":" + sourceId + ":" + contentVersion;
+        }
+
+        private StoryContextItem item() {
+            return new StoryContextItem(sourceType, sourceId, contentVersion, updatedAt, role, content, required,
+                    priority, order, tokens, selectedTokens, reason);
+        }
+    }
+
+    private record Selection(
+            List<StoryContextItem> items,
+            List<StoryContextSelectionDecision> decisions,
+            int estimatedTokens) {
+    }
+
+    private record SnapshotPayload(
+            List<StoryContextItem> items,
+            List<StoryContextSelectionDecision> decisions) {
+    }
+}
