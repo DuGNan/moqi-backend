@@ -30,6 +30,10 @@ public class AiTaskEntity extends BaseEntity {
 
     private Long contextSnapshotId;
 
+    private String taskInputJson;
+
+    private Long resultBriefId;
+
     private String errorCode;
 
     private String errorMessage;

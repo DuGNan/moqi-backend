@@ -12,12 +12,16 @@ import org.springframework.util.StringUtils;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.focus.ChapterDiscussionFocusResolver;
+import com.dugnan.moqi.chapter.focus.ResolvedDiscussionFocus;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextBuildCommand;
 import com.dugnan.moqi.context.StoryContextProfile;
+import com.dugnan.moqi.context.StoryContextFocus;
+import com.dugnan.moqi.context.StoryContextFocus.StoryContextFocusSource;
 import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextTaskBindingException;
 import com.dugnan.moqi.context.StoryContextTaskBindingService;
@@ -57,6 +61,7 @@ public class ConversationReplyTaskRunner {
     private final ApplicationEventPublisher eventPublisher;
     private final LlmStreamCallRegistry callRegistry;
     private final StoryContextTaskBindingService contextBindingService;
+    private final ChapterDiscussionFocusResolver focusResolver;
 
     @Autowired
     public ConversationReplyTaskRunner(
@@ -67,7 +72,8 @@ public class ConversationReplyTaskRunner {
             ConversationReplyPersistenceService persistenceService,
             ApplicationEventPublisher eventPublisher,
             LlmStreamCallRegistry callRegistry,
-            StoryContextTaskBindingService contextBindingService) {
+            StoryContextTaskBindingService contextBindingService,
+            ChapterDiscussionFocusResolver focusResolver) {
         this.taskMapper = taskMapper;
         this.messageMapper = messageMapper;
         this.userConfigService = userConfigService;
@@ -76,6 +82,7 @@ public class ConversationReplyTaskRunner {
         this.eventPublisher = eventPublisher;
         this.callRegistry = callRegistry;
         this.contextBindingService = contextBindingService;
+        this.focusResolver = focusResolver;
     }
 
     /**
@@ -90,7 +97,31 @@ public class ConversationReplyTaskRunner {
             ApplicationEventPublisher eventPublisher,
             LlmStreamCallRegistry callRegistry) {
         this(taskMapper, messageMapper, userConfigService, providerFactory, persistenceService,
-                eventPublisher, callRegistry, null);
+                eventPublisher, callRegistry, null, null);
+    }
+
+    /**
+     * 保留只接入 Story Context Engine、不含讨论对焦解析器的构造入口。
+     */
+    public ConversationReplyTaskRunner(
+            AiTaskMapper taskMapper,
+            ChapterConversationMessageMapper messageMapper,
+            UserConfigService userConfigService,
+            LlmProviderFactory providerFactory,
+            ConversationReplyPersistenceService persistenceService,
+            ApplicationEventPublisher eventPublisher,
+            LlmStreamCallRegistry callRegistry,
+            StoryContextTaskBindingService contextBindingService) {
+        this(
+                taskMapper,
+                messageMapper,
+                userConfigService,
+                providerFactory,
+                persistenceService,
+                eventPublisher,
+                callRegistry,
+                contextBindingService,
+                null);
     }
 
     public void run(Long taskId) {
@@ -231,7 +262,49 @@ public class ConversationReplyTaskRunner {
                 input.getContent(),
                 null,
                 contextWindow,
-                outputReserve), task);
+                outputReserve,
+                resolveFocus(task, input)), task);
+    }
+
+    /**
+     * 根据消息持久化引用解析讨论对焦，客户端正文不参与组装。
+     *
+     * @param task 当前任务
+     * @param input 当前用户消息
+     * @return 故事上下文对焦资料
+     */
+    private StoryContextFocus resolveFocus(
+            AiTaskEntity task,
+            ChapterConversationMessageEntity input) {
+        if (input.getFocusBriefId() == null && !StringUtils.hasText(input.getFocusDecisionKey())) {
+            return null;
+        }
+        if (focusResolver == null) {
+            throw new BusinessException(
+                    com.dugnan.moqi.common.api.ErrorCode.DISCUSSION_FOCUS_INVALID,
+                    "讨论对焦解析器不可用");
+        }
+        ResolvedDiscussionFocus resolved = focusResolver.resolve(
+                task.getChapterId(),
+                input.getConversationId(),
+                input.getFocusBriefId(),
+                input.getFocusDecisionKey());
+        String decisionContent = "待决：" + resolved.decisionTitle()
+                + "\n问题：" + resolved.decisionPrompt()
+                + "\n当前候选：" + resolved.candidateSummary();
+        List<StoryContextFocusSource> sources = resolved.sources().stream()
+                .map(source -> new StoryContextFocusSource(
+                        source.messageId(),
+                        source.messageRole(),
+                        source.content()))
+                .toList();
+        return new StoryContextFocus(
+                resolved.briefId(),
+                resolved.briefVersion(),
+                resolved.decisionKey(),
+                decisionContent,
+                resolved.consensusContent(),
+                sources);
     }
 
     private LlmRequest request(StoryContextSnapshot snapshot) {

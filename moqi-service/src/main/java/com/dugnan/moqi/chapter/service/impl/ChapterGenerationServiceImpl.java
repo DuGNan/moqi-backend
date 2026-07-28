@@ -51,6 +51,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ChapterGenerationServiceImpl.class);
     private static final String STATUS_DRAFT = "draft";
+    private static final String STATUS_CONFIRMED = "confirmed";
     private static final String STATUS_PREVIEW = "preview";
     private static final String STATUS_ACCEPTED = "accepted";
     private static final String STATUS_REJECTED = "rejected";
@@ -117,7 +118,14 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         ChapterEntity chapter = requireChapter(chapterId);
         WorkEntity work = requireWork(chapter.getWorkId());
         ChapterOutlineEntity outline = requireOutline(chapterId, request);
-        ChapterBriefEntity brief = latestBrief(chapterId);
+        ChapterBriefEntity brief =
+                requireConfirmedBrief(chapterId, request.confirmedBriefId());
+        if (outline.getConfirmedBriefId() != null
+                && !outline.getConfirmedBriefId().equals(brief.getId())) {
+            throw new BusinessException(
+                    ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED,
+                    "大纲绑定的已确认 Brief 已变化，请先刷新或保存大纲");
+        }
         GenerationOptions options = options(
                 request.generationMode(),
                 request.lengthPreset(),
@@ -138,7 +146,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         String generatedContent = contentGenerator.generate(new GenerationInput(
                 work.getTitle(),
                 chapter.getTitle(),
-                brief == null ? null : brief.getBriefContent(),
+                brief.getBriefContent(),
                 outline.getOutlineContent(),
                 options.generationMode(),
                 options.lengthPreset(),
@@ -359,8 +367,21 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         return outline;
     }
 
-    private ChapterBriefEntity latestBrief(Long chapterId) {
-        return briefMapper.findLatestByChapterId(chapterId);
+    private ChapterBriefEntity requireConfirmedBrief(Long chapterId, Long confirmedBriefId) {
+        ChapterBriefEntity brief = confirmedBriefId == null
+                ? briefMapper.findLatestByChapterIdAndStatus(chapterId, STATUS_CONFIRMED)
+                : briefMapper.findByIdAndChapterId(confirmedBriefId, chapterId);
+        if (brief == null) {
+            throw new BusinessException(
+                    ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED,
+                    "请先确认本章 Brief，再生成章节正文");
+        }
+        if (!STATUS_CONFIRMED.equals(brief.getBriefStatus())) {
+            throw new BusinessException(
+                    ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED,
+                    "章节生成只能使用已确认 Brief");
+        }
+        return brief;
     }
 
     private ChapterEntity requireChapter(Long chapterId) {
@@ -433,11 +454,12 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             ChapterBriefEntity brief,
             GenerationOptions options,
             String feedback) {
-        String briefContent = brief == null ? "" : brief.getBriefContent();
         return "{\"outlineId\":" + outline.getId()
                 + ",\"outlineRevision\":" + outline.getRevision()
+                + ",\"confirmedBriefId\":" + brief.getId()
+                + ",\"confirmedBriefVersion\":" + brief.getVersion()
                 + ",\"chapterTitle\":\"" + json(chapter.getTitle())
-                + "\",\"briefContent\":\"" + json(briefContent)
+                + "\",\"briefContent\":\"" + json(brief.getBriefContent())
                 + "\",\"outlineContent\":\"" + json(outline.getOutlineContent())
                 + "\",\"generationMode\":\"" + json(options.generationMode())
                 + "\",\"lengthPreset\":\"" + json(options.lengthPreset())
@@ -452,6 +474,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             String feedback) {
         return "{\"outlineId\":" + number(originalBasis.get("outlineId"))
                 + ",\"outlineRevision\":" + number(originalBasis.get("outlineRevision"))
+                + ",\"confirmedBriefId\":" + number(originalBasis.get("confirmedBriefId"))
+                + ",\"confirmedBriefVersion\":" + number(originalBasis.get("confirmedBriefVersion"))
                 + ",\"chapterTitle\":\"" + json(chapterTitle)
                 + "\",\"briefContent\":\"" + json(stringValue(originalBasis.get("briefContent")))
                 + "\",\"outlineContent\":\"" + json(stringValue(originalBasis.get("outlineContent")))

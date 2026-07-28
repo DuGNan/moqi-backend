@@ -30,6 +30,20 @@ public enum ErrorCode {
     GENERATION_NOT_FOUND,
     /** 章节生成记录状态不允许当前操作。 */
     GENERATION_STATUS_CONFLICT,
+    /** 章节 Brief 不存在。 */
+    CHAPTER_BRIEF_NOT_FOUND,
+    /** 章节 Brief 版本冲突。 */
+    CHAPTER_BRIEF_VERSION_CONFLICT,
+    /** 章节 Brief 尚不满足确认条件。 */
+    CHAPTER_BRIEF_CONFIRMATION_BLOCKED,
+    /** 当前操作要求存在已确认的章节 Brief。 */
+    CHAPTER_CONFIRMED_BRIEF_REQUIRED,
+    /** 章节结构化共识不符合契约。 */
+    CHAPTER_CONSENSUS_INVALID,
+    /** 讨论对焦引用不符合契约或归属关系。 */
+    DISCUSSION_FOCUS_INVALID,
+    /** 讨论对焦引用的 Brief 已失效。 */
+    DISCUSSION_FOCUS_STALE,
     /** 章节正文版本冲突。 */
     CHAPTER_VERSION_CONFLICT,
     /** 用户配置版本冲突。 */

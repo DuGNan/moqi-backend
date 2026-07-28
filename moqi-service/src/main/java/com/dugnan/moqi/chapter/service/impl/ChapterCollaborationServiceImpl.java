@@ -5,6 +5,7 @@ import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -18,10 +19,12 @@ import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageList;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineDetail;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.SendMessageRequest;
+import com.dugnan.moqi.chapter.consensus.ChapterConsensusImpactService;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.focus.ChapterDiscussionFocusResolver;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
@@ -47,13 +50,15 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
 
     private static final String STATUS_ACTIVE = "active";
     private static final String STATUS_DRAFT = "draft";
+    private static final String STATUS_CONFIRMED = "confirmed";
     private static final String STATUS_OUTDATED = "outdated";
+    private static final String ROLE_USER = "user";
     private static final String CONVERSATION_TYPE = "chapter_co_creation";
     private static final String AI_TASK_TYPE = "conversation_reply";
     private static final String AI_TASK_STATUS = "queued";
-    private static final Set<String> MESSAGE_ROLES = Set.of("user", "assistant", "system");
-    private static final Set<String> BRIEF_STATUSES = Set.of(STATUS_DRAFT, "confirmed");
-    private static final Set<String> OUTLINE_STATUSES = Set.of(STATUS_DRAFT, "confirmed", STATUS_OUTDATED);
+    private static final Set<String> MESSAGE_ROLES = Set.of(ROLE_USER, "assistant", "system");
+    private static final Set<String> BRIEF_STATUSES = Set.of(STATUS_DRAFT);
+    private static final Set<String> OUTLINE_STATUSES = Set.of(STATUS_DRAFT, STATUS_CONFIRMED, STATUS_OUTDATED);
 
     private final WorkMapper workMapper;
     private final ChapterMapper chapterMapper;
@@ -63,6 +68,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     private final ChapterOutlineQueryMapper outlineMapper;
     private final AiTaskMapper aiTaskMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final ChapterDiscussionFocusResolver focusResolver;
+    private final ChapterConsensusImpactService impactService;
 
     /**
      * 创建章节共创服务。
@@ -84,6 +91,70 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             ChapterOutlineQueryMapper outlineMapper,
             AiTaskMapper aiTaskMapper,
             ApplicationEventPublisher eventPublisher) {
+        this(
+                workMapper,
+                chapterMapper,
+                conversationMapper,
+                messageMapper,
+                briefMapper,
+                outlineMapper,
+                aiTaskMapper,
+                eventPublisher,
+                null,
+                null);
+    }
+
+    /**
+     * 创建支持讨论对焦的章节共创服务。
+     *
+     * @param workMapper 作品数据访问对象
+     * @param chapterMapper 章节数据访问对象
+     * @param conversationMapper 会话数据访问对象
+     * @param messageMapper 消息数据访问对象
+     * @param briefMapper 简报数据访问对象
+     * @param outlineMapper 大纲数据访问对象
+     * @param aiTaskMapper AI 任务数据访问对象
+     * @param eventPublisher 应用事件发布器
+     * @param focusResolver 讨论对焦解析器
+     */
+    public ChapterCollaborationServiceImpl(
+            WorkMapper workMapper,
+            ChapterMapper chapterMapper,
+            ChapterConversationMapper conversationMapper,
+            ChapterConversationMessageMapper messageMapper,
+            ChapterBriefMapper briefMapper,
+            ChapterOutlineQueryMapper outlineMapper,
+            AiTaskMapper aiTaskMapper,
+            ApplicationEventPublisher eventPublisher,
+            ChapterDiscussionFocusResolver focusResolver) {
+        this(
+                workMapper,
+                chapterMapper,
+                conversationMapper,
+                messageMapper,
+                briefMapper,
+                outlineMapper,
+                aiTaskMapper,
+                eventPublisher,
+                focusResolver,
+                null);
+    }
+
+    /**
+     * 创建支持讨论对焦与大纲共识影响判断的章节共创服务。
+     */
+    @Autowired
+    public ChapterCollaborationServiceImpl(
+            WorkMapper workMapper,
+            ChapterMapper chapterMapper,
+            ChapterConversationMapper conversationMapper,
+            ChapterConversationMessageMapper messageMapper,
+            ChapterBriefMapper briefMapper,
+            ChapterOutlineQueryMapper outlineMapper,
+            AiTaskMapper aiTaskMapper,
+            ApplicationEventPublisher eventPublisher,
+            ChapterDiscussionFocusResolver focusResolver,
+            ChapterConsensusImpactService impactService) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.conversationMapper = conversationMapper;
@@ -92,6 +163,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         this.outlineMapper = outlineMapper;
         this.aiTaskMapper = aiTaskMapper;
         this.eventPublisher = eventPublisher;
+        this.focusResolver = focusResolver;
+        this.impactService = impactService;
     }
 
     @Override
@@ -151,6 +224,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         message.setChapterId(conversation.getChapterId());
         message.setMessageRole(role);
         message.setContent(content);
+        applyDiscussionFocus(conversation, request, role, message);
         message.setDeleted(0);
         messageMapper.insert(message);
 
@@ -186,20 +260,14 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         requireWork(chapter.getWorkId());
         String content = requiredText(request == null ? null : request.briefContent(), "brief 内容不能为空");
         String status = optionalStatus(request == null ? null : request.briefStatus(), BRIEF_STATUSES, "briefStatus");
-        ChapterBriefEntity brief = findLatestBrief(chapterId);
-        if (brief == null) {
-            brief = new ChapterBriefEntity();
-            brief.setWorkId(chapter.getWorkId());
-            brief.setChapterId(chapterId);
-            brief.setDeleted(0);
-        }
+        ChapterBriefEntity brief = new ChapterBriefEntity();
+        brief.setWorkId(chapter.getWorkId());
+        brief.setChapterId(chapterId);
+        brief.setDeleted(0);
+        brief.setVersion(0);
         brief.setBriefStatus(status);
         brief.setBriefContent(content);
-        if (brief.getId() == null) {
-            briefMapper.insert(brief);
-        } else {
-            briefMapper.updateById(brief);
-        }
+        briefMapper.insert(brief);
         return briefDetail(brief);
     }
 
@@ -218,6 +286,9 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         requireWork(chapter.getWorkId());
         String content = requiredText(request == null ? null : request.outlineContent(), "大纲内容不能为空");
         String status = optionalStatus(request == null ? null : request.outlineStatus(), OUTLINE_STATUSES, "outlineStatus");
+        ChapterBriefEntity confirmedBrief = requireConfirmedBrief(
+                chapterId,
+                request == null ? null : request.confirmedBriefId());
         ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
         if (outline == null) {
             if (request != null && request.baseRevision() != null && request.baseRevision() != 0) {
@@ -234,6 +305,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         } else {
             outline.setRevision(revision(outline) + 1);
         }
+        outline.setConfirmedBriefId(confirmedBrief.getId());
         outline.setOutlineStatus(status);
         outline.setOutlineContent(content);
         if (outline.getId() == null) {
@@ -249,7 +321,13 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     public OutlineDetail refreshOutline(Long chapterId) {
         ChapterEntity chapter = requireChapter(chapterId);
         WorkEntity work = requireWork(chapter.getWorkId());
-        ChapterBriefEntity brief = findLatestBrief(chapterId);
+        ChapterBriefEntity brief =
+                briefMapper.findLatestByChapterIdAndStatus(chapterId, STATUS_CONFIRMED);
+        if (brief == null) {
+            throw new BusinessException(
+                    ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED,
+                    "请先确认本章 Brief，再刷新章节大纲");
+        }
         ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
         if (outline == null) {
             outline = new ChapterOutlineEntity();
@@ -261,6 +339,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             outline.setRevision(revision(outline) + 1);
         }
         outline.setOutlineStatus(STATUS_DRAFT);
+        outline.setConfirmedBriefId(brief.getId());
         outline.setOutlineContent(refreshContent(work, chapter, brief));
         if (outline.getId() == null) {
             outlineMapper.insert(outline);
@@ -356,11 +435,60 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      * @return 消息角色
      */
     private String role(String value) {
-        String role = StringUtils.hasText(value) ? value.trim() : "user";
+        String role = StringUtils.hasText(value) ? value.trim() : ROLE_USER;
         if (!MESSAGE_ROLES.contains(role)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "messageRole 取值非法");
         }
         return role;
+    }
+
+    /**
+     * 查询显式指定或最新的已确认 Brief。
+     *
+     * @param chapterId 章节 ID
+     * @param confirmedBriefId 显式 Brief ID
+     * @return 已确认 Brief
+     */
+    private ChapterBriefEntity requireConfirmedBrief(Long chapterId, Long confirmedBriefId) {
+        ChapterBriefEntity brief = confirmedBriefId == null
+                ? briefMapper.findLatestByChapterIdAndStatus(chapterId, STATUS_CONFIRMED)
+                : briefMapper.findByIdAndChapterId(confirmedBriefId, chapterId);
+        if (brief == null || !STATUS_CONFIRMED.equals(brief.getBriefStatus())) {
+            throw new BusinessException(
+                    ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED,
+                    "请先选择本章已确认 Brief");
+        }
+        return brief;
+    }
+
+    /**
+     * 校验并持久化讨论对焦引用。
+     *
+     * @param conversation 当前会话
+     * @param request 消息请求
+     * @param role 消息角色
+     * @param message 待保存消息
+     */
+    private void applyDiscussionFocus(
+            ChapterConversationEntity conversation,
+            SendMessageRequest request,
+            String role,
+            ChapterConversationMessageEntity message) {
+        if (request == null || request.discussionFocus() == null) {
+            return;
+        }
+        if (!ROLE_USER.equals(role) || focusResolver == null) {
+            throw new BusinessException(
+                    ErrorCode.DISCUSSION_FOCUS_INVALID,
+                    "discussionFocus 只允许用于用户消息");
+        }
+        var focus = focusResolver.resolve(
+                conversation.getChapterId(),
+                conversation.getId(),
+                request.discussionFocus().briefId(),
+                request.discussionFocus().decisionKey());
+        message.setFocusBriefId(focus.briefId());
+        message.setFocusDecisionKey(focus.decisionKey());
     }
 
     /**
@@ -473,6 +601,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 entity.getMessageRole(),
                 entity.getContent(),
                 entity.getAiTaskId(),
+                entity.getFocusBriefId(),
+                entity.getFocusDecisionKey(),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
     }
@@ -491,6 +621,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 entity.getMessageRole(),
                 entity.getContent(),
                 entity.getAiTaskId(),
+                entity.getFocusBriefId(),
+                entity.getFocusDecisionKey(),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
     }
@@ -519,13 +651,24 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      * @return 大纲详情
      */
     private OutlineDetail outlineDetail(ChapterOutlineEntity entity) {
+        ChapterBriefEntity confirmedBrief = entity.getConfirmedBriefId() == null
+                ? null
+                : briefMapper.findByIdAndChapterId(
+                        entity.getConfirmedBriefId(),
+                        entity.getChapterId());
         return new OutlineDetail(
                 entity.getId(),
                 entity.getWorkId(),
                 entity.getChapterId(),
+                entity.getConfirmedBriefId(),
                 entity.getOutlineStatus(),
                 entity.getOutlineContent(),
                 entity.getRevision(),
+                confirmedBrief == null || impactService == null
+                        ? null
+                        : impactService.assess(
+                                confirmedBrief.getBriefContent(),
+                                entity.getOutlineContent()),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
     }

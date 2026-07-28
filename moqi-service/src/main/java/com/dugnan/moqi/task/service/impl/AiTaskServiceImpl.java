@@ -131,6 +131,7 @@ public class AiTaskServiceImpl implements AiTaskService {
                 task.getChapterId(),
                 task.getResultMessageId(),
                 task.getResultGenerationId(),
+                task.getResultBriefId(),
                 task.getErrorCode(),
                 task.getErrorMessage(),
                 task.getGmtCreate(),

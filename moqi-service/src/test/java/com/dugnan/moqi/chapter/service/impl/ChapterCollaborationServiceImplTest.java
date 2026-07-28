@@ -3,8 +3,10 @@ package com.dugnan.moqi.chapter.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.eq;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -13,15 +15,21 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageCreated;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.BriefRequest;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.DiscussionFocusRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.SendMessageRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
+import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.focus.ChapterDiscussionFocusResolver;
+import com.dugnan.moqi.chapter.focus.ResolvedDiscussionFocus;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
@@ -60,6 +68,8 @@ class ChapterCollaborationServiceImplTest {
     private AiTaskMapper aiTaskMapper;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private ChapterDiscussionFocusResolver focusResolver;
 
     private ChapterCollaborationServiceImpl service;
 
@@ -76,7 +86,8 @@ class ChapterCollaborationServiceImplTest {
                 briefMapper,
                 outlineMapper,
                 aiTaskMapper,
-                eventPublisher);
+                eventPublisher,
+                focusResolver);
     }
 
     /**
@@ -128,6 +139,45 @@ class ChapterCollaborationServiceImplTest {
     }
 
     /**
+     * 验证消息只持久化服务端校验后的 Brief 与待决键引用。
+     */
+    @Test
+    void persistsValidatedDiscussionFocusReferences() {
+        when(conversationMapper.selectById(8L)).thenReturn(conversation(8L, 1L, 2L));
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        when(focusResolver.resolve(2L, 8L, 21L, "protagonist_choice"))
+                .thenReturn(new ResolvedDiscussionFocus(
+                        21L,
+                        0,
+                        "protagonist_choice",
+                        "主角选择",
+                        "救人还是追击",
+                        "",
+                        "{}",
+                        List.of()));
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(13L);
+            return 1;
+        });
+
+        service.sendMessage(
+                8L,
+                new SendMessageRequest(
+                        "user",
+                        "我倾向先救人",
+                        false,
+                        new DiscussionFocusRequest(21L, "protagonist_choice")));
+
+        ArgumentCaptor<ChapterConversationMessageEntity> captor =
+                ArgumentCaptor.forClass(ChapterConversationMessageEntity.class);
+        verify(messageMapper).insert(captor.capture());
+        assertThat(captor.getValue().getFocusBriefId()).isEqualTo(21L);
+        assertThat(captor.getValue().getFocusDecisionKey()).isEqualTo("protagonist_choice");
+        verify(focusResolver).resolve(eq(2L), eq(8L), eq(21L), eq("protagonist_choice"));
+    }
+
+    /**
      * 验证大纲保存会拒绝过期 revision。
      */
     @Test
@@ -143,6 +193,8 @@ class ChapterCollaborationServiceImplTest {
         outline.setRevision(3);
         outline.setDeleted(0);
         when(outlineMapper.findLatest(2L)).thenReturn(outline);
+        when(briefMapper.findLatestByChapterIdAndStatus(2L, "confirmed"))
+                .thenReturn(confirmedBrief(5L));
 
         assertThatThrownBy(() -> service.saveOutline(
                 2L,
@@ -150,6 +202,63 @@ class ChapterCollaborationServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.OUTLINE_REVISION_CONFLICT);
+    }
+
+    /**
+     * 验证旧 Brief 保存接口也会追加草稿，不覆盖历史记录。
+     */
+    @Test
+    void appendsLegacyBriefDraft() {
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        when(workMapper.selectById(1L)).thenReturn(work(1L));
+        when(briefMapper.insert(any(ChapterBriefEntity.class))).thenAnswer(invocation -> {
+            ChapterBriefEntity brief = invocation.getArgument(0);
+            brief.setId(5L);
+            return 1;
+        });
+
+        var result = service.saveLatestBrief(2L, new BriefRequest("本章目标", "draft"));
+
+        assertThat(result.id()).isEqualTo(5L);
+        assertThat(result.briefStatus()).isEqualTo("draft");
+        verify(briefMapper, never()).updateById(any(ChapterBriefEntity.class));
+    }
+
+    /**
+     * 验证章节大纲刷新必须基于已确认 Brief。
+     */
+    @Test
+    void requiresConfirmedBriefWhenRefreshingOutline() {
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        when(workMapper.selectById(1L)).thenReturn(work(1L));
+        when(briefMapper.findLatestByChapterIdAndStatus(2L, "confirmed")).thenReturn(null);
+
+        assertThatThrownBy(() -> service.refreshOutline(2L))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED);
+    }
+
+    /**
+     * 验证保存大纲会绑定显式选择的已确认 Brief。
+     */
+    @Test
+    void bindsConfirmedBriefWhenSavingOutline() {
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        when(workMapper.selectById(1L)).thenReturn(work(1L));
+        when(briefMapper.findByIdAndChapterId(5L, 2L)).thenReturn(confirmedBrief(5L));
+        when(outlineMapper.findLatest(2L)).thenReturn(null);
+        when(outlineMapper.insert(any(ChapterOutlineEntity.class))).thenAnswer(invocation -> {
+            ChapterOutlineEntity outline = invocation.getArgument(0);
+            outline.setId(7L);
+            return 1;
+        });
+
+        var result = service.saveOutline(
+                2L,
+                new OutlineRequest("推进目标", "draft", 0, 5L));
+
+        assertThat(result.confirmedBriefId()).isEqualTo(5L);
     }
 
     /**
@@ -199,5 +308,23 @@ class ChapterCollaborationServiceImplTest {
         conversation.setConversationStatus("active");
         conversation.setDeleted(0);
         return conversation;
+    }
+
+    /**
+     * 构造测试已确认 Brief。
+     *
+     * @param id Brief ID
+     * @return Brief 实体
+     */
+    private ChapterBriefEntity confirmedBrief(Long id) {
+        ChapterBriefEntity brief = new ChapterBriefEntity();
+        brief.setId(id);
+        brief.setWorkId(1L);
+        brief.setChapterId(2L);
+        brief.setBriefStatus("confirmed");
+        brief.setBriefContent("已确认共识");
+        brief.setVersion(1);
+        brief.setDeleted(0);
+        return brief;
     }
 }

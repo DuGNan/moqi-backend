@@ -112,9 +112,11 @@ class ChapterGenerationServiceImplTest {
         ChapterBriefEntity brief = new ChapterBriefEntity();
         brief.setId(501L);
         brief.setChapterId(12L);
+        brief.setBriefStatus("confirmed");
         brief.setBriefContent("姚宁第一次改写自己的判断");
+        brief.setVersion(3);
         brief.setDeleted(0);
-        when(briefMapper.findLatestByChapterId(12L)).thenReturn(brief);
+        when(briefMapper.findLatestByChapterIdAndStatus(12L, "confirmed")).thenReturn(brief);
 
         when(aiTaskMapper.insert(any(AiTaskEntity.class))).thenAnswer(invocation -> {
             AiTaskEntity task = invocation.getArgument(0);
@@ -129,6 +131,8 @@ class ChapterGenerationServiceImplTest {
             assertThat(generation.getLengthPreset()).isEqualTo("about_3000");
             assertThat(generation.getBasisSnapshotJson()).contains("隐藏房间回应林风");
             assertThat(generation.getBasisSnapshotJson()).contains("姚宁第一次改写自己的判断");
+            assertThat(generation.getBasisSnapshotJson()).contains("\"confirmedBriefId\":501");
+            assertThat(generation.getBasisSnapshotJson()).contains("\"confirmedBriefVersion\":3");
             assertThat(generation.getBasisSnapshotJson()).contains("房间\\t终于回答了");
             assertThat(generation.getGenerationStatus()).isEqualTo("draft");
             assertThat(generation.getAiTaskId()).isEqualTo(9003L);
@@ -155,7 +159,7 @@ class ChapterGenerationServiceImplTest {
         verify(aiTaskMapper).updateById(org.mockito.ArgumentMatchers.<AiTaskEntity>argThat(task ->
                 "succeeded".equals(task.getTaskStatus())
                         && Long.valueOf(7001L).equals(task.getResultGenerationId())));
-        verify(briefMapper).findLatestByChapterId(12L);
+        verify(briefMapper).findLatestByChapterIdAndStatus(12L, "confirmed");
     }
 
     /**
@@ -197,6 +201,84 @@ class ChapterGenerationServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.OUTLINE_REVISION_CONFLICT);
+    }
+
+    /**
+     * 验证没有已确认 Brief 时不允许创建正文生成。
+     */
+    @Test
+    void requiresConfirmedBriefWhenCreatingGeneration() {
+        when(chapterMapper.selectById(12L)).thenReturn(chapter(12L, "", 3));
+        when(workMapper.selectById(1L)).thenReturn(work());
+        when(outlineMapper.findLatest(12L)).thenReturn(outline());
+        when(briefMapper.findLatestByChapterIdAndStatus(12L, "confirmed")).thenReturn(null);
+
+        assertThatThrownBy(() -> service.createGeneration(
+                12L,
+                new CreateGenerationRequest(1201L, 4, "full_draft", "about_3000", null)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED);
+    }
+
+    /**
+     * 验证显式选择 draft Brief 时拒绝生成。
+     */
+    @Test
+    void rejectsExplicitDraftBriefWhenCreatingGeneration() {
+        when(chapterMapper.selectById(12L)).thenReturn(chapter(12L, "", 3));
+        when(workMapper.selectById(1L)).thenReturn(work());
+        when(outlineMapper.findLatest(12L)).thenReturn(outline());
+        ChapterBriefEntity draft = new ChapterBriefEntity();
+        draft.setId(502L);
+        draft.setChapterId(12L);
+        draft.setBriefStatus("draft");
+        draft.setDeleted(0);
+        when(briefMapper.findByIdAndChapterId(502L, 12L)).thenReturn(draft);
+
+        assertThatThrownBy(() -> service.createGeneration(
+                12L,
+                new CreateGenerationRequest(
+                        1201L,
+                        4,
+                        "full_draft",
+                        "about_3000",
+                        null,
+                        502L)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED);
+    }
+
+    /**
+     * 验证生成使用的已确认 Brief 必须与大纲绑定版本一致。
+     */
+    @Test
+    void rejectsConfirmedBriefDifferentFromOutlineBinding() {
+        when(chapterMapper.selectById(12L)).thenReturn(chapter(12L, "", 3));
+        when(workMapper.selectById(1L)).thenReturn(work());
+        ChapterOutlineEntity outline = outline();
+        outline.setConfirmedBriefId(501L);
+        when(outlineMapper.findLatest(12L)).thenReturn(outline);
+        ChapterBriefEntity anotherConfirmed = new ChapterBriefEntity();
+        anotherConfirmed.setId(503L);
+        anotherConfirmed.setChapterId(12L);
+        anotherConfirmed.setBriefStatus("confirmed");
+        anotherConfirmed.setDeleted(0);
+        when(briefMapper.findByIdAndChapterId(503L, 12L)).thenReturn(anotherConfirmed);
+
+        assertThatThrownBy(() -> service.createGeneration(
+                        12L,
+                        new CreateGenerationRequest(
+                                1201L,
+                                4,
+                                "full_draft",
+                                "about_3000",
+                                null,
+                                503L)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED);
     }
 
     /**
@@ -256,19 +338,20 @@ class ChapterGenerationServiceImplTest {
     }
 
     /**
-     * 验证最新 brief 在数据库侧排序限一。
+     * 验证最新已确认 Brief 在数据库侧按状态排序限一。
      *
      * @throws NoSuchMethodException Mapper 查询方法不存在
      */
     @Test
     void latestBriefQuerySortsAndLimitsAtDatabase() throws NoSuchMethodException {
         Select select = ChapterBriefMapper.class
-                .getMethod("findLatestByChapterId", Long.class)
+                .getMethod("findLatestByChapterIdAndStatus", Long.class, String.class)
                 .getAnnotation(Select.class);
         String sql = String.join(" ", select.value()).replaceAll("\\s+", " ").trim();
 
         assertThat(sql)
                 .contains("brief_status")
+                .contains("brief_status = #{briefStatus}")
                 .doesNotContain("brief_type")
                 .contains("ORDER BY gmt_modified DESC, id DESC")
                 .contains("LIMIT 1");

@@ -12,6 +12,12 @@ public enum StoryContextSourceType {
     TASK_RULE,
     /** 作品元数据。 */
     WORK_METADATA,
+    /** 用户当前选择的待决。 */
+    DECISION_FOCUS,
+    /** 待决所在的结构化章节共识。 */
+    CHAPTER_CONSENSUS,
+    /** 支撑待决的讨论消息。 */
+    DECISION_SOURCE_MESSAGE,
     /** 章节简报。 */
     CHAPTER_BRIEF,
     /** 章节大纲。 */

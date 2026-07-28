@@ -187,8 +187,11 @@ public class StoryContextEngineImpl implements StoryContextEngine {
         }
         add(candidates, StoryContextSourceType.WORK_METADATA, id(work.getId()), "SYSTEM",
                 "作品：" + work.getTitle(), false, 900, 10, work.getVersion(), work.getGmtModified(), Category.STRUCTURE);
+        addDiscussionFocus(candidates, command);
         if (chapter != null) {
-            addBrief(candidates, command, chapter);
+            if (command.discussionFocus() == null) {
+                addBrief(candidates, command, chapter);
+            }
             addOutline(candidates, command, chapter);
             if (StringUtils.hasText(chapter.getContent())) {
                 add(candidates, StoryContextSourceType.CHAPTER_CONTENT, id(chapter.getId()), "SYSTEM",
@@ -206,6 +209,61 @@ public class StoryContextEngineImpl implements StoryContextEngine {
                     command.currentInput(), true, 1000, 500, null, null, Category.CURRENT);
         }
         return candidates;
+    }
+
+    /**
+     * 将服务端解析的对焦资料按稳定顺序加入候选上下文。
+     *
+     * @param candidates 候选上下文
+     * @param command 构建命令
+     */
+    private void addDiscussionFocus(
+            List<Candidate> candidates,
+            StoryContextBuildCommand command) {
+        StoryContextFocus focus = command.discussionFocus();
+        if (focus == null) {
+            return;
+        }
+        add(
+                candidates,
+                StoryContextSourceType.DECISION_FOCUS,
+                focus.briefId() + ":" + focus.decisionKey(),
+                "SYSTEM",
+                focus.decisionContent(),
+                true,
+                1000,
+                20,
+                focus.briefVersion(),
+                null,
+                Category.STRUCTURE);
+        add(
+                candidates,
+                StoryContextSourceType.CHAPTER_CONSENSUS,
+                id(focus.briefId()),
+                "SYSTEM",
+                focus.consensusContent(),
+                true,
+                990,
+                30,
+                focus.briefVersion(),
+                null,
+                Category.STRUCTURE);
+        int order = 40;
+        for (StoryContextFocus.StoryContextFocusSource source : focus.sources()) {
+            add(
+                    candidates,
+                    StoryContextSourceType.DECISION_SOURCE_MESSAGE,
+                    id(source.messageId()),
+                    "SYSTEM",
+                    source.messageRole() + "：" + source.content(),
+                    false,
+                    980,
+                    order,
+                    null,
+                    null,
+                    Category.HISTORY);
+            order++;
+        }
     }
 
     private void addBrief(List<Candidate> candidates, StoryContextBuildCommand command, ChapterEntity chapter) {
@@ -299,6 +357,7 @@ public class StoryContextEngineImpl implements StoryContextEngine {
                         .orderByDesc(ChapterConversationMessageEntity::getId)
                         .last("LIMIT " + MESSAGE_LIMIT)));
         messages.sort(Comparator.comparing(ChapterConversationMessageEntity::getId));
+        int historyOrder = command.discussionFocus() == null ? 400 : 60;
         for (int index = 0; index + 1 < messages.size(); index++) {
             ChapterConversationMessageEntity user = messages.get(index);
             ChapterConversationMessageEntity assistant = messages.get(index + 1);
@@ -308,7 +367,9 @@ public class StoryContextEngineImpl implements StoryContextEngine {
             add(candidates, StoryContextSourceType.CONVERSATION_TURN,
                     user.getId() + ":" + assistant.getId(), "USER",
                     "用户：" + user.getContent() + "\n助手：" + assistant.getContent(), false,
-                    600, 400, user.getVersion() + ":" + assistant.getVersion(), assistant.getGmtModified(), Category.HISTORY);
+                    600, historyOrder, user.getVersion() + ":" + assistant.getVersion(),
+                    assistant.getGmtModified(), Category.HISTORY);
+            historyOrder++;
             index++;
         }
     }
@@ -385,7 +446,8 @@ public class StoryContextEngineImpl implements StoryContextEngine {
         return sourceType == StoryContextSourceType.CHAPTER_CONTENT
                 || sourceType == StoryContextSourceType.CHAPTER_BRIEF
                 || sourceType == StoryContextSourceType.CHAPTER_OUTLINE
-                || sourceType == StoryContextSourceType.TARGET_TEXT;
+                || sourceType == StoryContextSourceType.TARGET_TEXT
+                || sourceType == StoryContextSourceType.DECISION_SOURCE_MESSAGE;
     }
 
     private Candidate fitRequired(Candidate candidate, int budget) {

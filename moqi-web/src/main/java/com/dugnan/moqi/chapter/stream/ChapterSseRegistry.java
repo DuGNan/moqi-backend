@@ -44,6 +44,22 @@ public class ChapterSseRegistry {
         }
     }
 
+    /**
+     * 转发不含完整 Brief 内容的资源更新事件。
+     *
+     * @param event Brief 更新事件
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    public void forward(ChapterBriefEvent event) {
+        List<SseEmitter> emitters = subscribers.get(event.chapterId());
+        if (emitters == null) {
+            return;
+        }
+        for (SseEmitter emitter : emitters) {
+            send(emitter, event.type(), event);
+        }
+    }
+
     private void send(SseEmitter emitter, String eventName, Object data) {
         try {
             emitter.send(SseEmitter.event().name(eventName).data(data));
