@@ -9,6 +9,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
@@ -46,6 +48,8 @@ import com.dugnan.moqi.llm.LlmStreamStatus;
  */
 @Component
 public class ConversationReplyTaskRunner {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ConversationReplyTaskRunner.class);
 
     private static final String TASK_TYPE = "conversation_reply";
     private static final String STATUS_QUEUED = "queued";
@@ -203,6 +207,12 @@ public class ConversationReplyTaskRunner {
         } catch (BusinessException exception) {
             fail(task, exception.getErrorCode().name(), exception.getMessage());
         } catch (RuntimeException exception) {
+            LOGGER.error(
+                    "章节讨论回复任务发生未预期异常，taskId={}, chapterId={}, exceptionType={}",
+                    task.getId(),
+                    task.getChapterId(),
+                    exception.getClass().getName(),
+                    exception);
             fail(task, "INTERNAL_ERROR", "AI 回复生成失败，请稍后重试");
         } finally {
             callRegistry.unregister(task.getId(), call);
