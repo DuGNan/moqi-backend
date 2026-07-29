@@ -9,6 +9,13 @@ import java.util.List;
  */
 public record LlmRequest(List<LlmMessage> messages, LlmOptions options) {
 
+    /**
+     * 固化消息列表并补充默认生成选项。
+     *
+     * @param messages 有序消息列表
+     * @param options 生成选项
+     * @throws IllegalArgumentException 消息列表为空
+     */
     public LlmRequest {
         if (messages == null || messages.isEmpty()) {
             throw new IllegalArgumentException("messages 不能为空");

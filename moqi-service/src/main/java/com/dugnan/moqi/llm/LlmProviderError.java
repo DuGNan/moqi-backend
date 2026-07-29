@@ -31,6 +31,11 @@ public enum LlmProviderError {
         this.safeMessage = safeMessage;
     }
 
+    /**
+     * 获取不含上游响应细节的固定错误消息。
+     *
+     * @return 安全错误消息
+     */
     public String safeMessage() {
         return safeMessage;
     }

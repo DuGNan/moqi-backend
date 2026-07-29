@@ -20,6 +20,9 @@ public class ChapterConsensusTaskDispatcher {
 
     /**
      * 创建共识任务调度器。
+     *
+     * @param taskExecutor 有界章节任务执行器
+     * @param taskRunner 共识任务执行器
      */
     public ChapterConsensusTaskDispatcher(
             @Qualifier("chapterAiTaskExecutor") ThreadPoolTaskExecutor taskExecutor,
@@ -30,6 +33,8 @@ public class ChapterConsensusTaskDispatcher {
 
     /**
      * 事务提交后调度任务。
+     *
+     * @param event 共识任务提交事件
      */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void dispatch(ChapterConsensusTaskSubmittedEvent event) {

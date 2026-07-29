@@ -10,6 +10,11 @@ public record CredentialIdentity(
         String provider,
         String credentialType) {
 
+    /**
+     * 生成用于 AES-GCM AAD 的稳定身份文本。
+     *
+     * @return 不含凭据内容的 AAD 文本
+     */
     public String aad() {
         return userId + "\n" + provider + "\n" + credentialType;
     }

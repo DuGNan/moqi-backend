@@ -239,6 +239,7 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
      * 批量校验来源消息确实属于当前章节。
      *
      * @param chapterId 章节 ID
+     * @param conversationId 会话 ID
      * @param sourceIds 来源消息 ID
      * @return 按消息 ID 索引的实体
      */

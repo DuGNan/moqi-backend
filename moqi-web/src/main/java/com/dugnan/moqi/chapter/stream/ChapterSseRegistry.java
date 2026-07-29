@@ -23,6 +23,12 @@ public class ChapterSseRegistry {
 
     private final ConcurrentHashMap<Long, CopyOnWriteArrayList<SseEmitter>> subscribers = new ConcurrentHashMap<>();
 
+    /**
+     * 创建并登记指定章节的 SSE 订阅。
+     *
+     * @param chapterId 章节 ID
+     * @return 已登记的 SSE 发射器
+     */
     public SseEmitter subscribe(Long chapterId) {
         SseEmitter emitter = new SseEmitter(NO_TIMEOUT);
         List<SseEmitter> emitters = subscribers.computeIfAbsent(chapterId, ignored -> new CopyOnWriteArrayList<>());
@@ -33,6 +39,11 @@ public class ChapterSseRegistry {
         return emitter;
     }
 
+    /**
+     * 将讨论回复事件转发给当前实例内的章节订阅者。
+     *
+     * @param event 讨论回复事件
+     */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void forward(ChapterReplyEvent event) {
         List<SseEmitter> emitters = subscribers.get(event.chapterId());

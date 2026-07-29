@@ -43,6 +43,7 @@ public class AiTaskServiceImpl implements AiTaskService {
      * 创建 AI 任务服务。
      *
      * @param taskMapper AI 任务数据访问对象
+     * @param eventPublisher 应用事件发布器
      */
     public AiTaskServiceImpl(AiTaskMapper taskMapper, ApplicationEventPublisher eventPublisher) {
         this.taskMapper = taskMapper;

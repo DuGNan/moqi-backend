@@ -19,6 +19,15 @@ public record ResolvedDiscussionFocus(
 
     /**
      * 防止调用方修改来源列表。
+     *
+     * @param briefId Brief ID
+     * @param briefVersion Brief 版本
+     * @param decisionKey 待决键
+     * @param decisionTitle 待决标题
+     * @param decisionPrompt 待决提示
+     * @param candidateSummary 候选项摘要
+     * @param consensusContent 结构化共识内容
+     * @param sources 讨论来源列表
      */
     public ResolvedDiscussionFocus {
         sources = sources == null ? List.of() : List.copyOf(sources);

@@ -46,6 +46,15 @@ public final class ChapterCollaborationModels {
 
         /**
          * 保留不含讨论对焦引用的旧构造入口。
+         *
+         * @param id 消息 ID
+         * @param conversationId 会话 ID
+         * @param chapterId 章节 ID
+         * @param messageRole 消息角色
+         * @param content 消息正文
+         * @param aiTaskId 关联 AI 任务 ID
+         * @param gmtCreate 创建时间
+         * @param gmtModified 修改时间
          */
         public MessageDetail(
                 Long id,
@@ -75,6 +84,15 @@ public final class ChapterCollaborationModels {
 
         /**
          * 保留不含讨论对焦引用的旧构造入口。
+         *
+         * @param id 消息 ID
+         * @param conversationId 会话 ID
+         * @param chapterId 章节 ID
+         * @param messageRole 消息角色
+         * @param content 消息正文
+         * @param aiTaskId 关联 AI 任务 ID
+         * @param gmtCreate 创建时间
+         * @param gmtModified 修改时间
          */
         public MessageCreated(
                 Long id,
@@ -97,6 +115,10 @@ public final class ChapterCollaborationModels {
 
         /**
          * 保留不含讨论对焦的旧构造入口。
+         *
+         * @param messageRole 消息角色
+         * @param content 消息正文
+         * @param createAiTask 是否创建 AI 回复任务
          */
         public SendMessageRequest(String messageRole, String content, Boolean createAiTask) {
             this(messageRole, content, createAiTask, null);
@@ -134,6 +156,10 @@ public final class ChapterCollaborationModels {
 
         /**
          * 保留不显式选择 confirmed Brief 的旧构造入口。
+         *
+         * @param outlineContent 大纲内容
+         * @param outlineStatus 大纲状态
+         * @param baseRevision 基础修订版本
          */
         public OutlineRequest(String outlineContent, String outlineStatus, Integer baseRevision) {
             this(outlineContent, outlineStatus, baseRevision, null);
@@ -155,6 +181,15 @@ public final class ChapterCollaborationModels {
 
         /**
          * 保留不含共识绑定和影响摘要的旧构造入口。
+         *
+         * @param id 大纲 ID
+         * @param workId 作品 ID
+         * @param chapterId 章节 ID
+         * @param outlineStatus 大纲状态
+         * @param outlineContent 大纲内容
+         * @param revision 修订版本
+         * @param gmtCreate 创建时间
+         * @param gmtModified 修改时间
          */
         public OutlineDetail(
                 Long id,

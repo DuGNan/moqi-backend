@@ -14,22 +14,61 @@ public record ChapterReplyEvent(
         String errorCode,
         String errorMessage) {
 
+    /**
+     * 创建回复开始事件。
+     *
+     * @param chapterId 章节 ID
+     * @param taskId 任务 ID
+     * @return 回复开始事件
+     */
     public static ChapterReplyEvent started(Long chapterId, Long taskId) {
         return new ChapterReplyEvent("reply.started", chapterId, taskId, null, null, null, null);
     }
 
+    /**
+     * 创建回复增量事件。
+     *
+     * @param chapterId 章节 ID
+     * @param taskId 任务 ID
+     * @param text 新增文本
+     * @return 回复增量事件
+     */
     public static ChapterReplyEvent delta(Long chapterId, Long taskId, String text) {
         return new ChapterReplyEvent("reply.delta", chapterId, taskId, null, text, null, null);
     }
 
+    /**
+     * 创建回复完成事件。
+     *
+     * @param chapterId 章节 ID
+     * @param taskId 任务 ID
+     * @param messageId 已持久化消息 ID
+     * @return 回复完成事件
+     */
     public static ChapterReplyEvent completed(Long chapterId, Long taskId, Long messageId) {
         return new ChapterReplyEvent("reply.completed", chapterId, taskId, messageId, null, null, null);
     }
 
+    /**
+     * 创建回复失败事件。
+     *
+     * @param chapterId 章节 ID
+     * @param taskId 任务 ID
+     * @param errorCode 安全错误码
+     * @param errorMessage 安全错误消息
+     * @return 回复失败事件
+     */
     public static ChapterReplyEvent failed(Long chapterId, Long taskId, String errorCode, String errorMessage) {
         return new ChapterReplyEvent("reply.failed", chapterId, taskId, null, null, errorCode, errorMessage);
     }
 
+    /**
+     * 创建回复取消事件。
+     *
+     * @param chapterId 章节 ID
+     * @param taskId 任务 ID
+     * @return 回复取消事件
+     */
     public static ChapterReplyEvent canceled(Long chapterId, Long taskId) {
         return new ChapterReplyEvent("reply.canceled", chapterId, taskId, null, null, null, null);
     }

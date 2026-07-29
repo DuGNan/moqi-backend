@@ -20,6 +20,12 @@ public class LlmStreamCallRegistry {
     private final ConcurrentHashMap<Long, LlmStreamCall> calls = new ConcurrentHashMap<>();
     private final Set<Long> cancellations = ConcurrentHashMap.newKeySet();
 
+    /**
+     * 登记任务的唯一活动模型调用，并处理先取消后注册。
+     *
+     * @param taskId 任务 ID
+     * @param call 活动模型调用
+     */
     public void register(Long taskId, LlmStreamCall call) {
         LlmStreamCall existing = calls.putIfAbsent(taskId, call);
         if (existing != null) {
@@ -31,6 +37,12 @@ public class LlmStreamCallRegistry {
         }
     }
 
+    /**
+     * 按调用实例移除活动登记与取消信号。
+     *
+     * @param taskId 任务 ID
+     * @param call 已结束模型调用
+     */
     public void unregister(Long taskId, LlmStreamCall call) {
         if (call != null) {
             calls.remove(taskId, call);
@@ -38,6 +50,11 @@ public class LlmStreamCallRegistry {
         cancellations.remove(taskId);
     }
 
+    /**
+     * 在任务取消事务提交后转发模型调用取消。
+     *
+     * @param signal AI 任务取消信号
+     */
     @TransactionalEventListener(
             phase = TransactionPhase.AFTER_COMMIT,
             fallbackExecution = true)
@@ -45,6 +62,11 @@ public class LlmStreamCallRegistry {
         cancel(signal.taskId());
     }
 
+    /**
+     * 记录取消意图并取消当前活动调用。
+     *
+     * @param taskId 任务 ID
+     */
     public void cancel(Long taskId) {
         cancellations.add(taskId);
         LlmStreamCall call = calls.get(taskId);
@@ -53,6 +75,12 @@ public class LlmStreamCallRegistry {
         }
     }
 
+    /**
+     * 查询任务是否已收到取消请求。
+     *
+     * @param taskId 任务 ID
+     * @return 是否已请求取消
+     */
     public boolean isCancellationRequested(Long taskId) {
         return cancellations.contains(taskId);
     }

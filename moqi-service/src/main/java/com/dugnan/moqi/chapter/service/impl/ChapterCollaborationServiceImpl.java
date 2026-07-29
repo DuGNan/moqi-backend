@@ -81,6 +81,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      * @param briefMapper 简报数据访问对象
      * @param outlineMapper 大纲数据访问对象
      * @param aiTaskMapper AI 任务数据访问对象
+     * @param eventPublisher 应用事件发布器
      */
     public ChapterCollaborationServiceImpl(
             WorkMapper workMapper,
@@ -116,6 +117,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      * @param aiTaskMapper AI 任务数据访问对象
      * @param eventPublisher 应用事件发布器
      * @param focusResolver 讨论对焦解析器
+     * @param impactService 共识影响判断服务
      */
     public ChapterCollaborationServiceImpl(
             WorkMapper workMapper,
@@ -142,6 +144,17 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
 
     /**
      * 创建支持讨论对焦与大纲共识影响判断的章节共创服务。
+     *
+     * @param workMapper 作品数据访问对象
+     * @param chapterMapper 章节数据访问对象
+     * @param conversationMapper 会话数据访问对象
+     * @param messageMapper 消息数据访问对象
+     * @param briefMapper 简报数据访问对象
+     * @param outlineMapper 大纲数据访问对象
+     * @param aiTaskMapper AI 任务数据访问对象
+     * @param eventPublisher 应用事件发布器
+     * @param focusResolver 讨论对焦解析器
+     * @param impactService 共识影响判断服务
      */
     @Autowired
     public ChapterCollaborationServiceImpl(

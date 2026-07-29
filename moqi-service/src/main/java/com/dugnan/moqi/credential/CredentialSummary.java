@@ -10,6 +10,11 @@ public record CredentialSummary(
         String maskedValue,
         Integer version) {
 
+    /**
+     * 创建未配置凭据的安全摘要。
+     *
+     * @return 未配置凭据摘要
+     */
     public static CredentialSummary missing() {
         return new CredentialSummary(false, null, 0);
     }

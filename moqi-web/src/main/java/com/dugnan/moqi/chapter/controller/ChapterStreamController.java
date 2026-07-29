@@ -20,10 +20,21 @@ public class ChapterStreamController {
 
     private final ChapterSseRegistry chapterSseRegistry;
 
+    /**
+     * 创建章节事件订阅控制器。
+     *
+     * @param chapterSseRegistry 章节 SSE 订阅注册表
+     */
     public ChapterStreamController(ChapterSseRegistry chapterSseRegistry) {
         this.chapterSseRegistry = chapterSseRegistry;
     }
 
+    /**
+     * 订阅指定章节的讨论任务事件。
+     *
+     * @param chapterId 章节 ID
+     * @return SSE 长连接发射器
+     */
     @GetMapping(value = "/{chapterId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@PathVariable Long chapterId) {
         return chapterSseRegistry.subscribe(chapterId);

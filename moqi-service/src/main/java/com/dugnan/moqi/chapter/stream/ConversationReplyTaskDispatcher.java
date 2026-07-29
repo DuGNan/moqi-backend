@@ -17,6 +17,12 @@ public class ConversationReplyTaskDispatcher {
     private final ThreadPoolTaskExecutor taskExecutor;
     private final ConversationReplyTaskRunner taskRunner;
 
+    /**
+     * 创建讨论回复任务调度器。
+     *
+     * @param taskExecutor 有界章节任务执行器
+     * @param taskRunner 讨论回复任务执行器
+     */
     public ConversationReplyTaskDispatcher(
             @Qualifier("chapterAiTaskExecutor") ThreadPoolTaskExecutor taskExecutor,
             ConversationReplyTaskRunner taskRunner) {
@@ -24,6 +30,11 @@ public class ConversationReplyTaskDispatcher {
         this.taskRunner = taskRunner;
     }
 
+    /**
+     * 事务提交后调度讨论回复任务。
+     *
+     * @param event 讨论回复任务提交事件
+     */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void dispatch(ConversationReplyTaskSubmittedEvent event) {
         try {

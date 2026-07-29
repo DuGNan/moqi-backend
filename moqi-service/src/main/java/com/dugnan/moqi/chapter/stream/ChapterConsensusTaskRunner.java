@@ -84,6 +84,17 @@ public class ChapterConsensusTaskRunner {
 
     /**
      * 创建共识任务执行器。
+     *
+     * @param taskMapper AI 任务数据访问对象
+     * @param conversationMapper 会话数据访问对象
+     * @param messageMapper 会话消息数据访问对象
+     * @param briefMapper Brief 数据访问对象
+     * @param userConfigService 用户配置服务
+     * @param providerFactory LLM Provider 工厂
+     * @param contextBindingService 故事上下文绑定服务
+     * @param persistenceService 共识结果持久化服务
+     * @param objectMapper JSON 映射器
+     * @param eventPublisher 应用事件发布器
      */
     public ChapterConsensusTaskRunner(
             AiTaskMapper taskMapper,
@@ -188,6 +199,9 @@ public class ChapterConsensusTaskRunner {
 
     /**
      * 使用任务版本条件竞争执行权。
+     *
+     * @param task 待执行任务
+     * @return 是否成功取得执行权
      */
     private boolean claim(AiTaskEntity task) {
         int version = version(task);
@@ -209,6 +223,12 @@ public class ChapterConsensusTaskRunner {
 
     /**
      * 构建并绑定可审计上下文快照。
+     *
+     * @param task 当前任务
+     * @param input 任务输入引用
+     * @param currentMessage 当前用户消息
+     * @param provider LLM Provider
+     * @return 已持久化并绑定的上下文快照
      */
     private StoryContextSnapshot buildContext(
             AiTaskEntity task,
@@ -236,6 +256,9 @@ public class ChapterConsensusTaskRunner {
 
     /**
      * 读取可恢复任务输入。
+     *
+     * @param task 当前任务
+     * @return 任务输入引用
      */
     private ChapterConsensusTaskInput taskInput(AiTaskEntity task) {
         if (!StringUtils.hasText(task.getTaskInputJson())) {
@@ -253,6 +276,10 @@ public class ChapterConsensusTaskRunner {
 
     /**
      * 重验任务会话归属。
+     *
+     * @param task 当前任务
+     * @param conversationId 会话 ID
+     * @return 归属合法的会话实体
      */
     private ChapterConversationEntity requireConversation(AiTaskEntity task, Long conversationId) {
         ChapterConversationEntity conversation =
@@ -268,6 +295,11 @@ public class ChapterConsensusTaskRunner {
 
     /**
      * 读取任务会话最近一条用户消息作为当前输入。
+     *
+     * @param chapterId 章节 ID
+     * @param conversationId 会话 ID
+     * @param currentMessageId 当前消息 ID
+     * @return 当前用户消息
      */
     private ChapterConversationMessageEntity requireUserMessage(
             Long chapterId,
@@ -289,6 +321,10 @@ public class ChapterConsensusTaskRunner {
 
     /**
      * 读取显式基础 Brief 内容。
+     *
+     * @param chapterId 章节 ID
+     * @param baseBriefId 基础 Brief ID
+     * @return Brief 内容，未指定时返回 null
      */
     private String baseBriefContent(Long chapterId, Long baseBriefId) {
         if (baseBriefId == null) {
@@ -303,6 +339,10 @@ public class ChapterConsensusTaskRunner {
 
     /**
      * 以当前运行版本尝试写入失败终态。
+     *
+     * @param task 当前任务
+     * @param errorCode 错误码
+     * @param errorMessage 安全错误消息
      */
     private void fail(AiTaskEntity task, String errorCode, String errorMessage) {
         int version = version(task);
@@ -320,6 +360,9 @@ public class ChapterConsensusTaskRunner {
 
     /**
      * 获取任务版本。
+     *
+     * @param task 当前任务
+     * @return 非空任务版本
      */
     private int version(AiTaskEntity task) {
         return task.getVersion() == null ? 0 : task.getVersion();

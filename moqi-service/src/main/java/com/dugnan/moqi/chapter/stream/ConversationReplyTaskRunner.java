@@ -63,6 +63,19 @@ public class ConversationReplyTaskRunner {
     private final StoryContextTaskBindingService contextBindingService;
     private final ChapterDiscussionFocusResolver focusResolver;
 
+    /**
+     * 创建完整接入上下文引擎与讨论对焦的回复任务执行器。
+     *
+     * @param taskMapper AI 任务数据访问对象
+     * @param messageMapper 会话消息数据访问对象
+     * @param userConfigService 用户配置服务
+     * @param providerFactory LLM Provider 工厂
+     * @param persistenceService 回复持久化服务
+     * @param eventPublisher 应用事件发布器
+     * @param callRegistry 流式调用注册表
+     * @param contextBindingService 故事上下文绑定服务
+     * @param focusResolver 讨论对焦解析器
+     */
     @Autowired
     public ConversationReplyTaskRunner(
             AiTaskMapper taskMapper,
@@ -87,6 +100,14 @@ public class ConversationReplyTaskRunner {
 
     /**
      * 保留无上下文引擎的构造入口，供既有单元测试和轻量调用方使用。
+     *
+     * @param taskMapper AI 任务数据访问对象
+     * @param messageMapper 会话消息数据访问对象
+     * @param userConfigService 用户配置服务
+     * @param providerFactory LLM Provider 工厂
+     * @param persistenceService 回复持久化服务
+     * @param eventPublisher 应用事件发布器
+     * @param callRegistry 流式调用注册表
      */
     public ConversationReplyTaskRunner(
             AiTaskMapper taskMapper,
@@ -102,6 +123,15 @@ public class ConversationReplyTaskRunner {
 
     /**
      * 保留只接入 Story Context Engine、不含讨论对焦解析器的构造入口。
+     *
+     * @param taskMapper AI 任务数据访问对象
+     * @param messageMapper 会话消息数据访问对象
+     * @param userConfigService 用户配置服务
+     * @param providerFactory LLM Provider 工厂
+     * @param persistenceService 回复持久化服务
+     * @param eventPublisher 应用事件发布器
+     * @param callRegistry 流式调用注册表
+     * @param contextBindingService 故事上下文绑定服务
      */
     public ConversationReplyTaskRunner(
             AiTaskMapper taskMapper,
@@ -124,6 +154,11 @@ public class ConversationReplyTaskRunner {
                 null);
     }
 
+    /**
+     * 执行一个 queued 讨论回复任务并发布流式事件。
+     *
+     * @param taskId 任务 ID
+     */
     public void run(Long taskId) {
         AiTaskEntity task = taskId == null ? null : taskMapper.selectById(taskId);
         if (task == null || Integer.valueOf(1).equals(task.getDeleted())
@@ -174,6 +209,11 @@ public class ConversationReplyTaskRunner {
         }
     }
 
+    /**
+     * 将队列拒绝稳定写为失败并发布失败事件。
+     *
+     * @param taskId 任务 ID
+     */
     public void reject(Long taskId) {
         AiTaskEntity task = taskId == null ? null : taskMapper.selectById(taskId);
         if (task == null || !STATUS_QUEUED.equals(task.getTaskStatus())) {

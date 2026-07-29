@@ -55,6 +55,11 @@ public class DeepSeekLlmProvider implements LlmProvider {
     private final DeepSeekApi deepSeekApi;
     private final String model;
 
+    /**
+     * 使用默认连接与读取超时创建 DeepSeek Provider。
+     *
+     * @param config 供应商运行时配置
+     */
     public DeepSeekLlmProvider(LlmProviderRuntimeConfig config) {
         this(config, CONNECT_TIMEOUT, READ_TIMEOUT);
     }

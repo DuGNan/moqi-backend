@@ -14,6 +14,11 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 @Configuration
 public class ChapterAiTaskExecutionConfiguration {
 
+    /**
+     * 创建固定双线程、容量为 32 的章节 AI 任务执行器。
+     *
+     * @return 已初始化的有界任务执行器
+     */
     @Bean("chapterAiTaskExecutor")
     public ThreadPoolTaskExecutor chapterAiTaskExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();

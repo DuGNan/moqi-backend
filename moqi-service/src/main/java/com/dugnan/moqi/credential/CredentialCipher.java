@@ -27,6 +27,11 @@ public class CredentialCipher {
     private final CredentialKeyRing keyRing;
     private final SecureRandom secureRandom;
 
+    /**
+     * 创建使用系统安全随机源的凭据加密器。
+     *
+     * @param keyRing 凭据主密钥环
+     */
     @Autowired
     public CredentialCipher(CredentialKeyRing keyRing) {
         this(keyRing, new SecureRandom());
@@ -37,6 +42,14 @@ public class CredentialCipher {
         this.secureRandom = secureRandom;
     }
 
+    /**
+     * 使用活动主密钥和随机 nonce 加密凭据。
+     *
+     * @param identity 凭据稳定身份
+     * @param plaintext 凭据明文
+     * @return 密文、nonce 与密钥版本
+     * @throws CredentialSecurityException 主密钥配置或加密操作失败
+     */
     public EncryptedCredential encrypt(CredentialIdentity identity, String plaintext) {
         CredentialKey key = keyRing.activeKey();
         byte[] nonce = new byte[NONCE_BYTES];
@@ -57,6 +70,16 @@ public class CredentialCipher {
         }
     }
 
+    /**
+     * 使用稳定身份 AAD 解密并认证凭据。
+     *
+     * @param identity 凭据稳定身份
+     * @param ciphertext Base64 密文
+     * @param nonce Base64 nonce
+     * @param keyId 密钥版本标识
+     * @return 凭据明文
+     * @throws CredentialSecurityException 密钥缺失或认证失败
+     */
     public String decrypt(
             CredentialIdentity identity,
             String ciphertext,

@@ -24,6 +24,12 @@ public class EnvironmentCredentialKeyRing implements CredentialKeyRing {
     private final String activeKeyId;
     private final Map<String, CredentialKey> keys;
 
+    /**
+     * 从运行时配置创建凭据主密钥环。
+     *
+     * @param activeKeyId 活动密钥版本标识
+     * @param configuredKeys 逗号分隔的密钥版本配置
+     */
     public EnvironmentCredentialKeyRing(
             @Value("${moqi.security.credentials.active-key-id:}") String activeKeyId,
             @Value("${moqi.security.credentials.keys:}") String configuredKeys) {

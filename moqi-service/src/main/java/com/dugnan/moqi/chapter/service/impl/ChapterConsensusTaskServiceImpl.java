@@ -66,6 +66,7 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
      * @param chapterMapper 章节数据访问对象
      * @param conversationMapper 会话数据访问对象
      * @param briefMapper Brief 数据访问对象
+     * @param messageMapper 会话消息数据访问对象
      * @param taskMapper AI 任务数据访问对象
      * @param objectMapper JSON 映射器
      * @param eventPublisher 应用事件发布器
@@ -131,10 +132,11 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
     }
 
     /**
-     * 序列化只含 ID 引用的任务输入。
+     * 查询会话最近一条未删除的用户消息。
      *
-     * @param input 任务输入
-     * @return JSON
+     * @param chapterId 章节 ID
+     * @param conversationId 会话 ID
+     * @return 最近一条用户消息
      */
     private ChapterConversationMessageEntity requireLatestUserMessage(
             Long chapterId,
@@ -155,6 +157,12 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
         return messages.get(0);
     }
 
+    /**
+     * 序列化只含 ID 引用的任务输入。
+     *
+     * @param input 任务输入
+     * @return JSON
+     */
     private String taskInputJson(ChapterConsensusTaskInput input) {
         try {
             return objectMapper.writeValueAsString(input);

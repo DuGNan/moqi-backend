@@ -36,6 +36,13 @@ public class LegacyModelCredentialMigrationService {
     private final LlmCredentialService credentialService;
     private final ObjectMapper objectMapper;
 
+    /**
+     * 创建旧模型凭据迁移服务。
+     *
+     * @param configMapper 用户配置数据访问对象
+     * @param credentialService LLM 凭据服务
+     * @param objectMapper JSON 映射器
+     */
     public LegacyModelCredentialMigrationService(
             UserConfigMapper configMapper,
             LlmCredentialService credentialService,
@@ -45,6 +52,11 @@ public class LegacyModelCredentialMigrationService {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * 幂等迁移旧配置中的模型明文凭据并执行 CAS 清理。
+     *
+     * @return 成功迁移的配置数量
+     */
     @Transactional(rollbackFor = RuntimeException.class)
     public int migrate() {
         List<UserConfigEntity> configs = configMapper.selectList(

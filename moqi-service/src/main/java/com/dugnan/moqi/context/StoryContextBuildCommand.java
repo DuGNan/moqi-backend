@@ -18,6 +18,17 @@ public record StoryContextBuildCommand(
 
     /**
      * 保留不含讨论对焦的旧构造入口。
+     *
+     * @param profile 上下文场景配置
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID
+     * @param conversationId 会话 ID
+     * @param currentMessageId 当前消息 ID
+     * @param taskInstruction 当前任务指令
+     * @param currentInput 当前用户输入
+     * @param targetText 当前目标文本
+     * @param contextWindowTokens 上下文窗口 token 数
+     * @param outputReserveTokens 输出预留 token 数
      */
     public StoryContextBuildCommand(
             StoryContextProfile profile,
@@ -44,6 +55,22 @@ public record StoryContextBuildCommand(
                 null);
     }
 
+    /**
+     * 校验上下文命令的必填标识与 token 预算。
+     *
+     * @param profile 上下文场景配置
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID
+     * @param conversationId 会话 ID
+     * @param currentMessageId 当前消息 ID
+     * @param taskInstruction 当前任务指令
+     * @param currentInput 当前用户输入
+     * @param targetText 当前目标文本
+     * @param contextWindowTokens 上下文窗口 token 数
+     * @param outputReserveTokens 输出预留 token 数
+     * @param discussionFocus 讨论对焦资料
+     * @throws IllegalArgumentException 标识或 token 预算不合法
+     */
     public StoryContextBuildCommand {
         if (profile == null || workId == null || workId <= 0
                 || contextWindowTokens <= 0 || outputReserveTokens < 0) {
@@ -60,6 +87,11 @@ public record StoryContextBuildCommand(
         }
     }
 
+    /**
+     * 计算可用于输入上下文的 token 预算。
+     *
+     * @return 输入预算 token 数
+     */
     public int inputBudgetTokens() {
         return contextWindowTokens - outputReserveTokens;
     }
