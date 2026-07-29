@@ -98,6 +98,8 @@ public class UserConfigServiceImpl implements UserConfigService {
      *
      * @param configMapper 用户配置数据访问对象
      * @param objectMapper JSON 解析器
+     * @param providerFactory LLM Provider 工厂
+     * @param credentialService LLM 凭据服务
      */
     @Autowired
     public UserConfigServiceImpl(
@@ -315,6 +317,10 @@ public class UserConfigServiceImpl implements UserConfigService {
 
     /**
      * 规范化模型配置并应用密钥更新语义。
+     *
+     * @param submitted 已清理的提交配置
+     * @param request 配置更新请求
+     * @return 规范化且不含明文密钥的模型配置
      */
     private JsonNode normalizeModelConfig(
             JsonNode submitted,
@@ -347,6 +353,10 @@ public class UserConfigServiceImpl implements UserConfigService {
 
     /**
      * 构造不含明文密钥的模型配置响应。
+     *
+     * @param stored 已存储配置
+     * @param credential 凭据摘要
+     * @return 可安全返回的模型配置
      */
     private JsonNode sanitizeModelConfig(JsonNode stored, CredentialSummary credential) {
         ObjectNode sanitized = (ObjectNode) sanitize(stored);

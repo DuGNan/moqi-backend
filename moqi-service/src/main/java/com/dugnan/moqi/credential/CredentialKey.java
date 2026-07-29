@@ -12,15 +12,31 @@ public final class CredentialKey {
     private final String keyId;
     private final SecretKey secretKey;
 
+    /**
+     * 创建指定版本的凭据主密钥。
+     *
+     * @param keyId 密钥版本标识
+     * @param secretKey AES 主密钥
+     */
     public CredentialKey(String keyId, SecretKey secretKey) {
         this.keyId = keyId;
         this.secretKey = secretKey;
     }
 
+    /**
+     * 获取密钥版本标识。
+     *
+     * @return 密钥版本标识
+     */
     public String keyId() {
         return keyId;
     }
 
+    /**
+     * 获取 AES 主密钥。
+     *
+     * @return AES 主密钥
+     */
     public SecretKey secretKey() {
         return secretKey;
     }

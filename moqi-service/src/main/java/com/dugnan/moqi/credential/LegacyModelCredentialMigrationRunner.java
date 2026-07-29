@@ -19,6 +19,11 @@ public class LegacyModelCredentialMigrationRunner implements ApplicationRunner {
 
     private final LegacyModelCredentialMigrationService migrationService;
 
+    /**
+     * 创建旧模型凭据迁移启动器。
+     *
+     * @param migrationService 旧模型凭据迁移服务
+     */
     public LegacyModelCredentialMigrationRunner(
             LegacyModelCredentialMigrationService migrationService) {
         this.migrationService = migrationService;

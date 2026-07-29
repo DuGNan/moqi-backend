@@ -17,6 +17,13 @@ public record StoryContextFocus(
 
     /**
      * 防止调用方修改来源列表。
+     *
+     * @param briefId Brief ID
+     * @param briefVersion Brief 版本
+     * @param decisionKey 待决键
+     * @param decisionContent 待决内容
+     * @param consensusContent 结构化共识内容
+     * @param sources 待决来源列表
      */
     public StoryContextFocus {
         sources = sources == null ? List.of() : List.copyOf(sources);

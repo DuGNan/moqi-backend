@@ -28,6 +28,12 @@ public final class ChapterGenerationModels {
 
         /**
          * 保留不显式选择 confirmed Brief 的旧构造入口。
+         *
+         * @param outlineId 大纲 ID
+         * @param baseRevision 基础修订版本
+         * @param generationMode 生成模式
+         * @param lengthPreset 长度预设
+         * @param customWordCount 自定义字数
          */
         public CreateGenerationRequest(
                 Long outlineId,

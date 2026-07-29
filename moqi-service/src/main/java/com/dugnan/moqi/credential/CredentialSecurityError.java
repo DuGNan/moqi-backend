@@ -23,6 +23,11 @@ public enum CredentialSecurityError {
         this.safeMessage = safeMessage;
     }
 
+    /**
+     * 获取不含敏感值的固定错误消息。
+     *
+     * @return 安全错误消息
+     */
     public String safeMessage() {
         return safeMessage;
     }

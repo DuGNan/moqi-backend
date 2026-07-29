@@ -22,6 +22,12 @@ public class StoryContextTaskBindingService {
     private final StoryContextEngine contextEngine;
     private final AiTaskMapper taskMapper;
 
+    /**
+     * 创建上下文快照绑定服务。
+     *
+     * @param contextEngine 故事上下文引擎
+     * @param taskMapper AI 任务数据访问对象
+     */
     public StoryContextTaskBindingService(StoryContextEngine contextEngine, AiTaskMapper taskMapper) {
         this.contextEngine = contextEngine;
         this.taskMapper = taskMapper;

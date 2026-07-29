@@ -9,6 +9,13 @@ import org.springframework.util.StringUtils;
  */
 public record LlmMessage(LlmRole role, String content) {
 
+    /**
+     * 校验消息角色与非空内容。
+     *
+     * @param role 消息角色
+     * @param content 消息内容
+     * @throws IllegalArgumentException 角色为空或内容为空白
+     */
     public LlmMessage {
         if (role == null) {
             throw new IllegalArgumentException("消息角色不能为空");

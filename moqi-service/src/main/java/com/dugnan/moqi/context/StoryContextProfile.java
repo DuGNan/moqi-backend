@@ -32,22 +32,47 @@ public enum StoryContextProfile {
         this.historyPercent = historyPercent;
     }
 
+    /**
+     * 获取默认输出预留 token 数。
+     *
+     * @return 默认输出预留 token 数
+     */
     public int defaultOutputReserveTokens() {
         return defaultOutputReserveTokens;
     }
 
+    /**
+     * 获取结构资料预算百分比。
+     *
+     * @return 结构资料预算百分比
+     */
     public int structurePercent() {
         return structurePercent;
     }
 
+    /**
+     * 获取知识资料预算百分比。
+     *
+     * @return 知识资料预算百分比
+     */
     public int knowledgePercent() {
         return knowledgePercent;
     }
 
+    /**
+     * 获取当前文本预算百分比。
+     *
+     * @return 当前文本预算百分比
+     */
     public int currentTextPercent() {
         return currentTextPercent;
     }
 
+    /**
+     * 获取历史对话预算百分比。
+     *
+     * @return 历史对话预算百分比
+     */
     public int historyPercent() {
         return historyPercent;
     }

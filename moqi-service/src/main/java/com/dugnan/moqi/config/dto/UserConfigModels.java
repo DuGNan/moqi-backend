@@ -34,6 +34,12 @@ public final class UserConfigModels {
             String apiKey,
             Boolean clearApiKey) {
 
+        /**
+         * 保留不更新模型凭据的旧构造入口。
+         *
+         * @param baseVersion 基础配置版本
+         * @param configValue 配置内容
+         */
         public UpdateUserConfigRequest(Integer baseVersion, JsonNode configValue) {
             this(baseVersion, configValue, null, null);
         }
@@ -64,6 +70,18 @@ public final class UserConfigModels {
             LocalDateTime checkedAt,
             Integer configVersion) {
 
+        /**
+         * 保留不返回配置版本的旧构造入口。
+         *
+         * @param configured 是否已完成必要配置
+         * @param available 是否可用于模型调用
+         * @param provider 供应商标识
+         * @param providerName 供应商显示名
+         * @param activeModel 当前模型标识
+         * @param lastTestStatus 最近连接测试状态
+         * @param lastError 最近安全错误消息
+         * @param checkedAt 最近检查时间
+         */
         public ModelStatus(
                 boolean configured,
                 boolean available,

@@ -61,6 +61,10 @@ public class ChapterConsensusImpactService {
 
     /**
      * 判断大纲是否显式包含非空共识文本。
+     *
+     * @param outlineContent 大纲内容
+     * @param consensusText 待匹配的共识文本
+     * @return 是否完整包含共识文本
      */
     private boolean contains(String outlineContent, String consensusText) {
         return StringUtils.hasText(outlineContent)
@@ -70,6 +74,8 @@ public class ChapterConsensusImpactService {
 
     /**
      * 创建已承接结果。
+     *
+     * @return 已承接的维度判断
      */
     private DimensionImpact preserved() {
         return new DimensionImpact(STATUS_PRESERVED, "");
@@ -77,6 +83,9 @@ public class ChapterConsensusImpactService {
 
     /**
      * 创建可能变化结果。
+     *
+     * @param reason 判断依据
+     * @return 可能变化的维度判断
      */
     private DimensionImpact changed(String reason) {
         return new DimensionImpact(STATUS_POSSIBLY_CHANGED, reason);

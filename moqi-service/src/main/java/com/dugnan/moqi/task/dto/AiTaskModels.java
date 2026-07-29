@@ -34,6 +34,18 @@ public final class AiTaskModels {
 
         /**
          * 保留不含 Brief 结果引用的旧构造入口。
+         *
+         * @param id 任务 ID
+         * @param taskType 任务类型
+         * @param taskStatus 任务状态
+         * @param workId 作品 ID
+         * @param chapterId 章节 ID
+         * @param resultMessageId 结果消息 ID
+         * @param resultGenerationId 结果生成记录 ID
+         * @param errorCode 错误码
+         * @param errorMessage 错误消息
+         * @param gmtCreate 创建时间
+         * @param gmtModified 修改时间
          */
         public AiTaskDetail(
                 Long id,

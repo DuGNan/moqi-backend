@@ -80,6 +80,23 @@ public class StoryContextEngineImpl implements StoryContextEngine {
     private final TokenEstimator tokenEstimator;
     private final ObjectMapper objectMapper;
 
+    /**
+     * 创建故事上下文引擎。
+     *
+     * @param workMapper 作品数据访问对象
+     * @param chapterMapper 章节数据访问对象
+     * @param briefMapper Brief 数据访问对象
+     * @param outlineMapper 大纲数据访问对象
+     * @param settingMapper 正式设定数据访问对象
+     * @param foreshadowingMapper 伏笔数据访问对象
+     * @param summaryMapper 章节摘要数据访问对象
+     * @param eventMapper 章节关键事件数据访问对象
+     * @param conversationMapper 会话数据访问对象
+     * @param messageMapper 会话消息数据访问对象
+     * @param snapshotMapper 上下文快照数据访问对象
+     * @param tokenEstimator token 估算器
+     * @param objectMapper JSON 映射器
+     */
     public StoryContextEngineImpl(
             WorkMapper workMapper,
             ChapterMapper chapterMapper,

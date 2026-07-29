@@ -22,6 +22,12 @@ public class ConversationReplyPersistenceService {
     private final AiTaskMapper taskMapper;
     private final ChapterConversationMessageMapper messageMapper;
 
+    /**
+     * 创建回复结果持久化服务。
+     *
+     * @param taskMapper AI 任务数据访问对象
+     * @param messageMapper 会话消息数据访问对象
+     */
     public ConversationReplyPersistenceService(
             AiTaskMapper taskMapper,
             ChapterConversationMessageMapper messageMapper) {
@@ -29,6 +35,14 @@ public class ConversationReplyPersistenceService {
         this.messageMapper = messageMapper;
     }
 
+    /**
+     * 保存助手回复并以任务版本条件完成任务。
+     *
+     * @param task 当前运行任务
+     * @param input 触发回复的用户消息
+     * @param content 完整助手回复
+     * @return 已持久化助手消息 ID
+     */
     @Transactional(rollbackFor = RuntimeException.class)
     public Long complete(
             AiTaskEntity task,
