@@ -71,6 +71,22 @@ public class ChapterSseRegistry {
         }
     }
 
+    /**
+     * 转发不含候选正文的大纲候选资源更新事件。
+     *
+     * @param event 候选资源事件
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    public void forward(OutlineCandidateEvent event) {
+        List<SseEmitter> emitters = subscribers.get(event.chapterId());
+        if (emitters == null) {
+            return;
+        }
+        for (SseEmitter emitter : emitters) {
+            send(emitter, event.type(), event);
+        }
+    }
+
     private void send(SseEmitter emitter, String eventName, Object data) {
         try {
             emitter.send(SseEmitter.event().name(eventName).data(data));

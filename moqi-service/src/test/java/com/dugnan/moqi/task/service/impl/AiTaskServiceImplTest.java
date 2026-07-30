@@ -17,8 +17,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
+import com.dugnan.moqi.chapter.entity.ChapterOutlineCandidateEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterOutlineCandidateMapper;
 import com.dugnan.moqi.chapter.stream.ChapterReplyEvent;
+import com.dugnan.moqi.chapter.stream.OutlineCandidateEvent;
 import com.dugnan.moqi.task.event.AiTaskCancellationSignal;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -35,6 +38,8 @@ class AiTaskServiceImplTest {
     private AiTaskMapper taskMapper;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private ChapterOutlineCandidateMapper candidateMapper;
 
     private AiTaskServiceImpl service;
 
@@ -43,7 +48,7 @@ class AiTaskServiceImplTest {
      */
     @BeforeEach
     void setUp() {
-        service = new AiTaskServiceImpl(taskMapper, eventPublisher);
+        service = new AiTaskServiceImpl(taskMapper, candidateMapper, eventPublisher);
     }
 
     /**
@@ -53,12 +58,14 @@ class AiTaskServiceImplTest {
     void getsAiTask() {
         AiTaskEntity task = task(9001L, "running");
         task.setResultGenerationId(7001L);
+        task.setResultOutlineCandidateId(7002L);
         when(taskMapper.selectById(9001L)).thenReturn(task);
 
         var result = service.getTask(9001L);
 
         assertThat(result.taskStatus()).isEqualTo("running");
         assertThat(result.resultGenerationId()).isEqualTo(7001L);
+        assertThat(result.resultOutlineCandidateId()).isEqualTo(7002L);
     }
 
     /**
@@ -182,6 +189,34 @@ class AiTaskServiceImplTest {
         assertThatThrownBy(() -> service.getTask(9001L))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("paused");
+    }
+
+    /**
+     * 验证取消候选任务会在同一事务内同步候选状态，避免迟到结果覆盖取消。
+     */
+    @Test
+    void cancelsLinkedOutlineCandidate() {
+        AiTaskEntity task = task(9001L, "running");
+        task.setTaskType("outline_adjustment_candidate");
+        ChapterOutlineCandidateEntity candidate = new ChapterOutlineCandidateEntity();
+        candidate.setId(7002L);
+        candidate.setAiTaskId(9001L);
+        candidate.setChapterId(12L);
+        candidate.setBaseOutlineId(33L);
+        candidate.setBaseOutlineRevision(4);
+        candidate.setCandidateStatus("running");
+        candidate.setVersion(0);
+        candidate.setDeleted(0);
+        when(taskMapper.selectById(9001L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(candidateMapper.findByTaskId(9001L)).thenReturn(candidate);
+        when(candidateMapper.update(any(), any())).thenReturn(1);
+
+        service.cancelTask(9001L);
+
+        verify(candidateMapper).update(any(), any());
+        verify(eventPublisher).publishEvent(OutlineCandidateEvent.updated(
+                12L, 9001L, 7002L, "canceled", "canceled", 33L, 4));
     }
 
     /**

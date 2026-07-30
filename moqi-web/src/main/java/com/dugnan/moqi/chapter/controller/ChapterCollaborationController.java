@@ -108,14 +108,4 @@ public class ChapterCollaborationController {
         return ApiResponse.success(chapterCollaborationService.saveOutline(chapterId, request));
     }
 
-    /**
-     * 刷新章节大纲。
-     *
-     * @param chapterId 章节 ID
-     * @return 大纲详情响应
-     */
-    @PostMapping("/{chapterId}/outline/refresh")
-    public ApiResponse<OutlineDetail> refreshOutline(@PathVariable Long chapterId) {
-        return ApiResponse.success(chapterCollaborationService.refreshOutline(chapterId));
-    }
 }

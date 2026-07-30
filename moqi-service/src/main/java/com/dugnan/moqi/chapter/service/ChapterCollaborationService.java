@@ -83,11 +83,4 @@ public interface ChapterCollaborationService {
      */
     OutlineDetail saveOutline(Long chapterId, OutlineRequest request);
 
-    /**
-     * 基于当前共创上下文刷新章节大纲草稿。
-     *
-     * @param chapterId 章节 ID
-     * @return 大纲详情
-     */
-    OutlineDetail refreshOutline(Long chapterId);
 }

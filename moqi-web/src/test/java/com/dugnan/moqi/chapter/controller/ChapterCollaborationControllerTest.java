@@ -133,18 +133,4 @@ class ChapterCollaborationControllerTest {
                 .andExpect(jsonPath("$.code").value("OUTLINE_REVISION_CONFLICT"));
     }
 
-    /**
-     * 验证刷新大纲接口返回新的 revision。
-     *
-     * @throws Exception MockMvc 请求执行失败
-     */
-    @Test
-    void refreshesOutline() throws Exception {
-        when(chapterCollaborationService.refreshOutline(2L))
-                .thenReturn(new OutlineDetail(6L, 1L, 2L, "draft", "{}", 2, null, null));
-
-        mvc.perform(post("/api/chapters/2/outline/refresh"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.revision").value(2));
-    }
 }
