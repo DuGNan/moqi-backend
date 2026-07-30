@@ -26,6 +26,16 @@ public enum ErrorCode {
     OUTLINE_REVISION_CONFLICT,
     /** 章节大纲不存在。 */
     OUTLINE_NOT_FOUND,
+    /** 大纲调整候选不存在。 */
+    OUTLINE_CANDIDATE_NOT_FOUND,
+    /** 大纲调整候选状态不允许当前操作。 */
+    OUTLINE_CANDIDATE_STATE_CONFLICT,
+    /** 大纲调整候选内容不符合契约。 */
+    OUTLINE_CANDIDATE_INVALID,
+    /** 大纲调整候选基础大纲已过期。 */
+    OUTLINE_CANDIDATE_STALE,
+    /** 大纲调整候选绑定的 Brief 已被替换。 */
+    OUTLINE_CANDIDATE_BRIEF_STALE,
     /** 章节生成记录不存在。 */
     GENERATION_NOT_FOUND,
     /** 章节生成记录状态不允许当前操作。 */

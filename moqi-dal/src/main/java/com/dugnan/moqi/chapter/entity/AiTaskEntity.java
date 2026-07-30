@@ -34,6 +34,8 @@ public class AiTaskEntity extends BaseEntity {
 
     private Long resultBriefId;
 
+    private Long resultOutlineCandidateId;
+
     private String errorCode;
 
     private String errorMessage;

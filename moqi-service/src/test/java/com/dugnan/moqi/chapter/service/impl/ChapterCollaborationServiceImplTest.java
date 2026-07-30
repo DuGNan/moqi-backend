@@ -225,21 +225,6 @@ class ChapterCollaborationServiceImplTest {
     }
 
     /**
-     * 验证章节大纲刷新必须基于已确认 Brief。
-     */
-    @Test
-    void requiresConfirmedBriefWhenRefreshingOutline() {
-        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
-        when(workMapper.selectById(1L)).thenReturn(work(1L));
-        when(briefMapper.findLatestByChapterIdAndStatus(2L, "confirmed")).thenReturn(null);
-
-        assertThatThrownBy(() -> service.refreshOutline(2L))
-                .isInstanceOf(BusinessException.class)
-                .extracting("errorCode")
-                .isEqualTo(ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED);
-    }
-
-    /**
      * 验证保存大纲会绑定显式选择的已确认 Brief。
      */
     @Test

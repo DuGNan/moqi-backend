@@ -312,11 +312,10 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             outline.setChapterId(chapterId);
             outline.setDeleted(0);
             outline.setRevision(0);
+            outline.setVersion(0);
         } else if (request == null || request.baseRevision() == null
                 || !request.baseRevision().equals(revision(outline))) {
             throw revisionConflict();
-        } else {
-            outline.setRevision(revision(outline) + 1);
         }
         outline.setConfirmedBriefId(confirmedBrief.getId());
         outline.setOutlineStatus(status);
@@ -324,40 +323,13 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         if (outline.getId() == null) {
             outlineMapper.insert(outline);
         } else {
-            outlineMapper.updateById(outline);
-        }
-        return outlineDetail(outline);
-    }
-
-    @Override
-    @Transactional(rollbackFor = RuntimeException.class)
-    public OutlineDetail refreshOutline(Long chapterId) {
-        ChapterEntity chapter = requireChapter(chapterId);
-        WorkEntity work = requireWork(chapter.getWorkId());
-        ChapterBriefEntity brief =
-                briefMapper.findLatestByChapterIdAndStatus(chapterId, STATUS_CONFIRMED);
-        if (brief == null) {
-            throw new BusinessException(
-                    ErrorCode.CHAPTER_CONFIRMED_BRIEF_REQUIRED,
-                    "请先确认本章 Brief，再刷新章节大纲");
-        }
-        ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
-        if (outline == null) {
-            outline = new ChapterOutlineEntity();
-            outline.setWorkId(chapter.getWorkId());
-            outline.setChapterId(chapterId);
-            outline.setDeleted(0);
-            outline.setRevision(0);
-        } else {
-            outline.setRevision(revision(outline) + 1);
-        }
-        outline.setOutlineStatus(STATUS_DRAFT);
-        outline.setConfirmedBriefId(brief.getId());
-        outline.setOutlineContent(refreshContent(work, chapter, brief));
-        if (outline.getId() == null) {
-            outlineMapper.insert(outline);
-        } else {
-            outlineMapper.updateById(outline);
+            int updated = outlineMapper.updateByRevisionAndVersion(
+                    outline.getId(), chapterId, confirmedBrief.getId(), status, content,
+                    revision(outline), version(outline));
+            if (updated != 1) {
+                throw revisionConflict();
+            }
+            outline = outlineMapper.findLatest(chapterId);
         }
         return outlineDetail(outline);
     }
@@ -555,32 +527,13 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     }
 
     /**
-     * 生成确定性的刷新大纲内容。
+     * 获取大纲实体乐观锁版本。
      *
-     * @param work 作品
-     * @param chapter 章节
-     * @param brief brief
-     * @return 大纲 JSON 字符串
+     * @param outline 大纲实体
+     * @return 非空实体版本
      */
-    private String refreshContent(WorkEntity work, ChapterEntity chapter, ChapterBriefEntity brief) {
-        String briefContent = brief == null ? "暂无 brief" : brief.getBriefContent();
-        return """
-                {"workTitle":"%s","chapterTitle":"%s","sourceBrief":"%s","scenes":[],"openQuestions":[]}
-                """.formatted(json(work.getTitle()), json(chapter.getTitle()), json(briefContent)).trim();
-    }
-
-    /**
-     * 转义 JSON 字符串片段。
-     *
-     * @param value 原始值
-     * @return 转义值
-     */
-    private String json(String value) {
-        return value == null ? "" : value
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\r", "\\r")
-                .replace("\n", "\\n");
+    private int version(ChapterOutlineEntity outline) {
+        return outline.getVersion() == null ? 0 : outline.getVersion();
     }
 
     /**
