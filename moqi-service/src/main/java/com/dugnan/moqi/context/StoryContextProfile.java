@@ -10,6 +10,8 @@ public enum StoryContextProfile {
     CHAPTER_DISCUSSION(4096, 15, 30, 20, 35),
     /** 章节大纲调整候选生成。 */
     OUTLINE_ADJUSTMENT(4096, 30, 30, 30, 10),
+    /** 场景规划候选生成。 */
+    SCENE_PLANNING(4096, 25, 35, 30, 10),
     /** 场景正文生成。 */
     SCENE_GENERATION(8192, 20, 30, 45, 5),
     /** 一致性检查。 */
