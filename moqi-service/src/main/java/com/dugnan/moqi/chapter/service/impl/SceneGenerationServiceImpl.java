@@ -21,6 +21,8 @@ import com.dugnan.moqi.agent.AgentRuntime;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.RetryAgentStepCommand;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.StartAgentRunCommand;
+import com.dugnan.moqi.agent.entity.AgentRunStepEntity;
+import com.dugnan.moqi.agent.mapper.AgentRunStepMapper;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneList;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneView;
@@ -68,6 +70,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private final ChapterGenerationMapper generationMapper;
     private final ChapterGenerationSceneMapper sceneMapper;
     private final AiTaskMapper taskMapper;
+    private final AgentRunStepMapper agentRunStepMapper;
     private final PublishedScenePlanQueryPort scenePlanQueryPort;
     private final UserConfigService userConfigService;
     private final AgentRuntime agentRuntime;
@@ -79,6 +82,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             ChapterGenerationMapper generationMapper,
             ChapterGenerationSceneMapper sceneMapper,
             AiTaskMapper taskMapper,
+            AgentRunStepMapper agentRunStepMapper,
             PublishedScenePlanQueryPort scenePlanQueryPort,
             UserConfigService userConfigService,
             AgentRuntime agentRuntime,
@@ -88,6 +92,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         this.generationMapper = generationMapper;
         this.sceneMapper = sceneMapper;
         this.taskMapper = taskMapper;
+        this.agentRunStepMapper = agentRunStepMapper;
         this.scenePlanQueryPort = scenePlanQueryPort;
         this.userConfigService = userConfigService;
         this.agentRuntime = agentRuntime;
@@ -172,23 +177,23 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
 
     @Override
     public GenerationSceneList listScenes(Long generationId) {
-        requireGeneration(generationId);
+        ChapterGenerationEntity generation = requireGeneration(generationId);
         return new GenerationSceneList(generationId, sceneMapper.selectList(new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
                 .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
                 .eq(ChapterGenerationSceneEntity::getDeleted, 0)
                 .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo))
-                .stream().map(this::view).toList());
+                .stream().map(scene -> view(scene, generation.getAgentRunId())).toList());
     }
 
     @Override
     public GenerationSceneView getScene(Long generationId, Long sceneId) {
-        requireGeneration(generationId);
+        ChapterGenerationEntity generation = requireGeneration(generationId);
         ChapterGenerationSceneEntity scene = sceneId == null ? null : sceneMapper.selectById(sceneId);
         if (scene == null || Integer.valueOf(1).equals(scene.getDeleted())
                 || !generationId.equals(scene.getGenerationId())) {
             throw new BusinessException(ErrorCode.GENERATION_SCENE_NOT_FOUND, "场景候选不存在");
         }
-        return view(scene);
+        return view(scene, generation.getAgentRunId());
     }
 
     @Override
@@ -219,16 +224,20 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     public AgentRunView retryScene(Long generationId, Long sceneId, RetrySceneRequest request) {
         ChapterGenerationEntity generation = requireGeneration(generationId);
         GenerationSceneView scene = getScene(generationId, sceneId);
-        if (!STATUS_FAILED.equals(scene.sceneStatus()) || generation.getAgentRunId() == null
+        if (!STATUS_FAILED.equals(scene.sceneStatus()) || !Boolean.TRUE.equals(scene.retryable())
+                || generation.getAgentRunId() == null
                 || request == null || request.expectedAttempt() == null) {
             throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "当前场景不能重试");
         }
         AgentRunView run = agentRuntime.retryStep(new RetryAgentStepCommand(
                 generation.getAgentRunId(), "generate_scene:" + scene.sceneKey(), request.expectedAttempt()));
-        sceneMapper.update(null, new UpdateWrapper<ChapterGenerationSceneEntity>()
+        int sceneUpdated = sceneMapper.update(null, new UpdateWrapper<ChapterGenerationSceneEntity>()
                 .eq("id", sceneId).eq("version", version(scene))
                 .eq("scene_status", STATUS_FAILED).set("scene_status", SCENE_PENDING)
                 .set("version", version(scene) + 1).set("gmt_modified", LocalDateTime.now()));
+        if (sceneUpdated != 1) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "场景状态已变化，请刷新后重试");
+        }
         generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
                 .eq("id", generationId).set("generation_status", STATUS_RUNNING).setSql("version = version + 1")
                 .set("gmt_modified", LocalDateTime.now()));
@@ -365,12 +374,36 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
                 generation.getChapterPlanVersionId(), generation.getGenerationStatus(), generation.getGmtCreate());
     }
 
-    private GenerationSceneView view(ChapterGenerationSceneEntity entity) {
+    private GenerationSceneView view(ChapterGenerationSceneEntity entity, Long agentRunId) {
+        AgentRunStepEntity step = latestSceneStep(agentRunId, entity.getSceneKey());
+        boolean retryable = STATUS_FAILED.equals(entity.getSceneStatus()) && step != null
+                && STATUS_FAILED.equals(step.getStepStatus()) && Integer.valueOf(1).equals(step.getRetryable());
         return new GenerationSceneView(entity.getId(), entity.getGenerationId(), entity.getScenePlanVersionId(),
-                entity.getSceneKey(), entity.getSequenceNo(), entity.getSceneStatus(), entity.getContextSnapshotId(),
+                entity.getSceneKey(), entity.getSequenceNo(), entity.getSceneStatus(), entity.getGeneratedContent(),
+                entity.getContextSnapshotId(),
                 entity.getPromptTemplateVersion(), entity.getWordCount(), entity.getSourceSceneDraftId(),
                 entity.getModelCallId(), entity.getFinishReason(), entity.getInputTokens(), entity.getOutputTokens(),
-                entity.getTotalTokens(), entity.getElapsedMillis(), entity.getGmtModified());
+                entity.getTotalTokens(), entity.getElapsedMillis(), step == null ? null : step.getAttempt(), retryable,
+                safeErrorCode(step), safeErrorMessage(step), entity.getGmtModified());
+    }
+
+    private AgentRunStepEntity latestSceneStep(Long agentRunId, String sceneKey) {
+        if (agentRunId == null || !StringUtils.hasText(sceneKey)) {
+            return null;
+        }
+        return agentRunStepMapper.selectOne(new LambdaQueryWrapper<AgentRunStepEntity>()
+                .eq(AgentRunStepEntity::getRunId, agentRunId)
+                .eq(AgentRunStepEntity::getStepKey, "generate_scene:" + sceneKey)
+                .eq(AgentRunStepEntity::getDeleted, 0)
+                .orderByDesc(AgentRunStepEntity::getAttempt).last("LIMIT 1"));
+    }
+
+    private String safeErrorCode(AgentRunStepEntity step) {
+        return step == null || !STATUS_FAILED.equals(step.getStepStatus()) ? null : step.getErrorCode();
+    }
+
+    private String safeErrorMessage(AgentRunStepEntity step) {
+        return step == null || !STATUS_FAILED.equals(step.getStepStatus()) ? null : step.getErrorMessage();
     }
 
     private int version(GenerationSceneView scene) {

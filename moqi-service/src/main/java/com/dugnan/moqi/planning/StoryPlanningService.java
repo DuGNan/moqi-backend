@@ -18,6 +18,7 @@ public interface StoryPlanningService extends PublishedScenePlanQueryPort {
     NarrativePlanView createNarrativePlan(Long workId, CreateNarrativePlanRequest request);
     NarrativePlanView getNarrativePlan(Long workId, Long planId);
     NarrativePlanView getCurrentNarrativePlan(Long workId);
+    NarrativePlanView getLatestNarrativeDraft(Long workId);
     NarrativePlanView updateNarrativePlan(Long workId, Long planId, UpdateNarrativePlanRequest request);
     NarrativePlanView publishNarrativePlan(Long workId, Long planId, PublishNarrativePlanRequest request);
     ChapterPlanView createCandidate(Long chapterId, CreateScenePlanCandidateRequest request);
