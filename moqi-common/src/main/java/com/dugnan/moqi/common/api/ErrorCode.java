@@ -63,6 +63,24 @@ public enum ErrorCode {
     SETTING_CANDIDATE_CONFLICT,
     /** AI 任务状态冲突。 */
     AI_TASK_STATE_CONFLICT,
+    /** Agent Run 不存在。 */
+    AGENT_RUN_NOT_FOUND,
+    /** Agent Step 不存在。 */
+    AGENT_STEP_NOT_FOUND,
+    /** Agent 工作流不存在。 */
+    AGENT_WORKFLOW_NOT_FOUND,
+    /** Agent Run 幂等键与输入不一致。 */
+    AGENT_RUN_IDEMPOTENCY_CONFLICT,
+    /** Agent Run 或 Step 状态已变化。 */
+    AGENT_RUN_STATE_CONFLICT,
+    /** Agent Step 已达到重试上限。 */
+    AGENT_STEP_RETRY_EXHAUSTED,
+    /** 人工恢复令牌无效、已过期或已被消费。 */
+    AGENT_RESUME_TOKEN_INVALID,
+    /** Agent checkpoint 无法用于恢复。 */
+    AGENT_CHECKPOINT_INVALID,
+    /** Agent Run 已超时。 */
+    AGENT_RUN_TIMED_OUT,
     /** 通用业务错误。 */
     BUSINESS_ERROR,
     /** 服务内部错误。 */

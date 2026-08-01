@@ -16,6 +16,8 @@ import com.dugnan.moqi.chapter.mapper.ChapterOutlineCandidateMapper;
 import com.dugnan.moqi.chapter.entity.ChapterOutlineCandidateEntity;
 import com.dugnan.moqi.chapter.stream.ChapterReplyEvent;
 import com.dugnan.moqi.chapter.stream.OutlineCandidateEvent;
+import com.dugnan.moqi.agent.entity.AgentRunEntity;
+import com.dugnan.moqi.agent.mapper.AgentRunMapper;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.task.dto.AiTaskModels.AiTaskCanceled;
@@ -46,6 +48,8 @@ public class AiTaskServiceImpl implements AiTaskService {
 
     private final ChapterOutlineCandidateMapper candidateMapper;
 
+    private final AgentRunMapper agentRunMapper;
+
     /**
      * 创建 AI 任务服务。
      *
@@ -53,7 +57,15 @@ public class AiTaskServiceImpl implements AiTaskService {
      * @param eventPublisher 应用事件发布器
      */
     public AiTaskServiceImpl(AiTaskMapper taskMapper, ApplicationEventPublisher eventPublisher) {
-        this(taskMapper, null, eventPublisher);
+        this(taskMapper, null, null, eventPublisher);
+    }
+
+    /** 兼容既有候选任务测试和调用方。 */
+    public AiTaskServiceImpl(
+            AiTaskMapper taskMapper,
+            ChapterOutlineCandidateMapper candidateMapper,
+            ApplicationEventPublisher eventPublisher) {
+        this(taskMapper, candidateMapper, null, eventPublisher);
     }
 
     /**
@@ -67,9 +79,11 @@ public class AiTaskServiceImpl implements AiTaskService {
     public AiTaskServiceImpl(
             AiTaskMapper taskMapper,
             ChapterOutlineCandidateMapper candidateMapper,
+            AgentRunMapper agentRunMapper,
             ApplicationEventPublisher eventPublisher) {
         this.taskMapper = taskMapper;
         this.candidateMapper = candidateMapper;
+        this.agentRunMapper = agentRunMapper;
         this.eventPublisher = eventPublisher;
     }
 
@@ -158,6 +172,7 @@ public class AiTaskServiceImpl implements AiTaskService {
                 task.getResultGenerationId(),
                 task.getResultBriefId(),
                 task.getResultOutlineCandidateId(),
+                agentRunId(task.getId()),
                 task.getErrorCode(),
                 task.getErrorMessage(),
                 task.getGmtCreate(),
@@ -186,6 +201,14 @@ public class AiTaskServiceImpl implements AiTaskService {
                         candidate.getBaseOutlineId(), candidate.getBaseOutlineRevision()));
             }
         }
+    }
+
+    private Long agentRunId(Long taskId) {
+        if (agentRunMapper == null) {
+            return null;
+        }
+        AgentRunEntity run = agentRunMapper.findByAiTaskId(taskId);
+        return run == null ? null : run.getId();
     }
 
     /**
