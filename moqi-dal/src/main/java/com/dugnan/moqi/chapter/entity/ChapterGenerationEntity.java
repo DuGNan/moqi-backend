@@ -24,9 +24,17 @@ public class ChapterGenerationEntity extends BaseEntity {
 
     private Integer outlineRevision;
 
+    private Long chapterPlanVersionId;
+
+    private Long baseGenerationId;
+
     private String generationStatus;
 
     private String generationMode;
+
+    private String selectionMode;
+
+    private String idempotencyKey;
 
     private String lengthPreset;
 
@@ -34,9 +42,13 @@ public class ChapterGenerationEntity extends BaseEntity {
 
     private String basisSnapshotJson;
 
+    private String executionConfigJson;
+
     private String generatedContent;
 
     private Integer wordCount;
 
     private Long aiTaskId;
+
+    private Long agentRunId;
 }

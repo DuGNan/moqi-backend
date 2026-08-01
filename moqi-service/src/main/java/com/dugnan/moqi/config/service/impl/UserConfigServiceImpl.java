@@ -35,6 +35,8 @@ import com.dugnan.moqi.credential.CredentialStateConflictException;
 import com.dugnan.moqi.credential.CredentialSummary;
 import com.dugnan.moqi.credential.LlmCredentialService;
 import com.dugnan.moqi.llm.LlmProviderException;
+import com.dugnan.moqi.llm.LlmExecutionConfig;
+import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 
@@ -279,6 +281,29 @@ public class UserConfigServiceImpl implements UserConfigService {
         }
         try {
             return runtimeConfig(configValue);
+        } catch (CredentialSecurityException exception) {
+            throw modelCredentialUnavailable(exception);
+        }
+    }
+
+    @Override
+    public LlmExecutionConfig requireAvailableExecutionConfig() {
+        UserConfigEntity entity = findConfig(MODEL_CONFIG_KEY);
+        if (entity == null) {
+            throw modelUnavailable();
+        }
+        JsonNode configValue = parse(entity.getConfigValue());
+        CredentialSummary credential = credentialService.summary(modelCredentialIdentity());
+        ModelStatus modelStatus = toModelStatus(configValue, credential, version(entity));
+        if (!modelStatus.available()) {
+            throw modelUnavailable();
+        }
+        try {
+            LlmProviderRuntimeConfig runtimeConfig = runtimeConfig(configValue);
+            return new LlmExecutionConfig(
+                    runtimeConfig,
+                    new LlmExecutionConfigDescriptor(
+                            runtimeConfig.provider(), runtimeConfig.model(), version(entity), credential.version()));
         } catch (CredentialSecurityException exception) {
             throw modelCredentialUnavailable(exception);
         }

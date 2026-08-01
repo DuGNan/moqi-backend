@@ -350,7 +350,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         List<ScenePlanView> scenes = sceneMapper.selectList(new LambdaQueryWrapper<ScenePlanVersionEntity>()
                 .eq(ScenePlanVersionEntity::getChapterPlanVersionId, entity.getId()).eq(ScenePlanVersionEntity::getDeleted, 0)
                 .orderByAsc(ScenePlanVersionEntity::getSequenceNo)).stream()
-                .map(scene -> new ScenePlanView(scene.getSceneKey(), scene.getSequenceNo(), read(scene.getContentJson(), ScenePlanContent.class))).toList();
+                .map(scene -> new ScenePlanView(scene.getId(), scene.getSceneKey(), scene.getSequenceNo(),
+                        read(scene.getContentJson(), ScenePlanContent.class))).toList();
         return new ChapterPlanView(entity.getId(), entity.getChapterId(), entity.getPlanNo(), entity.getPlanStatus(),
                 entity.getNarrativePlanId(), entity.getNarrativePlanNo(), entity.getOutlineId(), entity.getOutlineRevision(),
                 entity.getAiTaskId(), entity.getAgentRunId(), readOrNull(entity.getContentJson(), ChapterPlanContent.class), scenes,

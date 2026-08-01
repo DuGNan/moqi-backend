@@ -24,7 +24,9 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationCreated;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationDetail;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationRejected;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
+import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.web.exception.GlobalExceptionHandler;
@@ -37,6 +39,7 @@ import com.dugnan.moqi.web.exception.GlobalExceptionHandler;
 class ChapterGenerationControllerTest {
 
     private ChapterGenerationService chapterGenerationService;
+    private SceneGenerationService sceneGenerationService;
     private MockMvc mvc;
 
     /**
@@ -45,10 +48,11 @@ class ChapterGenerationControllerTest {
     @BeforeEach
     void setUp() {
         chapterGenerationService = Mockito.mock(ChapterGenerationService.class);
+        sceneGenerationService = Mockito.mock(SceneGenerationService.class);
         mvc = MockMvcBuilders
                 .standaloneSetup(
-                        new ChapterGenerationController(chapterGenerationService),
-                        new GenerationController(chapterGenerationService))
+                        new ChapterGenerationController(chapterGenerationService, sceneGenerationService),
+                        new GenerationController(chapterGenerationService, sceneGenerationService))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -60,24 +64,22 @@ class ChapterGenerationControllerTest {
      */
     @Test
     void createsChapterGeneration() throws Exception {
-        when(chapterGenerationService.createGeneration(Mockito.eq(12L), Mockito.any()))
-                .thenReturn(new GenerationCreated(7001L, 9003L, 1L, 12L, "draft", null));
+        when(sceneGenerationService.create(Mockito.eq(12L), Mockito.any()))
+                .thenReturn(new SceneGenerationCreated(7001L, 9003L, 9004L, 1202L, "queued", null));
 
         mvc.perform(post("/api/chapters/12/generations")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "outlineId": 1201,
-                                  "baseRevision": 4,
-                                  "generationMode": "full_draft",
-                                  "lengthPreset": "about_3000",
-                                  "customWordCount": null
+                                  "selectionMode": "all",
+                                  "idempotencyKey": "controller-test-45"
                                 }
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("SUCCESS"))
                 .andExpect(jsonPath("$.data.generationId").value(7001))
-                .andExpect(jsonPath("$.data.generationStatus").value("draft"));
+                .andExpect(jsonPath("$.data.agentRunId").value(9004))
+                .andExpect(jsonPath("$.data.generationStatus").value("queued"));
     }
 
     /**
@@ -128,8 +130,8 @@ class ChapterGenerationControllerTest {
                 .thenReturn(new GenerationAccepted(1L, 12L, 7001L, "accepted", 4, "co_creation", null));
         when(chapterGenerationService.rejectGeneration(Mockito.eq(7002L), Mockito.any()))
                 .thenReturn(new GenerationRejected(7002L, "rejected", null));
-        when(chapterGenerationService.regenerate(Mockito.eq(7001L), Mockito.any()))
-                .thenReturn(new GenerationCreated(7003L, 9006L, 1L, 12L, "draft", null));
+        when(sceneGenerationService.regenerate(Mockito.eq(7001L), Mockito.any()))
+                .thenReturn(new SceneGenerationCreated(7003L, 9006L, 1L, 12L, "queued", null));
 
         mvc.perform(post("/api/generations/7001/accept")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -143,8 +145,8 @@ class ChapterGenerationControllerTest {
                 .andExpect(jsonPath("$.data.generationStatus").value("rejected"));
         mvc.perform(post("/api/generations/7001/regenerate")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"feedback\":\"更克制\",\"generationMode\":\"full_draft\","
-                                + "\"lengthPreset\":\"about_3000\",\"customWordCount\":null}"))
+                        .content("{\"selectionMode\":\"rewrite_selected\",\"sceneKeys\":[\"scene-1\"],"
+                                + "\"idempotencyKey\":\"rewrite-7001-1\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.generationId").value(7003));
     }

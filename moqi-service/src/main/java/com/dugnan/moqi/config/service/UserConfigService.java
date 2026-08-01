@@ -5,6 +5,7 @@ import com.dugnan.moqi.config.dto.UserConfigModels.UpdateUserConfigRequest;
 import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigDetail;
 import com.dugnan.moqi.config.dto.UserConfigModels.UserConfigSaved;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
+import com.dugnan.moqi.llm.LlmExecutionConfig;
 
 /**
  * @author dgn
@@ -51,4 +52,11 @@ public interface UserConfigService {
      * @return 运行时配置
      */
     LlmProviderRuntimeConfig requireAvailableModelConfig();
+
+    /**
+     * 获取一次执行所需的敏感配置及其可持久化安全描述。
+     *
+     * @return 模型执行配置
+     */
+    LlmExecutionConfig requireAvailableExecutionConfig();
 }

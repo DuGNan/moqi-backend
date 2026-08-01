@@ -12,6 +12,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.dugnan.moqi.agent.event.AgentRunEvent;
+import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
 /**
  * @author dgn
  * @date 2026-07-22
@@ -91,6 +92,18 @@ public class ChapterSseRegistry {
     /** 转发仅携带引用的 Agent Run 生命周期事件。 */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void forward(AgentRunEvent event) {
+        List<SseEmitter> emitters = subscribers.get(event.chapterId());
+        if (emitters == null) {
+            return;
+        }
+        for (SseEmitter emitter : emitters) {
+            send(emitter, event.type(), event);
+        }
+    }
+
+    /** 转发场景生成的批次状态和临时文本增量。 */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    public void forward(SceneGenerationEvent event) {
         List<SseEmitter> emitters = subscribers.get(event.chapterId());
         if (emitters == null) {
             return;
