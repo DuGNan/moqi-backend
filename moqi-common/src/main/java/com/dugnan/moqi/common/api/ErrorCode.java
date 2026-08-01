@@ -95,6 +95,14 @@ public enum ErrorCode {
     SCENE_PLAN_OUTLINE_STALE,
     /** 场景规划内容不符合结构化契约。 */
     SCENE_PLAN_INVALID,
+    /** 故事上下文快照不存在。 */
+    STORY_CONTEXT_SNAPSHOT_NOT_FOUND,
+    /** 章节生成场景候选不存在。 */
+    GENERATION_SCENE_NOT_FOUND,
+    /** 章节生成选择参数不合法。 */
+    GENERATION_SELECTION_INVALID,
+    /** 章节生成绑定的模型配置或凭据已变化。 */
+    GENERATION_CONFIG_STALE,
     /** 通用业务错误。 */
     BUSINESS_ERROR,
     /** 服务内部错误。 */

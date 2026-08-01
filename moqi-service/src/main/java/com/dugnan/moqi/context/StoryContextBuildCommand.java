@@ -14,7 +14,8 @@ public record StoryContextBuildCommand(
         String targetText,
         int contextWindowTokens,
         int outputReserveTokens,
-        StoryContextFocus discussionFocus) {
+        StoryContextFocus discussionFocus,
+        SceneGenerationContextFocus sceneGenerationFocus) {
 
     /**
      * 保留不含讨论对焦的旧构造入口。
@@ -52,7 +53,39 @@ public record StoryContextBuildCommand(
                 targetText,
                 contextWindowTokens,
                 outputReserveTokens,
+                null,
                 null);
+    }
+
+    /**
+     * 保留仅包含讨论对焦资料的兼容构造入口。
+     *
+     * @param profile 上下文场景配置
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID
+     * @param conversationId 会话 ID
+     * @param currentMessageId 当前消息 ID
+     * @param taskInstruction 当前任务指令
+     * @param currentInput 当前用户输入
+     * @param targetText 当前目标文本
+     * @param contextWindowTokens 上下文窗口 token 数
+     * @param outputReserveTokens 输出预留 token 数
+     * @param discussionFocus 讨论对焦资料
+     */
+    public StoryContextBuildCommand(
+            StoryContextProfile profile,
+            Long workId,
+            Long chapterId,
+            Long conversationId,
+            Long currentMessageId,
+            String taskInstruction,
+            String currentInput,
+            String targetText,
+            int contextWindowTokens,
+            int outputReserveTokens,
+            StoryContextFocus discussionFocus) {
+        this(profile, workId, chapterId, conversationId, currentMessageId, taskInstruction, currentInput,
+                targetText, contextWindowTokens, outputReserveTokens, discussionFocus, null);
     }
 
     /**

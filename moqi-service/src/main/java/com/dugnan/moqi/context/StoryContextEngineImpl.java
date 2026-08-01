@@ -55,7 +55,7 @@ import com.dugnan.moqi.work.mapper.WorkMapper;
  * @author dgn
  */
 @Service
-public class StoryContextEngineImpl implements StoryContextEngine {
+public class StoryContextEngineImpl implements StoryContextEngine, StoryContextSnapshotQueryPort {
 
     private static final int SETTING_LIMIT = 100;
     private static final int FORESHADOWING_LIMIT = 100;
@@ -190,6 +190,15 @@ public class StoryContextEngineImpl implements StoryContextEngine {
         throw new BusinessException(ErrorCode.INTERNAL_ERROR, "上下文快照版本并发写入失败");
     }
 
+    @Override
+    public StoryContextSnapshot load(Long snapshotId) {
+        StoryContextSnapshotEntity entity = snapshotId == null ? null : snapshotMapper.selectById(snapshotId);
+        if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
+            throw new BusinessException(ErrorCode.STORY_CONTEXT_SNAPSHOT_NOT_FOUND, "故事上下文快照不存在");
+        }
+        return snapshot(entity);
+    }
+
     private List<Candidate> collectCandidates(
             StoryContextBuildCommand command,
             WorkEntity work,
@@ -205,6 +214,7 @@ public class StoryContextEngineImpl implements StoryContextEngine {
         add(candidates, StoryContextSourceType.WORK_METADATA, id(work.getId()), "SYSTEM",
                 "作品：" + work.getTitle(), false, 900, 10, work.getVersion(), work.getGmtModified(), Category.STRUCTURE);
         addDiscussionFocus(candidates, command);
+        addSceneGenerationFocus(candidates, command);
         if (chapter != null) {
             if (command.discussionFocus() == null) {
                 addBrief(candidates, command, chapter);
@@ -279,6 +289,24 @@ public class StoryContextEngineImpl implements StoryContextEngine {
                     null,
                     null,
                     Category.HISTORY);
+            order++;
+        }
+    }
+
+    private void addSceneGenerationFocus(
+            List<Candidate> candidates,
+            StoryContextBuildCommand command) {
+        SceneGenerationContextFocus focus = command.sceneGenerationFocus();
+        if (focus == null) {
+            return;
+        }
+        add(candidates, StoryContextSourceType.SCENE_PLAN, id(focus.scenePlanVersionId()), "SYSTEM",
+                focus.sceneContent(), true, 995, 25, focus.chapterPlanNo(), null, Category.STRUCTURE);
+        int order = 320;
+        for (SceneGenerationContextFocus.PreviousSceneDraft previous : focus.previousScenes()) {
+            add(candidates, StoryContextSourceType.GENERATED_SCENE_DRAFT, id(previous.generationSceneId()), "SYSTEM",
+                    "前序场景（" + previous.sceneKey() + "）：\n" + previous.content(), false, 840, order,
+                    null, null, Category.CURRENT);
             order++;
         }
     }
@@ -464,6 +492,7 @@ public class StoryContextEngineImpl implements StoryContextEngine {
                 || sourceType == StoryContextSourceType.CHAPTER_BRIEF
                 || sourceType == StoryContextSourceType.CHAPTER_OUTLINE
                 || sourceType == StoryContextSourceType.TARGET_TEXT
+                || sourceType == StoryContextSourceType.GENERATED_SCENE_DRAFT
                 || sourceType == StoryContextSourceType.DECISION_SOURCE_MESSAGE;
     }
 

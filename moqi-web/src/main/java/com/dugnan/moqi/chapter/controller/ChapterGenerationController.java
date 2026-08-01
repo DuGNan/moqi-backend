@@ -10,11 +10,12 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ChapterContent;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ContentSaved;
-import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.CreateGenerationRequest;
-import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationCreated;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
+import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.common.api.ApiResponse;
 
 /**
@@ -27,14 +28,19 @@ import com.dugnan.moqi.common.api.ApiResponse;
 public class ChapterGenerationController {
 
     private final ChapterGenerationService chapterGenerationService;
+    private final SceneGenerationService sceneGenerationService;
 
     /**
      * 创建章节生成控制器。
      *
-     * @param chapterGenerationService 章节生成服务
+     * @param chapterGenerationService 章节正文预览与采纳服务
+     * @param sceneGenerationService 场景级生成工作流服务
      */
-    public ChapterGenerationController(ChapterGenerationService chapterGenerationService) {
+    public ChapterGenerationController(
+            ChapterGenerationService chapterGenerationService,
+            SceneGenerationService sceneGenerationService) {
         this.chapterGenerationService = chapterGenerationService;
+        this.sceneGenerationService = sceneGenerationService;
     }
 
     /**
@@ -45,10 +51,10 @@ public class ChapterGenerationController {
      * @return 创建响应
      */
     @PostMapping("/{chapterId}/generations")
-    public ApiResponse<GenerationCreated> createGeneration(
+    public ApiResponse<SceneGenerationCreated> createGeneration(
             @PathVariable Long chapterId,
-            @RequestBody CreateGenerationRequest request) {
-        return ApiResponse.success(chapterGenerationService.createGeneration(chapterId, request));
+            @RequestBody CreateSceneGenerationRequest request) {
+        return ApiResponse.success(sceneGenerationService.create(chapterId, request));
     }
 
     /**

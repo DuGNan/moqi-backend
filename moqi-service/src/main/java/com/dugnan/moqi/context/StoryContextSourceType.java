@@ -32,6 +32,10 @@ public enum StoryContextSourceType {
     CHAPTER_KEY_EVENT,
     /** 章节正文。 */
     CHAPTER_CONTENT,
+    /** 已发布场景规划叶子节点。 */
+    SCENE_PLAN,
+    /** 同一生成批次已完成的前序场景候选。 */
+    GENERATED_SCENE_DRAFT,
     /** 调用方场景目标。 */
     TARGET_TEXT,
     /** 完整历史对话轮次。 */

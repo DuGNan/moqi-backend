@@ -9,13 +9,18 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.AcceptGenerationRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationAccepted;
-import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationCreated;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationDetail;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationRejected;
-import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RegenerateRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RejectGenerationRequest;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneList;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneView;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.RetrySceneRequest;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
+import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.common.api.ApiResponse;
+import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 
 /**
  * @author dgn
@@ -27,14 +32,19 @@ import com.dugnan.moqi.common.api.ApiResponse;
 public class GenerationController {
 
     private final ChapterGenerationService chapterGenerationService;
+    private final SceneGenerationService sceneGenerationService;
 
     /**
      * 创建生成资源控制器。
      *
-     * @param chapterGenerationService 章节生成服务
+     * @param chapterGenerationService 章节预览与正文服务
+     * @param sceneGenerationService 场景生成工作流服务
      */
-    public GenerationController(ChapterGenerationService chapterGenerationService) {
+    public GenerationController(
+            ChapterGenerationService chapterGenerationService,
+            SceneGenerationService sceneGenerationService) {
         this.chapterGenerationService = chapterGenerationService;
+        this.sceneGenerationService = sceneGenerationService;
     }
 
     /**
@@ -84,9 +94,34 @@ public class GenerationController {
      * @return 新生成记录
      */
     @PostMapping("/{generationId}/regenerate")
-    public ApiResponse<GenerationCreated> regenerate(
+    public ApiResponse<SceneGenerationCreated> regenerate(
             @PathVariable Long generationId,
-            @RequestBody RegenerateRequest request) {
-        return ApiResponse.success(chapterGenerationService.regenerate(generationId, request));
+            @RequestBody CreateSceneGenerationRequest request) {
+        return ApiResponse.success(sceneGenerationService.regenerate(generationId, request));
+    }
+
+    @GetMapping("/{generationId}/scenes")
+    public ApiResponse<GenerationSceneList> listScenes(@PathVariable Long generationId) {
+        return ApiResponse.success(sceneGenerationService.listScenes(generationId));
+    }
+
+    @GetMapping("/{generationId}/scenes/{sceneId}")
+    public ApiResponse<GenerationSceneView> getScene(
+            @PathVariable Long generationId,
+            @PathVariable Long sceneId) {
+        return ApiResponse.success(sceneGenerationService.getScene(generationId, sceneId));
+    }
+
+    @PostMapping("/{generationId}/cancel")
+    public ApiResponse<AgentRunView> cancel(@PathVariable Long generationId) {
+        return ApiResponse.success(sceneGenerationService.cancel(generationId));
+    }
+
+    @PostMapping("/{generationId}/scenes/{sceneId}/retry")
+    public ApiResponse<AgentRunView> retryScene(
+            @PathVariable Long generationId,
+            @PathVariable Long sceneId,
+            @RequestBody RetrySceneRequest request) {
+        return ApiResponse.success(sceneGenerationService.retryScene(generationId, sceneId, request));
     }
 }

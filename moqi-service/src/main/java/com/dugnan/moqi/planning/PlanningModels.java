@@ -38,7 +38,7 @@ public final class PlanningModels {
             NarrativePlanContent content, Integer version, LocalDateTime gmtCreate, LocalDateTime gmtModified) {
     }
 
-    public record ScenePlanView(String sceneKey, Integer sequence, ScenePlanContent content) {
+    public record ScenePlanView(Long scenePlanId, String sceneKey, Integer sequence, ScenePlanContent content) {
     }
 
     public record ChapterPlanView(Long id, Long chapterId, Integer planNo, String status,
