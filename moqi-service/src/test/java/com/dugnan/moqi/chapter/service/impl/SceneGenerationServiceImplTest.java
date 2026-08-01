@@ -18,6 +18,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
 import com.dugnan.moqi.agent.AgentRuntime;
+import com.dugnan.moqi.agent.mapper.AgentRunStepMapper;
+import com.dugnan.moqi.agent.entity.AgentRunStepEntity;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
@@ -58,6 +60,8 @@ class SceneGenerationServiceImplTest {
     @Mock
     private AiTaskMapper taskMapper;
     @Mock
+    private AgentRunStepMapper agentRunStepMapper;
+    @Mock
     private PublishedScenePlanQueryPort scenePlanQueryPort;
     @Mock
     private UserConfigService userConfigService;
@@ -75,6 +79,7 @@ class SceneGenerationServiceImplTest {
                 generationMapper,
                 sceneMapper,
                 taskMapper,
+                agentRunStepMapper,
                 scenePlanQueryPort,
                 userConfigService,
                 agentRuntime,
@@ -146,6 +151,65 @@ class SceneGenerationServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting(exception -> ((BusinessException) exception).getErrorCode())
                 .isEqualTo(ErrorCode.GENERATION_NOT_FOUND);
+    }
+
+    @Test
+    void exposesPersistedContentAndSafeFailureRetryMetadata() {
+        ChapterGenerationEntity generation = new ChapterGenerationEntity();
+        generation.setId(51L);
+        generation.setAgentRunId(61L);
+        generation.setDeleted(0);
+        ChapterGenerationSceneEntity scene = new ChapterGenerationSceneEntity();
+        scene.setId(71L);
+        scene.setGenerationId(51L);
+        scene.setSceneKey("scene-1");
+        scene.setSceneStatus("failed");
+        scene.setGeneratedContent("持久化候选正文");
+        scene.setDeleted(0);
+        AgentRunStepEntity step = new AgentRunStepEntity();
+        step.setAttempt(2);
+        step.setStepStatus("failed");
+        step.setRetryable(1);
+        step.setErrorCode("AGENT_STEP_EXECUTION_FAILED");
+        step.setErrorMessage("场景模型调用失败");
+        when(generationMapper.selectById(51L)).thenReturn(generation);
+        when(sceneMapper.selectList(any())).thenReturn(List.of(scene));
+        when(agentRunStepMapper.selectOne(any())).thenReturn(step);
+
+        var result = service.listScenes(51L);
+
+        assertThat(result.scenes()).singleElement().satisfies(view -> {
+            assertThat(view.generatedContent()).isEqualTo("持久化候选正文");
+            assertThat(view.currentAttempt()).isEqualTo(2);
+            assertThat(view.retryable()).isTrue();
+            assertThat(view.errorCode()).isEqualTo("AGENT_STEP_EXECUTION_FAILED");
+            assertThat(view.errorMessage()).isEqualTo("场景模型调用失败");
+        });
+    }
+
+    @Test
+    void doesNotExposeRetryForCanceledScene() {
+        ChapterGenerationEntity generation = new ChapterGenerationEntity();
+        generation.setId(51L);
+        generation.setAgentRunId(61L);
+        generation.setDeleted(0);
+        ChapterGenerationSceneEntity scene = new ChapterGenerationSceneEntity();
+        scene.setId(71L);
+        scene.setGenerationId(51L);
+        scene.setSceneKey("scene-1");
+        scene.setSceneStatus("canceled");
+        scene.setDeleted(0);
+        AgentRunStepEntity step = new AgentRunStepEntity();
+        step.setAttempt(2);
+        step.setStepStatus("failed");
+        step.setRetryable(1);
+        when(generationMapper.selectById(51L)).thenReturn(generation);
+        when(sceneMapper.selectList(any())).thenReturn(List.of(scene));
+        when(agentRunStepMapper.selectOne(any())).thenReturn(step);
+
+        var result = service.listScenes(51L);
+
+        assertThat(result.scenes()).singleElement().satisfies(view -> assertThat(view.retryable()).isFalse());
     }
 
     private ChapterEntity chapter() {

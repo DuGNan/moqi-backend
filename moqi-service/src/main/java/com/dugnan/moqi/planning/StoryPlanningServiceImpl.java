@@ -118,6 +118,19 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     }
 
     @Override
+    public NarrativePlanView getLatestNarrativeDraft(Long workId) {
+        requireWork(workId);
+        WorkNarrativePlanVersionEntity entity = narrativeMapper.selectOne(
+                new LambdaQueryWrapper<WorkNarrativePlanVersionEntity>()
+                        .eq(WorkNarrativePlanVersionEntity::getWorkId, workId)
+                        .eq(WorkNarrativePlanVersionEntity::getPlanStatus, DRAFT)
+                        .eq(WorkNarrativePlanVersionEntity::getDeleted, 0)
+                        .orderByDesc(WorkNarrativePlanVersionEntity::getId)
+                        .last("LIMIT 1"));
+        return entity == null ? null : narrativeView(entity);
+    }
+
+    @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public NarrativePlanView updateNarrativePlan(Long workId, Long planId, UpdateNarrativePlanRequest request) {
         WorkNarrativePlanVersionEntity entity = requireNarrative(workId, planId);

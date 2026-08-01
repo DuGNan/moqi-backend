@@ -44,6 +44,11 @@ public class StoryPlanningController {
         return ApiResponse.success(planningService.getCurrentNarrativePlan(workId));
     }
 
+    @GetMapping("/works/{workId}/narrative-plans/latest-draft")
+    public ApiResponse<NarrativePlanView> latestNarrativeDraft(@PathVariable Long workId) {
+        return ApiResponse.success(planningService.getLatestNarrativeDraft(workId));
+    }
+
     @GetMapping("/works/{workId}/narrative-plans/{planId}")
     public ApiResponse<NarrativePlanView> narrative(@PathVariable Long workId, @PathVariable Long planId) {
         return ApiResponse.success(planningService.getNarrativePlan(workId, planId));

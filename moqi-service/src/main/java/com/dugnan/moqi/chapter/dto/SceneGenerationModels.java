@@ -44,6 +44,7 @@ public final class SceneGenerationModels {
             String sceneKey,
             Integer sequenceNo,
             String sceneStatus,
+            String generatedContent,
             Long contextSnapshotId,
             String promptTemplateVersion,
             Integer wordCount,
@@ -54,6 +55,10 @@ public final class SceneGenerationModels {
             Integer outputTokens,
             Integer totalTokens,
             Long elapsedMillis,
+            Integer currentAttempt,
+            Boolean retryable,
+            String errorCode,
+            String errorMessage,
             LocalDateTime gmtModified) {
     }
 
