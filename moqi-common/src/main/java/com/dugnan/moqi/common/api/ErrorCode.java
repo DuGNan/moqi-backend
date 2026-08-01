@@ -81,6 +81,20 @@ public enum ErrorCode {
     AGENT_CHECKPOINT_INVALID,
     /** Agent Run 已超时。 */
     AGENT_RUN_TIMED_OUT,
+    /** 作品叙事规划不存在。 */
+    NARRATIVE_PLAN_NOT_FOUND,
+    /** 尚未发布作品叙事规划。 */
+    NARRATIVE_PLAN_REQUIRED,
+    /** 作品叙事规划版本或状态冲突。 */
+    NARRATIVE_PLAN_CONFLICT,
+    /** 章节场景规划不存在。 */
+    SCENE_PLAN_NOT_FOUND,
+    /** 章节场景规划版本或状态冲突。 */
+    SCENE_PLAN_CONFLICT,
+    /** 场景规划绑定的大纲已过期。 */
+    SCENE_PLAN_OUTLINE_STALE,
+    /** 场景规划内容不符合结构化契约。 */
+    SCENE_PLAN_INVALID,
     /** 通用业务错误。 */
     BUSINESS_ERROR,
     /** 服务内部错误。 */
