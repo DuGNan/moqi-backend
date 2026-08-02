@@ -30,6 +30,15 @@ class PlanningContentCodecTest {
                 .isInstanceOf(BusinessException.class);
     }
 
+    @Test
+    void rejectsNonContinuousSceneSequences() {
+        assertThatThrownBy(() -> codec.scenes(List.of(
+                scene("scene-1", 1, "seed", null),
+                scene("scene-3", 3, "seed", null))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("连续");
+    }
+
     private ScenePlanContent scene(String key, int sequence, String action, Long itemId) {
         return new ScenePlanContent(key, sequence, "相遇", null, "当夜", null, "试探", "身份隐瞒", "紧张", "中速",
                 List.of(), List.of(), List.of(new ForeshadowingAction(action, itemId, "留下线索")), "达成试探", "planned");

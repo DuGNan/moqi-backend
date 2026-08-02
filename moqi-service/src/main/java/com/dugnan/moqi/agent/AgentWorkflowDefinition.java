@@ -63,4 +63,35 @@ public interface AgentWorkflowDefinition {
     default void applyResult(String stepKey, AgentStepExecutionContext context, AgentStepResult result) {
         // 默认工作流只有运行时状态，不产生领域写入。
     }
+
+    /**
+     * 返回供运行时持久化的安全失败分类。
+     *
+     * @param exception 步骤异常
+     * @return 安全失败分类
+     */
+    default String errorCategory(Exception exception) {
+        return "execution";
+    }
+
+    /**
+     * 返回供运行时和客户端诊断的稳定失败码。
+     *
+     * @param exception 步骤异常
+     * @return 安全失败码
+     */
+    default String errorCode(Exception exception) {
+        return "AGENT_STEP_EXECUTION_FAILED";
+    }
+
+    /**
+     * 在运行时短事务中收敛领域候选的失败状态。
+     *
+     * @param stepKey 步骤键
+     * @param context 稳定执行上下文
+     * @param exception 步骤异常
+     */
+    default void applyFailure(String stepKey, AgentStepExecutionContext context, Exception exception) {
+        // 默认工作流没有领域候选状态需要同步。
+    }
 }

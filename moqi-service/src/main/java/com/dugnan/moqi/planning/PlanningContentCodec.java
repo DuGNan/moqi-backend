@@ -59,6 +59,11 @@ public class PlanningContentCodec {
                     required(scene.pacing(), "pacing", 500), references(scene.participants()), references(scene.requiredSettings()),
                     actions(scene.foreshadowingActions()), required(scene.expectedOutcome(), "expectedOutcome", 2000), status));
         }
+        for (int sequence = 1; sequence <= normalized.size(); sequence++) {
+            if (!sequences.contains(sequence)) {
+                throw invalid("sequence 必须从 1 开始连续递增");
+            }
+        }
         return List.copyOf(normalized);
     }
 

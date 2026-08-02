@@ -503,14 +503,17 @@ public class AgentRuntimeService implements AgentRuntime {
         }
         AgentRunStepEntity step = requireStep(prepared.step().getId());
         boolean retryable = step.getAttempt() < prepared.definition().maxAttempts(step.getStepKey());
+        String errorCategory = prepared.definition().errorCategory(exception);
+        String errorCode = prepared.definition().errorCode(exception);
         stepMapper.update(null, new UpdateWrapper<AgentRunStepEntity>()
                 .eq("id", step.getId()).eq("deleted", 0).eq("version", step.getVersion())
                 .eq("step_status", STATUS_RUNNING).set("step_status", STATUS_FAILED)
-                .set("retryable", retryable ? 1 : 0).set("error_category", "execution")
-                .set("error_code", "AGENT_STEP_EXECUTION_FAILED")
+                .set("retryable", retryable ? 1 : 0).set("error_category", errorCategory)
+                .set("error_code", errorCode)
                 .set("error_message", safeMessage(exception)).set("finished_at", LocalDateTime.now())
                 .set("version", step.getVersion() + 1));
-        updateRunStatus(run, STATUS_FAILED, "AGENT_STEP_EXECUTION_FAILED", safeMessage(exception), step.getStepKey());
+        prepared.definition().applyFailure(step.getStepKey(), prepared.context(), exception);
+        updateRunStatus(run, STATUS_FAILED, errorCode, safeMessage(exception), step.getStepKey());
         if (run.getAiTaskId() != null) {
             updateAiTaskTerminal(run.getAiTaskId(), STATUS_FAILED);
         }
