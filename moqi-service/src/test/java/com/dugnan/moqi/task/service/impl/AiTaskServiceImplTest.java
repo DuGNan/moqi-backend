@@ -8,6 +8,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
+
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,10 +19,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
+import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
 import com.dugnan.moqi.chapter.entity.ChapterOutlineCandidateEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterOutlineCandidateMapper;
 import com.dugnan.moqi.chapter.stream.ChapterReplyEvent;
+import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
 import com.dugnan.moqi.chapter.stream.OutlineCandidateEvent;
 import com.dugnan.moqi.task.event.AiTaskCancellationSignal;
 import com.dugnan.moqi.common.api.ErrorCode;
@@ -40,6 +45,8 @@ class AiTaskServiceImplTest {
     private ApplicationEventPublisher eventPublisher;
     @Mock
     private ChapterOutlineCandidateMapper candidateMapper;
+    @Mock
+    private ChapterConversationMessageMapper messageMapper;
 
     private AiTaskServiceImpl service;
 
@@ -48,7 +55,7 @@ class AiTaskServiceImplTest {
      */
     @BeforeEach
     void setUp() {
-        service = new AiTaskServiceImpl(taskMapper, candidateMapper, eventPublisher);
+        service = new AiTaskServiceImpl(taskMapper, candidateMapper, null, messageMapper, eventPublisher);
     }
 
     /**
@@ -66,6 +73,36 @@ class AiTaskServiceImplTest {
         assertThat(result.taskStatus()).isEqualTo("running");
         assertThat(result.resultGenerationId()).isEqualTo(7001L);
         assertThat(result.resultOutlineCandidateId()).isEqualTo(7002L);
+    }
+
+    @Test
+    void retriesFailedConversationReplyWithoutCreatingAnotherTask() {
+        AiTaskEntity task = task(9001L, "failed");
+        task.setResultMessageId(7001L);
+        task.setErrorCode("PROVIDER_UNAVAILABLE");
+        task.setErrorMessage("Provider unavailable");
+        when(taskMapper.selectById(9001L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(List.of(new ChapterConversationMessageEntity()));
+
+        var result = service.retryTask(9001L);
+
+        assertThat(result.id()).isEqualTo(9001L);
+        assertThat(result.taskStatus()).isEqualTo("queued");
+        verify(eventPublisher).publishEvent(new ConversationReplyTaskSubmittedEvent(9001L));
+    }
+
+    @Test
+    void rejectsRetryWhenOriginalUserMessageIsMissing() {
+        AiTaskEntity task = task(9001L, "failed");
+        when(taskMapper.selectById(9001L)).thenReturn(task);
+        when(messageMapper.selectList(any())).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.retryTask(9001L))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("可重试的用户消息")
+                .extracting(exception -> ((BusinessException) exception).getErrorCode().name())
+                .isEqualTo("AI_TASK_STATE_CONFLICT");
     }
 
     /**

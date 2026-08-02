@@ -52,4 +52,15 @@ public class AiTaskController {
     public ApiResponse<AiTaskCanceled> cancel(@PathVariable Long taskId) {
         return ApiResponse.success(aiTaskService.cancelTask(taskId));
     }
+
+    /**
+     * 重新投递失败的章节讨论回复任务。
+     *
+     * @param taskId AI 任务 ID
+     * @return 重试后的任务详情
+     */
+    @PostMapping("/{taskId}/retry")
+    public ApiResponse<AiTaskDetail> retry(@PathVariable Long taskId) {
+        return ApiResponse.success(aiTaskService.retryTask(taskId));
+    }
 }

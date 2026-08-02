@@ -25,4 +25,12 @@ public interface AiTaskService {
      * @return 取消结果
      */
     AiTaskCanceled cancelTask(Long taskId);
+
+    /**
+     * 重试失败的章节讨论回复任务。
+     *
+     * @param taskId AI 任务 ID
+     * @return 重试后的任务详情
+     */
+    AiTaskDetail retryTask(Long taskId);
 }

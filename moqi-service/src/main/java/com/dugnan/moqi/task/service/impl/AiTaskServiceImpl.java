@@ -1,8 +1,10 @@
 package com.dugnan.moqi.task.service.impl;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Set;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,10 +13,13 @@ import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
+import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterOutlineCandidateMapper;
 import com.dugnan.moqi.chapter.entity.ChapterOutlineCandidateEntity;
 import com.dugnan.moqi.chapter.stream.ChapterReplyEvent;
+import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
 import com.dugnan.moqi.chapter.stream.OutlineCandidateEvent;
 import com.dugnan.moqi.agent.entity.AgentRunEntity;
 import com.dugnan.moqi.agent.mapper.AgentRunMapper;
@@ -36,6 +41,8 @@ public class AiTaskServiceImpl implements AiTaskService {
     private static final String TASK_TYPE_CONVERSATION_REPLY = "conversation_reply";
     private static final String TASK_TYPE_OUTLINE_CANDIDATE = "outline_adjustment_candidate";
     private static final String STATUS_RUNNING = "running";
+    private static final String STATUS_QUEUED = "queued";
+    private static final String STATUS_FAILED = "failed";
     private static final String STATUS_CANCELED = "canceled";
     private static final Set<String> NON_TERMINAL_STATUSES = Set.of("queued", STATUS_RUNNING);
     private static final Set<String> TERMINAL_STATUSES = Set.of("succeeded", "failed", STATUS_CANCELED);
@@ -44,6 +51,7 @@ public class AiTaskServiceImpl implements AiTaskService {
     private static final int MAX_CANCEL_ATTEMPTS = 3;
 
     private final AiTaskMapper taskMapper;
+    private final ChapterConversationMessageMapper messageMapper;
     private final ApplicationEventPublisher eventPublisher;
 
     private final ChapterOutlineCandidateMapper candidateMapper;
@@ -57,7 +65,7 @@ public class AiTaskServiceImpl implements AiTaskService {
      * @param eventPublisher 应用事件发布器
      */
     public AiTaskServiceImpl(AiTaskMapper taskMapper, ApplicationEventPublisher eventPublisher) {
-        this(taskMapper, null, null, eventPublisher);
+        this(taskMapper, null, null, null, eventPublisher);
     }
 
     /** 兼容既有候选任务测试和调用方。 */
@@ -65,7 +73,7 @@ public class AiTaskServiceImpl implements AiTaskService {
             AiTaskMapper taskMapper,
             ChapterOutlineCandidateMapper candidateMapper,
             ApplicationEventPublisher eventPublisher) {
-        this(taskMapper, candidateMapper, null, eventPublisher);
+        this(taskMapper, candidateMapper, null, null, eventPublisher);
     }
 
     /**
@@ -80,10 +88,12 @@ public class AiTaskServiceImpl implements AiTaskService {
             AiTaskMapper taskMapper,
             ChapterOutlineCandidateMapper candidateMapper,
             AgentRunMapper agentRunMapper,
+            ChapterConversationMessageMapper messageMapper,
             ApplicationEventPublisher eventPublisher) {
         this.taskMapper = taskMapper;
         this.candidateMapper = candidateMapper;
         this.agentRunMapper = agentRunMapper;
+        this.messageMapper = messageMapper;
         this.eventPublisher = eventPublisher;
     }
 
@@ -113,6 +123,70 @@ public class AiTaskServiceImpl implements AiTaskService {
             return cancelResult(task);
         }
         throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "任务状态已变化，请重试");
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class, isolation = Isolation.READ_COMMITTED)
+    public AiTaskDetail retryTask(Long taskId) {
+        AiTaskEntity task = requireTask(taskId);
+        if (NON_TERMINAL_STATUSES.contains(task.getTaskStatus())) {
+            return taskDetail(task);
+        }
+        if (!TASK_TYPE_CONVERSATION_REPLY.equals(task.getTaskType()) || !STATUS_FAILED.equals(task.getTaskStatus())) {
+            throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "当前 AI 任务不支持重试");
+        }
+        requireConversationReplyInput(task.getId());
+        if (tryRetry(task)) {
+            eventPublisher.publishEvent(new ConversationReplyTaskSubmittedEvent(task.getId()));
+            return taskDetail(task);
+        }
+        AiTaskEntity latest = requireTask(taskId);
+        if (NON_TERMINAL_STATUSES.contains(latest.getTaskStatus())) {
+            return taskDetail(latest);
+        }
+        throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "AI 任务状态已变化，请重试");
+    }
+
+    private boolean tryRetry(AiTaskEntity task) {
+        int currentVersion = task.getVersion() == null ? 0 : task.getVersion();
+        LocalDateTime modifiedAt = LocalDateTime.now();
+        int updated = taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
+                .eq("id", task.getId())
+                .eq("deleted", 0)
+                .eq("version", currentVersion)
+                .eq("task_type", TASK_TYPE_CONVERSATION_REPLY)
+                .eq("task_status", STATUS_FAILED)
+                .set("task_status", STATUS_QUEUED)
+                .set("result_message_id", null)
+                .set("error_code", null)
+                .set("error_message", null)
+                .set("version", currentVersion + 1)
+                .set("gmt_modified", modifiedAt));
+        if (updated != 1) {
+            return false;
+        }
+        task.setTaskStatus(STATUS_QUEUED);
+        task.setResultMessageId(null);
+        task.setErrorCode(null);
+        task.setErrorMessage(null);
+        task.setVersion(currentVersion + 1);
+        task.setGmtModified(modifiedAt);
+        return true;
+    }
+
+    private void requireConversationReplyInput(Long taskId) {
+        if (messageMapper == null) {
+            return;
+        }
+        List<ChapterConversationMessageEntity> messages = messageMapper.selectList(
+                new LambdaQueryWrapper<ChapterConversationMessageEntity>()
+                        .eq(ChapterConversationMessageEntity::getAiTaskId, taskId)
+                        .eq(ChapterConversationMessageEntity::getMessageRole, "user")
+                        .eq(ChapterConversationMessageEntity::getDeleted, 0)
+                        .last("limit 1"));
+        if (messages.isEmpty()) {
+            throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "AI 任务缺少可重试的用户消息");
+        }
     }
 
     /**

@@ -315,6 +315,20 @@ class KnowledgeConfigTaskControllerTest {
                 .andExpect(jsonPath("$.data.taskStatus").value("canceled"));
     }
 
+    @Test
+    void retriesFailedConversationReplyTask() throws Exception {
+        when(aiTaskService.retryTask(9001L)).thenReturn(new AiTaskDetail(
+                9001L, "conversation_reply", "queued", 1L, 12L,
+                null, null, null, null, null, null));
+
+        mvc.perform(post("/api/ai-tasks/9001/retry"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(9001))
+                .andExpect(jsonPath("$.data.taskStatus").value("queued"));
+
+        verify(aiTaskService).retryTask(9001L);
+    }
+
     /**
      * 验证敏感配置、版本冲突和任务不存在映射为明确 HTTP 状态。
      *
