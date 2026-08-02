@@ -95,17 +95,36 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
             throw new IllegalStateException("场景规划候选的章节大纲已过期");
         }
         LlmProvider provider = providerFactory.create(userConfigService.requireAvailableModelConfig());
-        LlmResponse response = provider.generate(new LlmRequest(List.of(
-                new LlmMessage(LlmRole.SYSTEM, "输出 ScenePlan JSON，对象仅含 content 与 scenes；不要输出隐藏推理。"),
+        LlmResponse response;
+        try {
+            response = provider.generate(new LlmRequest(List.of(
+                new LlmMessage(LlmRole.SYSTEM, "只输出 JSON 对象：content 必含 chapterGoal、chapterConflict、expectedOutcome；"
+                        + "scenes 是 1 至 50 个对象的数组，每项必含 sceneKey、sequence、title、timeAnchor、goal、"
+                        + "conflict、emotion、pacing、expectedOutcome、status。status 只能为 planned 或 disabled，"
+                        + "sequence 从 1 开始连续递增；participants、requiredSettings、foreshadowingActions 可为空数组。"
+                        + "不要输出 Markdown、解释或隐藏推理。"),
                 new LlmMessage(LlmRole.USER, "当前章节正式大纲：\n" + outline.getOutlineContent())),
                 new LlmOptions(4096, null, List.of(), LlmResponseFormat.JSON_OBJECT)));
-        if (response == null || response.structuredContent() == null) {
-            throw new IllegalStateException("模型未返回结构化场景规划");
+        } catch (Exception exception) {
+            throw new ScenePlanWorkflowException("SCENE_PLAN_PROVIDER_FAILED", "provider", "场景规划模型调用失败", exception);
         }
-        WorkflowOutput output = objectMapper.treeToValue(response.structuredContent(), WorkflowOutput.class);
-        List<ScenePlanContent> scenes = codec.scenes(output.scenes());
+        if (response == null || response.structuredContent() == null) {
+            throw new ScenePlanWorkflowException("SCENE_PLAN_JSON_INVALID", "json", "场景规划模型返回格式无效", null);
+        }
+        WorkflowOutput output;
+        try {
+            output = objectMapper.treeToValue(response.structuredContent(), WorkflowOutput.class);
+        } catch (Exception exception) {
+            throw new ScenePlanWorkflowException("SCENE_PLAN_JSON_INVALID", "json", "场景规划模型返回格式无效", exception);
+        }
+        List<ScenePlanContent> scenes;
+        try {
+            scenes = codec.scenes(output.scenes());
+        } catch (Exception exception) {
+            throw new ScenePlanWorkflowException("SCENE_PLAN_VALIDATION_FAILED", "validation", "场景规划结构校验失败", exception);
+        }
         if (output.content() == null) {
-            throw new IllegalStateException("模型未返回章节规划摘要");
+            throw new ScenePlanWorkflowException("SCENE_PLAN_VALIDATION_FAILED", "validation", "场景规划缺少章节摘要", null);
         }
         String contentJson = objectMapper.writeValueAsString(output.content());
         String scenesJson = objectMapper.writeValueAsString(scenes);
@@ -151,6 +170,29 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         }
     }
 
+    @Override
+    public String errorCategory(Exception exception) {
+        return exception instanceof ScenePlanWorkflowException workflowException
+                ? workflowException.category() : "persistence";
+    }
+
+    @Override
+    public String errorCode(Exception exception) {
+        return exception instanceof ScenePlanWorkflowException workflowException
+                ? workflowException.code() : "SCENE_PLAN_PERSISTENCE_FAILED";
+    }
+
+    @Override
+    public void applyFailure(String stepKey, AgentStepExecutionContext context, Exception exception) {
+        if (!GENERATE.equals(stepKey)) {
+            return;
+        }
+        Long candidateId = candidateId(context);
+        planMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("id", candidateId)
+                .eq("deleted", 0).eq("plan_status", "queued").set("plan_status", "failed")
+                .setSql("version = version + 1"));
+    }
+
     private Long candidateId(AgentStepExecutionContext context) {
         Object value = context.input().get("candidateId");
         if (value instanceof Number number) {
@@ -160,5 +202,24 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
     }
 
     private record WorkflowOutput(ChapterPlanContent content, List<ScenePlanContent> scenes) {
+    }
+
+    private static final class ScenePlanWorkflowException extends RuntimeException {
+        private final String code;
+        private final String category;
+
+        private ScenePlanWorkflowException(String code, String category, String message, Exception cause) {
+            super(message, cause);
+            this.code = code;
+            this.category = category;
+        }
+
+        private String code() {
+            return code;
+        }
+
+        private String category() {
+            return category;
+        }
     }
 }
