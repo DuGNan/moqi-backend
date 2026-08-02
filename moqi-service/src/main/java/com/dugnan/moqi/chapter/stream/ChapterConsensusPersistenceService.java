@@ -75,7 +75,7 @@ public class ChapterConsensusPersistenceService {
             AiTaskEntity task,
             Long conversationId,
             ChapterConsensusContentV1 content) {
-        ChapterConsensusContentV1 normalized = validator.normalizeDraft(content);
+        ChapterConsensusContentV1 normalized = validator.normalizeGeneratedDraft(content);
         validateSources(task.getChapterId(), conversationId, normalized);
 
         ChapterBriefEntity brief = new ChapterBriefEntity();

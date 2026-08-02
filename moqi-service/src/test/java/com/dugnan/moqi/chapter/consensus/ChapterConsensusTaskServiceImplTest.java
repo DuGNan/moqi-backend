@@ -2,6 +2,7 @@ package com.dugnan.moqi.chapter.consensus;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -84,7 +85,7 @@ class ChapterConsensusTaskServiceImplTest {
      */
     @Test
     void createsRecoverableConsensusTaskWithIdReferencesOnly() {
-        when(chapterMapper.selectById(2L)).thenReturn(chapter());
+        when(chapterMapper.selectByIdForUpdate(2L)).thenReturn(chapter());
         when(workMapper.selectById(1L)).thenReturn(work());
         when(conversationMapper.selectById(8L)).thenReturn(conversation());
         when(briefMapper.findByIdAndChapterId(21L, 2L)).thenReturn(brief());
@@ -104,6 +105,30 @@ class ChapterConsensusTaskServiceImplTest {
                 .isEqualTo("{\"conversationId\":8,\"baseBriefId\":21,\"currentMessageId\":11}")
                 .doesNotContain("prompt", "content");
         verify(eventPublisher).publishEvent(new ChapterConsensusTaskSubmittedEvent(31L));
+    }
+
+    /**
+     * 验证同一章节已有活动共识任务时复用任务而不重复提交。
+     */
+    @Test
+    void reusesActiveConsensusTask() {
+        when(chapterMapper.selectByIdForUpdate(2L)).thenReturn(chapter());
+        when(workMapper.selectById(1L)).thenReturn(work());
+        when(conversationMapper.selectById(8L)).thenReturn(conversation());
+        AiTaskEntity activeTask = new AiTaskEntity();
+        activeTask.setId(30L);
+        activeTask.setTaskType("chapter_consensus");
+        activeTask.setTaskStatus("running");
+        activeTask.setChapterId(2L);
+        activeTask.setDeleted(0);
+        when(taskMapper.selectList(any())).thenReturn(List.of(activeTask));
+
+        var result = service.createTask(2L, new ConsensusTaskRequest(8L, null));
+
+        assertThat(result.taskId()).isEqualTo(30L);
+        assertThat(result.taskStatus()).isEqualTo("running");
+        verify(taskMapper, never()).insert(any(AiTaskEntity.class));
+        verify(eventPublisher, never()).publishEvent(any());
     }
 
     private ChapterEntity chapter() {

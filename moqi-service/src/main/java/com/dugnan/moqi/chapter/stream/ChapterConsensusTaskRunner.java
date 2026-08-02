@@ -6,10 +6,14 @@ import java.util.List;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import com.dugnan.moqi.chapter.consensus.ChapterConsensusJsonException;
+import com.dugnan.moqi.chapter.consensus.ChapterConsensusResponseParser;
 import com.dugnan.moqi.chapter.consensus.ChapterConsensusContentV1;
 import com.dugnan.moqi.chapter.consensus.ChapterConsensusTaskInput;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
@@ -24,17 +28,22 @@ import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextBuildCommand;
+import com.dugnan.moqi.context.StoryContextItem;
 import com.dugnan.moqi.context.StoryContextProfile;
 import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextSourceType;
 import com.dugnan.moqi.context.StoryContextTaskBindingException;
 import com.dugnan.moqi.context.StoryContextTaskBindingService;
+import com.dugnan.moqi.llm.LlmMessage;
 import com.dugnan.moqi.llm.LlmOptions;
 import com.dugnan.moqi.llm.LlmProvider;
+import com.dugnan.moqi.llm.LlmProviderError;
 import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.llm.LlmResponse;
 import com.dugnan.moqi.llm.LlmResponseFormat;
+import com.dugnan.moqi.llm.LlmRole;
 
 /**
  * @author dgn
@@ -43,6 +52,8 @@ import com.dugnan.moqi.llm.LlmResponseFormat;
  */
 @Component
 public class ChapterConsensusTaskRunner {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ChapterConsensusTaskRunner.class);
 
     private static final String TASK_TYPE = "chapter_consensus";
 
@@ -54,12 +65,33 @@ public class ChapterConsensusTaskRunner {
 
     private static final String MESSAGE_ROLE_USER = "user";
 
+    private static final String JSON_ERROR_CODE = "CHAPTER_CONSENSUS_JSON_INVALID";
+
+    private static final String CONSENSUS_SAFE_MESSAGE = "章节共识不符合结构化契约";
+
     private static final String TASK_INSTRUCTION = """
-            请把章节共创讨论收束为 ChapterConsensusContentV1 JSON 对象。
-            只能输出 schemaVersion、chapterTask、stateChange、keyPush、readerProgress、
-            writingBoundaries、decisions 字段；decision 状态只能是 confirmed、candidates、
-            discussing、pending。sourceMessageIds 只能引用上下文中真实存在的消息 ID。
-            这是草稿，不得把 Brief 标记为 confirmed。
+            请把章节共创讨论收束为且仅为一个 ChapterConsensusContentV1 JSON object。
+            必须完整输出以下字段，不得增加字段：
+            {
+              "schemaVersion": 1,
+              "chapterTask": "string",
+              "stateChange": {"from": "string", "to": "string"},
+              "keyPush": "string",
+              "readerProgress": {"payoff": "string", "openQuestion": "string"},
+              "writingBoundaries": ["string"],
+              "decisions": [{
+                "key": "lower_snake_case",
+                "title": "string",
+                "status": "confirmed|candidates|discussing|pending",
+                "required": true,
+                "prompt": "string",
+                "candidateSummary": "string",
+                "sourceMessageIds": [1]
+              }]
+            }
+            writingBoundaries、decisions 和 sourceMessageIds 必须是 JSON array，允许为空。
+            sourceMessageIds 只能引用上下文中 [sourceMessageIds=[...]] 标出的真实消息 ID。
+            这是草稿，不得把 Brief 标记为 confirmed，不得输出 Markdown 或解释文字。
             """;
 
     private final AiTaskMapper taskMapper;
@@ -80,6 +112,8 @@ public class ChapterConsensusTaskRunner {
 
     private final ObjectMapper objectMapper;
 
+    private final ChapterConsensusResponseParser responseParser;
+
     private final ApplicationEventPublisher eventPublisher;
 
     /**
@@ -94,6 +128,7 @@ public class ChapterConsensusTaskRunner {
      * @param contextBindingService 故事上下文绑定服务
      * @param persistenceService 共识结果持久化服务
      * @param objectMapper JSON 映射器
+     * @param responseParser 共识 JSON 契约解析器
      * @param eventPublisher 应用事件发布器
      */
     public ChapterConsensusTaskRunner(
@@ -106,6 +141,7 @@ public class ChapterConsensusTaskRunner {
             StoryContextTaskBindingService contextBindingService,
             ChapterConsensusPersistenceService persistenceService,
             ObjectMapper objectMapper,
+            ChapterConsensusResponseParser responseParser,
             ApplicationEventPublisher eventPublisher) {
         this.taskMapper = taskMapper;
         this.conversationMapper = conversationMapper;
@@ -116,6 +152,7 @@ public class ChapterConsensusTaskRunner {
         this.contextBindingService = contextBindingService;
         this.persistenceService = persistenceService;
         this.objectMapper = objectMapper;
+        this.responseParser = responseParser;
         this.eventPublisher = eventPublisher;
     }
 
@@ -145,33 +182,80 @@ public class ChapterConsensusTaskRunner {
             StoryContextSnapshot snapshot =
                     buildContext(task, input, currentMessage, provider);
             LlmResponse response = provider.generate(new LlmRequest(
-                    snapshot.toMessages(),
+                    providerMessages(snapshot),
                     new LlmOptions(
                             snapshot.outputReserveTokens(),
                             null,
                             List.of(),
                             LlmResponseFormat.JSON_OBJECT)));
             if (response == null || response.structuredContent() == null) {
-                throw new BusinessException(
-                        ErrorCode.CHAPTER_CONSENSUS_INVALID,
-                        "模型没有返回结构化共识");
+                throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
-            ChapterConsensusContentV1 consensus =
-                    objectMapper.treeToValue(response.structuredContent(), ChapterConsensusContentV1.class);
+            ChapterConsensusContentV1 consensus = responseParser.parse(response.structuredContent());
             Long briefId = persistenceService.complete(task, conversation.getId(), consensus);
             eventPublisher.publishEvent(
                     ChapterBriefEvent.draftUpdated(task.getChapterId(), task.getId(), briefId));
         } catch (ChapterConsensusTaskCompletionException | StoryContextTaskBindingException exception) {
             // 任务已被取消或并发完成，不覆盖最新终态。
-        } catch (JsonProcessingException exception) {
-            fail(task, ErrorCode.CHAPTER_CONSENSUS_INVALID.name(), "模型共识结构无法读取");
+        } catch (ChapterConsensusJsonException exception) {
+            LOGGER.warn(
+                    "章节共识 JSON 契约校验失败，taskId={}, chapterId={}, contextSnapshotId={}",
+                    task.getId(),
+                    task.getChapterId(),
+                    task.getContextSnapshotId());
+            fail(task, JSON_ERROR_CODE, exception.getMessage());
         } catch (LlmProviderException exception) {
+            LOGGER.warn(
+                    "章节共识 Provider 调用失败，taskId={}, chapterId={}, providerError={}",
+                    task.getId(),
+                    task.getChapterId(),
+                    exception.getError());
             fail(task, exception.getError().name(), exception.getMessage());
         } catch (BusinessException exception) {
-            fail(task, exception.getErrorCode().name(), exception.getMessage());
+            LOGGER.warn(
+                    "章节共识业务校验失败，taskId={}, chapterId={}, errorCode={}",
+                    task.getId(),
+                    task.getChapterId(),
+                    exception.getErrorCode());
+            fail(task, exception.getErrorCode().name(), safeBusinessMessage(exception));
         } catch (RuntimeException exception) {
+            LOGGER.error(
+                    "章节共识任务异常，taskId={}, chapterId={}, exceptionType={}",
+                    task.getId(),
+                    task.getChapterId(),
+                    exception.getClass().getName(),
+                    exception);
             fail(task, ErrorCode.INTERNAL_ERROR.name(), "章节共识收束失败，请稍后重试");
         }
+    }
+
+    /**
+     * 将消息来源 ID 以确定性标签加入共识任务的 Provider 消息。
+     *
+     * @param snapshot 已持久化上下文快照
+     * @return 带可引用消息 ID 的 Provider 消息
+     */
+    private List<LlmMessage> providerMessages(StoryContextSnapshot snapshot) {
+        return snapshot.items().stream()
+                .map(this::providerMessage)
+                .toList();
+    }
+
+    private LlmMessage providerMessage(StoryContextItem item) {
+        String content = item.content();
+        if (item.sourceType() == StoryContextSourceType.CONVERSATION_TURN
+                || item.sourceType() == StoryContextSourceType.USER_INPUT) {
+            String sourceIds = item.sourceId().replace(":", ",");
+            content = "[sourceMessageIds=[" + sourceIds + "]]\n" + content;
+        }
+        return new LlmMessage(LlmRole.valueOf(item.messageRole()), content);
+    }
+
+    private String safeBusinessMessage(BusinessException exception) {
+        if (exception.getErrorCode() == ErrorCode.CHAPTER_CONSENSUS_INVALID) {
+            return CONSENSUS_SAFE_MESSAGE;
+        }
+        return exception.getMessage();
     }
 
     /**

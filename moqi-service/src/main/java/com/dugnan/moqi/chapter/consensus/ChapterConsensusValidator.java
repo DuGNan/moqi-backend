@@ -94,6 +94,28 @@ public class ChapterConsensusValidator {
     }
 
     /**
+     * 校验模型生成草稿必须显式包含所有结构化对象和数组。
+     *
+     * @param content 模型生成的原始共识
+     * @return 规范化后的模型共识
+     */
+    public ChapterConsensusContentV1 normalizeGeneratedDraft(ChapterConsensusContentV1 content) {
+        if (content == null
+                || content.stateChange() == null
+                || content.readerProgress() == null
+                || content.writingBoundaries() == null
+                || content.decisions() == null) {
+            throw invalid("模型共识缺少必填结构");
+        }
+        for (Decision decision : content.decisions()) {
+            if (decision == null || decision.sourceMessageIds() == null) {
+                throw invalid("模型共识 decision 缺少 sourceMessageIds");
+            }
+        }
+        return normalizeDraft(content);
+    }
+
+    /**
      * 校验共识是否可以被用户确认为正式 Brief。
      *
      * @param content 原始共识
