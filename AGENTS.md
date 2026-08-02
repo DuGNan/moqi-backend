@@ -42,6 +42,10 @@
 7. Git commit message 必须使用中文说明提交目的，可以保留必要的英文技术名词、命令名、包名、类名、接口名和错误码。
 8. 完成后必须通过 GitHub Pull Request 合并回 `main`，不得通过本地直接合并或直接推送绕过 PR。
 9. Pull Request 至少需要一次 Code Review approval。PR 标题、正文、变更摘要、测试说明、review 回复和 merge 说明默认使用中文。
+10. 单个后端 PR 已完整满足根仓库 Issue 的全部验收标准，且合并该 PR 即可完成该 Issue 时，PR 正文必须单独写入 `Closes DuGNan/Moqi#<issue-number>`。
+11. PR 只完成部分范围、仍缺真实环境或人工验收、存在未合并依赖，或该 Issue 需要多个仓库共同交付时，PR 正文必须使用 `Related to DuGNan/Moqi#<issue-number>`，并明确写出“Issue 保持打开”及剩余验收项；禁止使用自动关闭关键字。
+12. 后端 PR 关联根仓库 Issue 时不得使用裸 `#<issue-number>`，因为该写法会指向当前后端仓库；必须使用完整的 `DuGNan/Moqi#<issue-number>`。
+13. PR 合并后必须核对根仓库 Issue 是否按预期关闭或保持打开。完整交付未自动关闭时，应在确认全部验收证据后按 `completed` 处理；部分交付不得因 PR 已合并而手动关闭 Issue。
 
 ### 2.3 提交前人工审查闸门
 
