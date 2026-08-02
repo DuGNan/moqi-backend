@@ -2,6 +2,7 @@ package com.dugnan.moqi.work.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import com.dugnan.moqi.work.entity.ChapterEntity;
@@ -12,6 +13,21 @@ import com.dugnan.moqi.work.entity.ChapterEntity;
  * @description:提供作品章节的数据访问能力。
  */
 public interface ChapterMapper extends BaseMapper<ChapterEntity> {
+
+    /**
+     * 锁定未删除章节行以串行化同一章节的短事务任务创建。
+     *
+     * @param chapterId 章节 ID
+     * @return 已锁定章节，不存在时返回 null
+     */
+    @Select("""
+            SELECT *
+            FROM chapters
+            WHERE id = #{chapterId}
+              AND deleted = 0
+            FOR UPDATE
+            """)
+    ChapterEntity selectByIdForUpdate(@Param("chapterId") Long chapterId);
 
     /**
      * 按正文版本条件更新章节内容。

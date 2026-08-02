@@ -2,11 +2,13 @@ package com.dugnan.moqi.chapter.stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,6 +18,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
 import com.dugnan.moqi.chapter.consensus.ChapterConsensusContentV1;
+import com.dugnan.moqi.chapter.consensus.ChapterConsensusResponseParser;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
@@ -34,6 +37,8 @@ import com.dugnan.moqi.context.StoryContextTaskBindingService;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderCapabilities;
 import com.dugnan.moqi.llm.LlmProviderFactory;
+import com.dugnan.moqi.llm.LlmProviderError;
+import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.llm.LlmResponse;
@@ -74,23 +79,7 @@ class ChapterConsensusTaskRunnerTest {
     @Test
     void generatesStructuredDraftAndPublishesResourceEvent() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
-        AiTaskEntity task = task();
-        when(taskMapper.selectById(31L)).thenReturn(task);
-        when(taskMapper.update(any(), any())).thenReturn(1);
-        when(conversationMapper.selectById(8L)).thenReturn(conversation());
-        when(messageMapper.selectById(11L)).thenReturn(message());
-        when(briefMapper.findByIdAndChapterId(21L, 2L)).thenReturn(brief());
-        when(userConfigService.requireAvailableModelConfig())
-                .thenReturn(new LlmProviderRuntimeConfig(
-                        "deepseek",
-                        "https://api.deepseek.com",
-                        "test-key",
-                        "deepseek-v4-flash"));
-        when(providerFactory.create(any())).thenReturn(provider);
-        when(provider.capabilities()).thenReturn(
-                new LlmProviderCapabilities(true, true, false, 16384, 4096));
-        when(contextBindingService.buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class)))
-                .thenReturn(snapshot());
+        stubRunnableTask();
         when(provider.generate(any())).thenReturn(new LlmResponse(
                 null,
                 objectMapper.readTree("""
@@ -114,7 +103,82 @@ class ChapterConsensusTaskRunnerTest {
         verify(provider).generate(requestCaptor.capture());
         assertThat(requestCaptor.getValue().options().responseFormat())
                 .isEqualTo(LlmResponseFormat.JSON_OBJECT);
+        assertThat(requestCaptor.getValue().messages())
+                .extracting(message -> message.content())
+                .anyMatch(content -> content.contains("[sourceMessageIds=[9,10]]"))
+                .anyMatch(content -> content.contains("[sourceMessageIds=[11]]"));
         verify(eventPublisher).publishEvent(ChapterBriefEvent.draftUpdated(2L, 31L, 41L));
+    }
+
+    /**
+     * 验证缺失字段与 Provider 非 JSON 使用不同的安全错误分类。
+     *
+     * @throws Exception JSON 构造失败
+     */
+    @Test
+    void separatesJsonContractFailureFromProviderFailure() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        stubRunnableTask();
+        when(provider.generate(any())).thenReturn(new LlmResponse(
+                null,
+                objectMapper.readTree("""
+                        {
+                          "schemaVersion": 1,
+                          "chapterTask": "推进选择",
+                          "keyPush": "承担代价",
+                          "readerProgress": {"payoff": "兑现", "openQuestion": "谁泄密"},
+                          "writingBoundaries": [],
+                          "decisions": []
+                        }
+                        """),
+                null));
+
+        runner(objectMapper).run(31L);
+
+        assertFailedWith("CHAPTER_CONSENSUS_JSON_INVALID", "模型共识 JSON 不符合字段契约");
+    }
+
+    /**
+     * 验证 Provider 非 JSON 错误保持 Provider 安全分类。
+     */
+    @Test
+    void preservesProviderInvalidResponseClassification() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        stubRunnableTask();
+        when(provider.generate(any()))
+                .thenThrow(new LlmProviderException(LlmProviderError.INVALID_RESPONSE));
+
+        runner(objectMapper).run(31L);
+
+        assertFailedWith("INVALID_RESPONSE", "DeepSeek 响应格式异常");
+    }
+
+    private void stubRunnableTask() {
+        when(taskMapper.selectById(31L)).thenReturn(task());
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(conversationMapper.selectById(8L)).thenReturn(conversation());
+        when(messageMapper.selectById(11L)).thenReturn(message());
+        when(briefMapper.findByIdAndChapterId(21L, 2L)).thenReturn(brief());
+        when(userConfigService.requireAvailableModelConfig())
+                .thenReturn(new LlmProviderRuntimeConfig(
+                        "deepseek",
+                        "https://api.deepseek.com",
+                        "test-key",
+                        "deepseek-v4-flash"));
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(provider.capabilities()).thenReturn(
+                new LlmProviderCapabilities(true, true, false, 16384, 4096));
+        when(contextBindingService.buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class)))
+                .thenReturn(snapshot());
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void assertFailedWith(String errorCode, String errorMessage) {
+        ArgumentCaptor<UpdateWrapper<AiTaskEntity>> updateCaptor =
+                ArgumentCaptor.forClass((Class) UpdateWrapper.class);
+        verify(taskMapper, times(2)).update(any(), updateCaptor.capture());
+        assertThat(updateCaptor.getAllValues().get(1).getParamNameValuePairs().values())
+                .contains(errorCode, errorMessage);
     }
 
     private ChapterConsensusTaskRunner runner(ObjectMapper objectMapper) {
@@ -128,6 +192,7 @@ class ChapterConsensusTaskRunnerTest {
                 contextBindingService,
                 persistenceService,
                 objectMapper,
+                new ChapterConsensusResponseParser(objectMapper),
                 eventPublisher);
     }
 
@@ -189,19 +254,46 @@ class ChapterConsensusTaskRunnerTest {
                 12288,
                 0,
                 "hash",
-                List.of(new StoryContextItem(
-                        StoryContextSourceType.SYSTEM_RULE,
-                        "system-v1",
-                        null,
-                        null,
-                        "SYSTEM",
-                        "系统规则",
-                        true,
-                        1000,
-                        0,
-                        2,
-                        2,
-                        "INCLUDED")),
+                List.of(
+                        new StoryContextItem(
+                                StoryContextSourceType.SYSTEM_RULE,
+                                "system-v1",
+                                null,
+                                null,
+                                "SYSTEM",
+                                "系统规则",
+                                true,
+                                1000,
+                                0,
+                                2,
+                                2,
+                                "INCLUDED"),
+                        new StoryContextItem(
+                                StoryContextSourceType.CONVERSATION_TURN,
+                                "9:10",
+                                null,
+                                null,
+                                "USER",
+                                "用户：讨论\n助手：建议",
+                                false,
+                                600,
+                                400,
+                                8,
+                                8,
+                                "INCLUDED"),
+                        new StoryContextItem(
+                                StoryContextSourceType.USER_INPUT,
+                                "11",
+                                null,
+                                null,
+                                "USER",
+                                "请收束本章共识",
+                                true,
+                                1000,
+                                500,
+                                8,
+                                8,
+                                "INCLUDED")),
                 List.of(),
                 null);
     }

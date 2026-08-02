@@ -90,6 +90,46 @@ class ChapterConsensusValidatorTest {
     }
 
     /**
+     * 验证模型生成草稿不能缺少结构化对象和数组。
+     */
+    @Test
+    void rejectsIncompleteGeneratedDraft() {
+        ChapterConsensusContentV1 incomplete = new ChapterConsensusContentV1(
+                1,
+                "推进主角选择",
+                null,
+                "主角承担代价",
+                null,
+                null,
+                null);
+
+        assertThatThrownBy(() -> validator.normalizeGeneratedDraft(incomplete))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.CHAPTER_CONSENSUS_INVALID);
+    }
+
+    /**
+     * 验证模型生成草稿拒绝非法 decision 状态。
+     */
+    @Test
+    void rejectsUnsupportedGeneratedDecisionStatus() {
+        ChapterConsensusContentV1 invalid = content(List.of(new Decision(
+                "protagonist_choice",
+                "主角选择",
+                "resolved",
+                true,
+                "需要选择",
+                "先救人",
+                List.of(11L))));
+
+        assertThatThrownBy(() -> validator.normalizeGeneratedDraft(invalid))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.CHAPTER_CONSENSUS_INVALID);
+    }
+
+    /**
      * 构造测试用共识。
      *
      * @param decisions 待决列表

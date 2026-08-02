@@ -41,6 +41,8 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
 
     private static final String TASK_STATUS = "queued";
 
+    private static final List<String> ACTIVE_TASK_STATUSES = List.of("queued", "running");
+
     private static final String MESSAGE_ROLE_USER = "user";
 
     private final WorkMapper workMapper;
@@ -112,6 +114,14 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
             }
         }
 
+        AiTaskEntity activeTask = findActiveTask(chapterId);
+        if (activeTask != null) {
+            return new ConsensusTaskCreated(
+                    activeTask.getId(),
+                    activeTask.getTaskStatus(),
+                    chapterId);
+        }
+
         ChapterConversationMessageEntity currentMessage =
                 requireLatestUserMessage(chapterId, conversationId);
 
@@ -129,6 +139,24 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
         taskMapper.insert(task);
         eventPublisher.publishEvent(new ChapterConsensusTaskSubmittedEvent(task.getId()));
         return new ConsensusTaskCreated(task.getId(), TASK_STATUS, chapterId);
+    }
+
+    /**
+     * 查询同一章节最近的活动共识任务。
+     *
+     * @param chapterId 章节 ID
+     * @return 活动任务，不存在时返回 null
+     */
+    private AiTaskEntity findActiveTask(Long chapterId) {
+        List<AiTaskEntity> tasks = taskMapper.selectList(
+                new LambdaQueryWrapper<AiTaskEntity>()
+                        .eq(AiTaskEntity::getChapterId, chapterId)
+                        .eq(AiTaskEntity::getTaskType, TASK_TYPE)
+                        .in(AiTaskEntity::getTaskStatus, ACTIVE_TASK_STATUSES)
+                        .eq(AiTaskEntity::getDeleted, 0)
+                        .orderByDesc(AiTaskEntity::getId)
+                        .last("LIMIT 1"));
+        return tasks.isEmpty() ? null : tasks.get(0);
     }
 
     /**
@@ -178,8 +206,9 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
      * @return 章节
      */
     private ChapterEntity requireChapter(Long chapterId) {
-        ChapterEntity chapter = chapterId == null ? null : chapterMapper.selectById(chapterId);
-        if (chapter == null || Integer.valueOf(1).equals(chapter.getDeleted())) {
+        ChapterEntity chapter =
+                chapterId == null ? null : chapterMapper.selectByIdForUpdate(chapterId);
+        if (chapter == null) {
             throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
         }
         return chapter;
