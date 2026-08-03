@@ -11,7 +11,8 @@ public record ChapterBriefEvent(
         Long taskId,
         Long briefId,
         String briefStatus,
-        Integer schemaVersion) {
+        Integer schemaVersion,
+        String triggerSource) {
 
     /**
      * 创建草稿资源更新事件。
@@ -22,6 +23,11 @@ public record ChapterBriefEvent(
      * @return Brief 更新事件
      */
     public static ChapterBriefEvent draftUpdated(Long chapterId, Long taskId, Long briefId) {
-        return new ChapterBriefEvent("brief.updated", chapterId, taskId, briefId, "draft", 1);
+        return new ChapterBriefEvent("brief.updated", chapterId, taskId, briefId, "draft", 1, null);
+    }
+
+    /** 创建包含来源的草稿资源更新事件。 */
+    public static ChapterBriefEvent draftUpdated(Long chapterId, Long taskId, Long briefId, String triggerSource) {
+        return new ChapterBriefEvent("brief.updated", chapterId, taskId, briefId, "draft", 1, triggerSource);
     }
 }

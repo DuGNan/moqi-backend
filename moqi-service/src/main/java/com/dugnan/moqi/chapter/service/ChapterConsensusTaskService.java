@@ -18,4 +18,17 @@ public interface ChapterConsensusTaskService {
      * @return 已创建任务
      */
     ConsensusTaskCreated createTask(Long chapterId, ConsensusTaskRequest request);
+
+    /**
+     * 根据已通过成熟度检查的会话创建自动共识任务。
+     *
+     * @param chapterId 章节 ID
+     * @param request 会话与基础 Brief 引用
+     * @param lastMessageId 触发判断的助手消息 ID
+     * @param idempotencyKey 自动收束幂等键
+     * @return 已创建或复用的任务
+     */
+    ConsensusTaskCreated createAutoTask(Long chapterId, ConsensusTaskRequest request, Long lastMessageId,
+            String evaluatorVersion, String idempotencyKey, java.util.List<Long> evidenceMessageIds,
+            java.util.List<String> reasonCodes);
 }

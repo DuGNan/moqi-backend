@@ -1,6 +1,8 @@
 package com.dugnan.moqi.chapter.service.impl;
 
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -40,6 +42,8 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
     private static final String TASK_TYPE = "chapter_consensus";
 
     private static final String TASK_STATUS = "queued";
+
+    private static final String TRIGGER_SOURCE_MANUAL = "manual";
 
     private static final List<String> ACTIVE_TASK_STATUSES = List.of("queued", "running");
 
@@ -95,6 +99,20 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public ConsensusTaskCreated createTask(Long chapterId, ConsensusTaskRequest request) {
+        return createTaskInternal(chapterId, request, TRIGGER_SOURCE_MANUAL, null, null, null, List.of(), List.of());
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public ConsensusTaskCreated createAutoTask(Long chapterId, ConsensusTaskRequest request, Long lastMessageId,
+            String evaluatorVersion, String idempotencyKey, List<Long> evidenceMessageIds, List<String> reasonCodes) {
+        return createTaskInternal(chapterId, request, "auto", lastMessageId, evaluatorVersion, idempotencyKey,
+                evidenceMessageIds, reasonCodes);
+    }
+
+    private ConsensusTaskCreated createTaskInternal(Long chapterId, ConsensusTaskRequest request,
+            String triggerSource, Long lastMessageId, String evaluatorVersion, String idempotencyKey,
+            List<Long> evidenceMessageIds, List<String> reasonCodes) {
         ChapterEntity chapter = requireChapter(chapterId);
         requireWork(chapter.getWorkId());
         Long conversationId = request == null ? null : request.conversationId();
@@ -130,10 +148,14 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
         task.setTaskStatus(TASK_STATUS);
         task.setWorkId(chapter.getWorkId());
         task.setChapterId(chapterId);
-        task.setTaskInputJson(taskInputJson(new ChapterConsensusTaskInput(
-                conversationId,
-                baseBriefId,
-                currentMessage.getId())));
+        if (TRIGGER_SOURCE_MANUAL.equals(triggerSource)) {
+            task.setTaskInputJson(legacyTaskInputJson(conversationId, baseBriefId, currentMessage.getId()));
+        } else {
+            task.setTaskInputJson(taskInputJson(new ChapterConsensusTaskInput(conversationId, baseBriefId,
+                    currentMessage.getId(), triggerSource, lastMessageId, evaluatorVersion, idempotencyKey,
+                    evidenceMessageIds == null ? List.of() : evidenceMessageIds,
+                    reasonCodes == null ? List.of() : reasonCodes)));
+        }
         task.setDeleted(0);
         task.setVersion(0);
         taskMapper.insert(task);
@@ -192,6 +214,18 @@ public class ChapterConsensusTaskServiceImpl implements ChapterConsensusTaskServ
      * @return JSON
      */
     private String taskInputJson(ChapterConsensusTaskInput input) {
+        try {
+            return objectMapper.writeValueAsString(input);
+        } catch (JsonProcessingException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "共识任务输入无法序列化", exception);
+        }
+    }
+
+    private String legacyTaskInputJson(Long conversationId, Long baseBriefId, Long currentMessageId) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("conversationId", conversationId);
+        input.put("baseBriefId", baseBriefId);
+        input.put("currentMessageId", currentMessageId);
         try {
             return objectMapper.writeValueAsString(input);
         } catch (JsonProcessingException exception) {
