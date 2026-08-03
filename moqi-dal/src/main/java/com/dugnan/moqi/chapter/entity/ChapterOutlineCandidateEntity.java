@@ -28,6 +28,9 @@ public class ChapterOutlineCandidateEntity extends BaseEntity {
     private String candidateContent;
     private String diffJson;
     private String consensusImpactJson;
+    private Integer contentSchemaVersion;
+    private String migrationReviewStatus;
+    private String migrationReasonCodesJson;
     private Long resultOutlineId;
     private Integer resultOutlineRevision;
 }

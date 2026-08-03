@@ -22,7 +22,6 @@ import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.llm.LlmResponse;
 import com.dugnan.moqi.llm.LlmResponseFormat;
 import com.dugnan.moqi.llm.LlmRole;
-import com.dugnan.moqi.planning.PlanningModels.ChapterPlanContent;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
 import com.dugnan.moqi.planning.entity.ChapterPlanVersionEntity;
 import com.dugnan.moqi.planning.entity.ScenePlanVersionEntity;
@@ -98,8 +97,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         LlmResponse response;
         try {
             response = provider.generate(new LlmRequest(List.of(
-                new LlmMessage(LlmRole.SYSTEM, "只输出 JSON 对象：content 必含 chapterGoal、chapterConflict、expectedOutcome；"
-                        + "scenes 是 1 至 50 个对象的数组，每项必含 sceneKey、sequence、title、timeAnchor、goal、"
+                new LlmMessage(LlmRole.SYSTEM, "只输出 JSON 对象：scenes 是 1 至 50 个对象的数组，每项必含 sceneKey、sequence、title、timeAnchor、goal、"
                         + "conflict、emotion、pacing、expectedOutcome、status。status 只能为 planned 或 disabled，"
                         + "sequence 从 1 开始连续递增；participants、requiredSettings、foreshadowingActions 可为空数组。"
                         + "不要输出 Markdown、解释或隐藏推理。"),
@@ -123,12 +121,8 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         } catch (Exception exception) {
             throw new ScenePlanWorkflowException("SCENE_PLAN_VALIDATION_FAILED", "validation", "场景规划结构校验失败", exception);
         }
-        if (output.content() == null) {
-            throw new ScenePlanWorkflowException("SCENE_PLAN_VALIDATION_FAILED", "validation", "场景规划缺少章节摘要", null);
-        }
-        String contentJson = objectMapper.writeValueAsString(output.content());
         String scenesJson = objectMapper.writeValueAsString(scenes);
-        return new AgentStepResult(Map.of("contentJson", contentJson, "scenesJson", scenesJson),
+        return new AgentStepResult(Map.of("scenesJson", scenesJson),
                 Map.of("candidateId", candidateId), PUBLISH,
                 response.metadata() == null ? null : response.metadata().providerRequestId(),
                 new AgentInterruptionRequest("scene_plan_publish", Map.of("candidateId", candidateId), LocalDateTime.now().plusDays(7)));
@@ -144,11 +138,10 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         if (candidate == null || !"queued".equals(candidate.getPlanStatus())) {
             return;
         }
-        String contentJson = (String) result.outputSummary().get("contentJson");
         String scenesJson = (String) result.outputSummary().get("scenesJson");
         int changed = planMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("id", candidateId)
                 .eq("version", candidate.getVersion()).eq("plan_status", "queued").set("plan_status", "ready")
-                .set("content_json", contentJson).setSql("version = version + 1"));
+                .setSql("version = version + 1"));
         if (changed != 1) {
             return;
         }
@@ -201,7 +194,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         throw new IllegalArgumentException("Agent Run 缺少 candidateId");
     }
 
-    private record WorkflowOutput(ChapterPlanContent content, List<ScenePlanContent> scenes) {
+    private record WorkflowOutput(List<ScenePlanContent> scenes) {
     }
 
     private static final class ScenePlanWorkflowException extends RuntimeException {

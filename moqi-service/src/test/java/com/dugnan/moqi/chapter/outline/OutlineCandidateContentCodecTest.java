@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Scene;
+import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Beat;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 
@@ -49,5 +50,33 @@ class OutlineCandidateContentCodecTest {
         assertThat(result.goal()).isEqualTo("目标");
         assertThat(result.scenes().get(0).id()).isEqualTo("scene-1");
         assertThat(result.constraints()).containsExactly("约束");
+    }
+
+    /**
+     * 验证 V1 场景大纲读取后只投影为 V2 节拍，不将旧标签写回新契约。
+     */
+    @Test
+    void projectsV1ScenesToVersionTwoBeats() {
+        OutlineCandidateContent result = codec.read("""
+                {"goal":"目标","coreConflict":"冲突","scenes":[{"id":"beat-1","title":"开端","content":"角色作出选择","tags":["旧标签"]}],"constraints":["限制"]}
+                """);
+
+        assertThat(result.schemaVersion()).isEqualTo(2);
+        assertThat(result.chapterGoal()).isEqualTo("目标");
+        assertThat(result.beats()).containsExactly(new Beat("beat-1", "开端：角色作出选择"));
+    }
+
+    /**
+     * 验证 V2 节拍键重复会被拒绝。
+     */
+    @Test
+    void rejectsDuplicateBeatKey() {
+        OutlineCandidateContent content = new OutlineCandidateContent(2, "目的", null, "目标", "冲突",
+                List.of(new Beat("beat-1", "变化一"), new Beat("beat-1", "变化二")), null, null, null, List.of());
+
+        assertThatThrownBy(() -> codec.normalize(content))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.OUTLINE_CANDIDATE_INVALID);
     }
 }

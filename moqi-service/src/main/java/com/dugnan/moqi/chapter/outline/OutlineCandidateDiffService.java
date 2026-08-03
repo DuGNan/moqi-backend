@@ -4,88 +4,64 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.springframework.stereotype.Service;
 
+import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.BeatDiff;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.CollectionDiff;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateDiff;
-import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.SceneDiff;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.ValueDiff;
-import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Scene;
+import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Beat;
 
 /**
  * @author dgn
- * @date 2026-07-30
- * @description 基于稳定场景 ID 生成大纲候选与基础大纲的确定性差异。
+ * @date 2026-08-04
+ * @description 基于稳定 beatKey 生成 V2 章纲候选与基础章纲的确定性差异。
  */
 @Service
 public class OutlineCandidateDiffService {
-
-    /**
-     * 计算两个大纲内容的字段和场景差异。
-     *
-     * @param base 基础大纲
-     * @param candidate 候选大纲
-     * @return 差异结果
-     */
     public OutlineCandidateDiff diff(OutlineCandidateContent base, OutlineCandidateContent candidate) {
-        Map<String, IndexedScene> baseScenes = indexed(base.scenes());
-        Map<String, IndexedScene> candidateScenes = indexed(candidate.scenes());
-        List<SceneDiff> sceneDiffs = new ArrayList<>();
-        for (IndexedScene baseScene : baseScenes.values()) {
-            IndexedScene current = candidateScenes.get(baseScene.scene().id());
+        Map<String, IndexedBeat> baseBeats = indexed(base.beats());
+        Map<String, IndexedBeat> candidateBeats = indexed(candidate.beats());
+        List<BeatDiff> differences = new ArrayList<>();
+        for (IndexedBeat previous : baseBeats.values()) {
+            IndexedBeat current = candidateBeats.get(previous.beat().beatKey());
             if (current == null) {
-                sceneDiffs.add(new SceneDiff(baseScene.scene().id(), "removed", baseScene.index(), null,
-                        List.of(), baseScene.scene(), null));
-                continue;
-            }
-            List<String> changedFields = changedFields(baseScene.scene(), current.scene());
-            if (!changedFields.isEmpty() || baseScene.index() != current.index()) {
-                String changeType = changedFields.isEmpty() ? "moved" : "modified";
-                sceneDiffs.add(new SceneDiff(baseScene.scene().id(), changeType, baseScene.index(), current.index(),
-                        changedFields, baseScene.scene(), current.scene()));
-            }
-        }
-        for (IndexedScene current : candidateScenes.values()) {
-            if (!baseScenes.containsKey(current.scene().id())) {
-                sceneDiffs.add(new SceneDiff(current.scene().id(), "added", null, current.index(), List.of(), null,
-                        current.scene()));
+                differences.add(new BeatDiff(previous.beat().beatKey(), "removed", previous.index(), null,
+                        List.of(), previous.beat(), null));
+            } else if (!Objects.equals(previous.beat().summary(), current.beat().summary())
+                    || previous.index() != current.index()) {
+                List<String> fields = Objects.equals(previous.beat().summary(), current.beat().summary())
+                        ? List.of() : List.of("summary");
+                differences.add(new BeatDiff(previous.beat().beatKey(), fields.isEmpty() ? "moved" : "modified",
+                        previous.index(), current.index(), fields, previous.beat(), current.beat()));
             }
         }
-        return new OutlineCandidateDiff(
-                valueDiff(base.goal(), candidate.goal()),
+        for (IndexedBeat current : candidateBeats.values()) {
+            if (!baseBeats.containsKey(current.beat().beatKey())) {
+                differences.add(new BeatDiff(current.beat().beatKey(), "added", null, current.index(), List.of(),
+                        null, current.beat()));
+            }
+        }
+        return new OutlineCandidateDiff(valueDiff(base.goal(), candidate.goal()),
                 valueDiff(base.coreConflict(), candidate.coreConflict()),
                 new CollectionDiff(!base.constraints().equals(candidate.constraints()), base.constraints(), candidate.constraints()),
-                List.copyOf(sceneDiffs));
+                List.copyOf(differences));
     }
 
-    private Map<String, IndexedScene> indexed(List<Scene> scenes) {
-        Map<String, IndexedScene> result = new LinkedHashMap<>();
-        for (int index = 0; index < scenes.size(); index++) {
-            Scene scene = scenes.get(index);
-            result.put(scene.id(), new IndexedScene(index, scene));
+    private Map<String, IndexedBeat> indexed(List<Beat> beats) {
+        Map<String, IndexedBeat> result = new LinkedHashMap<>();
+        for (int index = 0; index < beats.size(); index++) {
+            result.put(beats.get(index).beatKey(), new IndexedBeat(index, beats.get(index)));
         }
         return result;
     }
 
-    private List<String> changedFields(Scene base, Scene candidate) {
-        List<String> fields = new ArrayList<>();
-        if (!base.title().equals(candidate.title())) {
-            fields.add("title");
-        }
-        if (!base.content().equals(candidate.content())) {
-            fields.add("content");
-        }
-        if (!base.tags().equals(candidate.tags())) {
-            fields.add("tags");
-        }
-        return List.copyOf(fields);
-    }
-
     private ValueDiff valueDiff(String beforeValue, String afterValue) {
-        return new ValueDiff(!java.util.Objects.equals(beforeValue, afterValue), beforeValue, afterValue);
+        return new ValueDiff(!Objects.equals(beforeValue, afterValue), beforeValue, afterValue);
     }
 
-    private record IndexedScene(int index, Scene scene) {
+    private record IndexedBeat(int index, Beat beat) {
     }
 }

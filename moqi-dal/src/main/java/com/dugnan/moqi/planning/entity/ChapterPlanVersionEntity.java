@@ -20,6 +20,8 @@ public class ChapterPlanVersionEntity extends BaseEntity {
     private Integer narrativePlanNo;
     private Long outlineId;
     private Integer outlineRevision;
+    private Integer outlineContentSchemaVersion;
+    private String outlineMigrationReviewStatus;
     private Long agentRunId;
     private Long aiTaskId;
     private String planStatus;
