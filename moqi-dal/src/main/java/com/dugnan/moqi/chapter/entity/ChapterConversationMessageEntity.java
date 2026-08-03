@@ -27,4 +27,6 @@ public class ChapterConversationMessageEntity extends BaseEntity {
     private Long focusBriefId;
 
     private String focusDecisionKey;
+
+    private Long referencedMessageId;
 }

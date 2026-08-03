@@ -30,6 +30,7 @@ import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextBuildCommand;
+import com.dugnan.moqi.context.MessageReference;
 import com.dugnan.moqi.context.StoryContextProfile;
 import com.dugnan.moqi.context.StoryContextFocus;
 import com.dugnan.moqi.context.StoryContextFocus.StoryContextFocusSource;
@@ -399,7 +400,20 @@ public class ConversationReplyTaskRunner {
                 null,
                 contextWindow,
                 outputReserve,
-                resolveFocus(task, input)), task);
+                resolveFocus(task, input), null, resolveMessageReference(input)), task);
+    }
+
+    private MessageReference resolveMessageReference(ChapterConversationMessageEntity input) {
+        if (input.getReferencedMessageId() == null) {
+            return null;
+        }
+        ChapterConversationMessageEntity referenced = messageMapper.selectById(input.getReferencedMessageId());
+        if (referenced == null || Integer.valueOf(1).equals(referenced.getDeleted())
+                || !input.getConversationId().equals(referenced.getConversationId())) {
+            throw new BusinessException(com.dugnan.moqi.common.api.ErrorCode.BAD_REQUEST,
+                    "引用消息在生成前已失效");
+        }
+        return new MessageReference(referenced.getId(), referenced.getMessageRole(), referenced.getContent());
     }
 
     /**

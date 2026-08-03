@@ -20,6 +20,7 @@ import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ConversationDetail
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageCreated;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageDetail;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageList;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageReferenceSummary;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineDetail;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ReplyPolicySnapshot;
@@ -240,8 +241,12 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                                 .orderByAsc(ChapterConversationMessageEntity::getId))
                 ;
         Map<Long, AiTaskEntity> tasks = taskMap(entities);
+        Map<Long, ChapterConversationMessageEntity> referencedMessages = referencedMessageMap(entities);
         List<MessageDetail> messages = entities.stream()
-                .map(entity -> messageDetail(entity, tasks.get(entity.getAiTaskId())))
+                .map(entity -> messageDetail(
+                        entity,
+                        tasks.get(entity.getAiTaskId()),
+                        referenceSummary(referencedMessages.get(entity.getReferencedMessageId()))))
                 .toList();
         return new MessageList(messages);
     }
@@ -261,6 +266,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         message.setMessageRole(role);
         message.setContent(content);
         applyDiscussionFocus(conversation, request, role, message);
+        applyReferencedMessage(conversation, request, role, message);
         message.setDeleted(0);
         messageMapper.insert(message);
 
@@ -556,6 +562,30 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     }
 
     /**
+     * 校验并保存显式消息引用；引用必须属于当前会话、章节和作品。
+     */
+    private void applyReferencedMessage(
+            ChapterConversationEntity conversation,
+            SendMessageRequest request,
+            String role,
+            ChapterConversationMessageEntity message) {
+        Long referencedMessageId = request == null ? null : request.referencedMessageId();
+        if (referencedMessageId == null) {
+            return;
+        }
+        if (!ROLE_USER.equals(role)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "referencedMessageId 只允许用于用户消息");
+        }
+        ChapterConversationMessageEntity referenced = messageMapper.selectById(referencedMessageId);
+        if (referenced == null || Integer.valueOf(1).equals(referenced.getDeleted())
+                || !conversation.getId().equals(referenced.getConversationId())
+                || !conversation.getChapterId().equals(referenced.getChapterId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "referencedMessageId 必须属于当前会话和章节");
+        }
+        message.setReferencedMessageId(referencedMessageId);
+    }
+
+    /**
      * 规范化状态字段。
      *
      * @param value 原始状态
@@ -638,7 +668,10 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      * @param entity 消息实体
      * @return 消息详情
      */
-    private MessageDetail messageDetail(ChapterConversationMessageEntity entity, AiTaskEntity task) {
+    private MessageDetail messageDetail(
+            ChapterConversationMessageEntity entity,
+            AiTaskEntity task,
+            MessageReferenceSummary referencedMessage) {
         return new MessageDetail(
                 entity.getId(),
                 entity.getConversationId(),
@@ -648,6 +681,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 entity.getAiTaskId(),
                 entity.getFocusBriefId(),
                 entity.getFocusDecisionKey(),
+                entity.getReferencedMessageId(),
+                referencedMessage,
                 continuationMessageId(task),
                 replyPolicySnapshot(task),
                 entity.getGmtCreate(),
@@ -662,6 +697,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      */
     private MessageCreated messageCreated(ChapterConversationMessageEntity entity) {
         AiTaskEntity task = entity.getAiTaskId() == null ? null : aiTaskMapper.selectById(entity.getAiTaskId());
+        ChapterConversationMessageEntity referenced = entity.getReferencedMessageId() == null
+                ? null : messageMapper.selectById(entity.getReferencedMessageId());
         return new MessageCreated(
                 entity.getId(),
                 entity.getConversationId(),
@@ -671,10 +708,35 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 entity.getAiTaskId(),
                 entity.getFocusBriefId(),
                 entity.getFocusDecisionKey(),
+                entity.getReferencedMessageId(),
+                referenceSummary(referenced),
                 continuationMessageId(task),
                 replyPolicySnapshot(task),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
+    }
+
+    private Map<Long, ChapterConversationMessageEntity> referencedMessageMap(
+            List<ChapterConversationMessageEntity> messages) {
+        Set<Long> referenceIds = messages.stream()
+                .map(ChapterConversationMessageEntity::getReferencedMessageId)
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        if (referenceIds.isEmpty()) {
+            return Map.of();
+        }
+        return messageMapper.selectBatchIds(referenceIds).stream()
+                .filter(reference -> reference != null && !Integer.valueOf(1).equals(reference.getDeleted()))
+                .collect(java.util.stream.Collectors.toMap(ChapterConversationMessageEntity::getId, reference -> reference));
+    }
+
+    private MessageReferenceSummary referenceSummary(ChapterConversationMessageEntity referenced) {
+        if (referenced == null) {
+            return null;
+        }
+        String content = referenced.getContent() == null ? "" : referenced.getContent().trim();
+        String preview = content.length() <= 120 ? content : content.substring(0, 120) + "…";
+        return new MessageReferenceSummary(referenced.getId(), referenced.getMessageRole(), preview);
     }
 
     /**
