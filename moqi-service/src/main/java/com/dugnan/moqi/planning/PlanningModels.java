@@ -31,6 +31,10 @@ public final class PlanningModels {
             String expectedOutcome, String status) {
     }
 
+    /**
+     * @deprecated V2 场景规划不再拥有章节方向；仅保留为旧客户端只读投影。
+     */
+    @Deprecated
     public record ChapterPlanContent(String chapterGoal, String chapterConflict, String expectedOutcome) {
     }
 
@@ -44,7 +48,16 @@ public final class PlanningModels {
     public record ChapterPlanView(Long id, Long chapterId, Integer planNo, String status,
             Long narrativePlanId, Integer narrativePlanNo, Long outlineId, Integer outlineRevision,
             Long aiTaskId, Long agentRunId, ChapterPlanContent content, List<ScenePlanView> scenes,
+            Integer outlineContentSchemaVersion, String outlineMigrationReviewStatus,
             Integer version, LocalDateTime gmtCreate, LocalDateTime gmtModified) {
+        /** 兼容 V1 场景规划视图构造。 */
+        public ChapterPlanView(Long id, Long chapterId, Integer planNo, String status, Long narrativePlanId,
+                Integer narrativePlanNo, Long outlineId, Integer outlineRevision, Long aiTaskId, Long agentRunId,
+                ChapterPlanContent content, List<ScenePlanView> scenes, Integer version, LocalDateTime gmtCreate,
+                LocalDateTime gmtModified) {
+            this(id, chapterId, planNo, status, narrativePlanId, narrativePlanNo, outlineId, outlineRevision, aiTaskId,
+                    agentRunId, content, scenes, 1, "review_required", version, gmtCreate, gmtModified);
+        }
     }
 
     public record CreateNarrativePlanRequest(NarrativePlanContent content) {

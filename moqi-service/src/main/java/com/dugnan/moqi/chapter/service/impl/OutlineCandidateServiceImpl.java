@@ -164,6 +164,8 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         candidate.setAdjustmentInstruction(instruction);
         candidate.setDeleted(0);
         candidate.setVersion(0);
+        candidate.setContentSchemaVersion(OutlineCandidateContent.SCHEMA_VERSION);
+        candidate.setMigrationReviewStatus("not_required");
         candidateMapper.insert(candidate);
 
         task.setResultOutlineCandidateId(candidate.getId());
@@ -214,6 +216,9 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
                 .eq("candidate_status", STATUS_READY)
                 .eq("version", request.baseCandidateVersion())
                 .set("candidate_content", contentCodec.write(content))
+                .set("content_schema_version", OutlineCandidateContent.SCHEMA_VERSION)
+                .set("migration_review_status", "not_required")
+                .set("migration_reason_codes_json", null)
                 .set("diff_json", writeOrNull(diff))
                 .set("consensus_impact_json", writeOrNull(impact))
                 .set("version", request.baseCandidateVersion() + 1)
@@ -445,10 +450,12 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
                 candidate.getIdempotencyKey(), version(candidate), candidate.getBaseOutlineId(),
                 candidate.getBaseOutlineRevision(), readOutlineOrNull(candidate.getBaseOutlineContent()),
                 candidate.getCandidateStatus(), candidate.getAdjustmentInstruction(),
-                readOrNull(candidate.getCandidateContent(), OutlineCandidateContent.class),
+                readOutlineOrNull(candidate.getCandidateContent()),
                 readOrNull(candidate.getDiffJson(), OutlineCandidateDiff.class),
                 readOrNull(candidate.getConsensusImpactJson(), ConsensusImpact.class), candidate.getResultOutlineId(),
-                candidate.getResultOutlineRevision(), candidate.getGmtCreate(), candidate.getGmtModified());
+                candidate.getResultOutlineRevision(), candidate.getContentSchemaVersion(),
+                candidate.getMigrationReviewStatus(), readReasonCodes(candidate.getMigrationReasonCodesJson()),
+                candidate.getGmtCreate(), candidate.getGmtModified());
     }
 
     private OutlineCandidateCreated created(ChapterOutlineCandidateEntity candidate) {
@@ -474,6 +481,8 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         outline.setOutlineStatus(STATUS_CONFIRMED);
         outline.setOutlineContent(contentCodec.write(content));
         outline.setRevision(0);
+        outline.setContentSchemaVersion(OutlineCandidateContent.SCHEMA_VERSION);
+        outline.setMigrationReviewStatus("not_required");
         outline.setDeleted(0);
         outline.setVersion(0);
         try {
@@ -510,6 +519,17 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
 
     private OutlineCandidateContent readOutlineOrNull(String json) {
         return StringUtils.hasText(json) ? contentCodec.read(json) : null;
+    }
+
+    private java.util.List<String> readReasonCodes(String json) {
+        if (!StringUtils.hasText(json)) {
+            return java.util.List.of();
+        }
+        try {
+            return objectMapper.readValue(json, objectMapper.getTypeFactory().constructCollectionType(java.util.List.class, String.class));
+        } catch (JsonProcessingException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "章纲迁移复核原因无法读取", exception);
+        }
     }
 
     private String writeOrNull(Object value) {

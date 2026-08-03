@@ -8,6 +8,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ConsensusImpact;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineDetail;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent;
+import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Beat;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Scene;
 
 /**
@@ -82,21 +83,36 @@ public final class OutlineCandidateModels {
     public record CollectionDiff(boolean changed, List<String> beforeValues, List<String> afterValues) {
     }
 
-    public record SceneDiff(
-            String sceneId,
+    public record BeatDiff(
+            String beatKey,
             String changeType,
             Integer beforeIndex,
             Integer afterIndex,
             List<String> changedFields,
-            Scene beforeScene,
-            Scene afterScene) {
+            Beat beforeBeat,
+            Beat afterBeat) {
+    }
+
+    /** @deprecated V1 客户端使用的场景差异投影。 */
+    @Deprecated
+    public record SceneDiff(String sceneId, String changeType, Integer beforeIndex, Integer afterIndex,
+            List<String> changedFields, Scene beforeScene, Scene afterScene) {
     }
 
     public record OutlineCandidateDiff(
             ValueDiff goal,
             ValueDiff coreConflict,
             CollectionDiff constraints,
-            List<SceneDiff> scenes) {
+            List<BeatDiff> beats) {
+        /** @deprecated 新客户端请读取 beats。 */
+        @Deprecated
+        public List<SceneDiff> scenes() {
+            return beats.stream().map(diff -> new SceneDiff(diff.beatKey(), diff.changeType(), diff.beforeIndex(),
+                    diff.afterIndex(), diff.changedFields().stream()
+                            .map(field -> "summary".equals(field) ? "content" : field).toList(),
+                    diff.beforeBeat() == null ? null : diff.beforeBeat().toLegacyScene(),
+                    diff.afterBeat() == null ? null : diff.afterBeat().toLegacyScene())).toList();
+        }
     }
 
     @JsonInclude(JsonInclude.Include.ALWAYS)
@@ -120,6 +136,9 @@ public final class OutlineCandidateModels {
             ConsensusImpact consensusImpact,
             Long resultOutlineId,
             Integer resultOutlineRevision,
+            Integer contentSchemaVersion,
+            String migrationReviewStatus,
+            List<String> migrationReasonCodes,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
     }

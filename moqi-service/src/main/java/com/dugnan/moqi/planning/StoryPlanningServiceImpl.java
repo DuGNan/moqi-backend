@@ -195,7 +195,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         task.setWorkId(chapter.getWorkId());
         task.setChapterId(chapterId);
         task.setTaskInputJson(json(java.util.Map.of("chapterId", chapterId, "outlineId", outline.getId(),
-                "outlineRevision", outline.getRevision())));
+                "outlineRevision", outline.getRevision(), "outlineContentSchemaVersion",
+                outline.getContentSchemaVersion() == null ? 1 : outline.getContentSchemaVersion())));
         task.setDeleted(0);
         task.setVersion(0);
         taskMapper.insert(task);
@@ -207,6 +208,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         candidate.setNarrativePlanNo(narrative.getPlanNo());
         candidate.setOutlineId(outline.getId());
         candidate.setOutlineRevision(outline.getRevision());
+        candidate.setOutlineContentSchemaVersion(outline.getContentSchemaVersion() == null ? 1 : outline.getContentSchemaVersion());
+        candidate.setOutlineMigrationReviewStatus(outline.getMigrationReviewStatus());
         candidate.setAiTaskId(task.getId());
         candidate.setPlanStatus(QUEUED);
         candidate.setSourceType("model");
@@ -249,8 +252,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         }
         List<ScenePlanContent> scenes = codec.scenes(request.scenes());
         ChapterPlanContent content = request.content();
-        if (content == null || blank(content.chapterGoal()) || blank(content.chapterConflict()) || blank(content.expectedOutcome())) {
-            throw new BusinessException(ErrorCode.SCENE_PLAN_INVALID, "章节规划内容不完整");
+        if (content != null && !matchesOutlineProjection(entity, content)) {
+            throw new BusinessException(ErrorCode.SCENE_PLAN_CONFLICT, "旧章节摘要与绑定章纲不一致，不能覆盖章纲方向");
         }
         int changed = chapterPlanMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("id", planId)
                 .eq("version", entity.getVersion()).eq("plan_status", READY).set("content_json", json(content))
@@ -368,6 +371,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         return new ChapterPlanView(entity.getId(), entity.getChapterId(), entity.getPlanNo(), entity.getPlanStatus(),
                 entity.getNarrativePlanId(), entity.getNarrativePlanNo(), entity.getOutlineId(), entity.getOutlineRevision(),
                 entity.getAiTaskId(), entity.getAgentRunId(), readOrNull(entity.getContentJson(), ChapterPlanContent.class), scenes,
+                entity.getOutlineContentSchemaVersion(), entity.getOutlineMigrationReviewStatus(),
                 entity.getVersion(), entity.getGmtCreate(), entity.getGmtModified());
     }
 
@@ -449,6 +453,15 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
 
     private boolean blank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private boolean matchesOutlineProjection(ChapterPlanVersionEntity entity, ChapterPlanContent content) {
+        ChapterOutlineEntity outline = outlineMapper.findLatest(entity.getChapterId());
+        if (outline == null || !entity.getOutlineId().equals(outline.getId())
+                || !entity.getOutlineRevision().equals(outline.getRevision())) {
+            return false;
+        }
+        return content.chapterGoal() == null || content.chapterGoal().isBlank();
     }
 
     private BusinessException narrativeConflict(String message) {

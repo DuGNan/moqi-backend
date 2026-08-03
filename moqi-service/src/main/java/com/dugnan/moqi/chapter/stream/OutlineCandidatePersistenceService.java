@@ -129,6 +129,9 @@ public class OutlineCandidatePersistenceService {
                 .eq("candidate_status", STATUS_RUNNING)
                 .set("candidate_status", CANDIDATE_READY)
                 .set("candidate_content", contentCodec.write(content))
+                .set("content_schema_version", OutlineCandidateContent.SCHEMA_VERSION)
+                .set("migration_review_status", "not_required")
+                .set("migration_reason_codes_json", null)
                 .set("diff_json", write(diff))
                 .set("consensus_impact_json", write(impact))
                 .set("version", candidateVersion + 1)
@@ -153,6 +156,8 @@ public class OutlineCandidatePersistenceService {
         candidate.setCandidateContent(contentCodec.write(content));
         candidate.setDiffJson(write(diff));
         candidate.setConsensusImpactJson(write(impact));
+        candidate.setContentSchemaVersion(OutlineCandidateContent.SCHEMA_VERSION);
+        candidate.setMigrationReviewStatus("not_required");
         candidate.setVersion(candidateVersion + 1);
         task.setTaskStatus(STATUS_SUCCEEDED);
         task.setVersion(taskVersion + 1);

@@ -46,6 +46,9 @@ public interface ChapterOutlineQueryMapper extends BaseMapper<ChapterOutlineEnti
             SET confirmed_brief_id = #{confirmedBriefId},
                 outline_status = #{outlineStatus},
                 outline_content = #{outlineContent},
+                content_schema_version = 2,
+                migration_review_status = 'not_required',
+                migration_reason_codes_json = NULL,
                 revision = revision + 1,
                 version = version + 1,
                 gmt_modified = CURRENT_TIMESTAMP

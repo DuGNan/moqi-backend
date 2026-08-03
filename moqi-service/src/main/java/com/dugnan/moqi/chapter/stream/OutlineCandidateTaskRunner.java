@@ -17,6 +17,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterOutlineCandidateMapper;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent;
+import com.dugnan.moqi.chapter.outline.OutlineCandidateContentCodec;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateTaskInput;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -49,14 +50,14 @@ public class OutlineCandidateTaskRunner {
     private static final String TYPE_INITIAL = "initial";
     private static final String ADJUSTMENT_TASK_INSTRUCTION = """
             请根据已确认的章节共识、当前正式大纲和用户调整要求，输出一个完整的 OutlineCandidateContent JSON 对象。
-            只能输出 goal、coreConflict、scenes、constraints 字段。每个 scene 必须包含 id、title、content、tags；
-            保留的场景必须继续使用当前大纲的 scene.id，新场景使用新的唯一 ID。不得输出解释、Markdown 或其他字段。
+            只能输出 schemaVersion、chapterPurpose、openingState、chapterGoal、coreConflict、beats、turningPoint、endingState、endingHook、constraints 字段。
+            每个 beat 必须包含唯一的 beatKey 和 summary；不得写入视角、地点、人物、时间或标签。不得输出解释、Markdown 或其他字段。
             输出是待用户确认的候选，绝不能声称已保存或修改正式大纲。
             """;
     private static final String INITIAL_TASK_INSTRUCTION = """
             请只根据指定的已确认章节共识生成完整的首版 OutlineCandidateContent JSON 对象。
-            只能输出 goal、coreConflict、scenes、constraints 字段。每个 scene 必须包含 id、title、content、tags；
-            scene.id 必须唯一且稳定。讨论历史只能作为证据，不能把未确认、待定或已否定内容写成权威事实。
+            只能输出 schemaVersion、chapterPurpose、openingState、chapterGoal、coreConflict、beats、turningPoint、endingState、endingHook、constraints 字段。
+            每个 beat 必须包含唯一稳定的 beatKey 和 summary；讨论历史只能作为证据，不能把未确认、待定或已否定内容写成权威事实。
             不得输出解释、Markdown 或其他字段。输出仅是待用户编辑和确认的候选，
             绝不能声称已保存、已确认或已成为正式章纲。
             """;
@@ -125,7 +126,8 @@ public class OutlineCandidateTaskRunner {
             if (response == null || response.structuredContent() == null) {
                 throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_INVALID, "模型没有返回结构化大纲候选");
             }
-            OutlineCandidateContent content = objectMapper.treeToValue(response.structuredContent(), OutlineCandidateContent.class);
+            OutlineCandidateContent content = new OutlineCandidateContentCodec(objectMapper)
+                    .read(objectMapper.writeValueAsString(response.structuredContent()));
             persistenceService.complete(task, candidate, brief.getBriefContent(), content);
             eventPublisher.publishEvent(OutlineCandidateEvent.updated(
                     task.getChapterId(), task.getId(), candidate.getId(), "succeeded", "ready",
