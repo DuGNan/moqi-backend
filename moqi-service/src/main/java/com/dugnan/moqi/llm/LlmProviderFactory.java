@@ -14,4 +14,13 @@ public interface LlmProviderFactory {
      * @return 新 Provider
      */
     LlmProvider create(LlmProviderRuntimeConfig config);
+
+    /**
+     * 创建携带显式业务上下文和统一观测能力的 Provider。
+     *
+     * @param config 模型执行配置
+     * @param context 安全调用上下文
+     * @return 带观测装饰器的 Provider
+     */
+    LlmProvider createObserved(LlmExecutionConfig config, LlmCallContext context);
 }

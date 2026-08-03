@@ -39,6 +39,8 @@ import com.dugnan.moqi.llm.LlmProviderCapabilities;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmProviderError;
 import com.dugnan.moqi.llm.LlmProviderException;
+import com.dugnan.moqi.llm.LlmExecutionConfig;
+import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.llm.LlmResponse;
@@ -183,13 +185,16 @@ class ChapterConsensusTaskRunnerTest {
         when(conversationMapper.selectById(8L)).thenReturn(conversation());
         when(messageMapper.selectById(11L)).thenReturn(message());
         when(briefMapper.findByIdAndChapterId(21L, 2L)).thenReturn(brief());
-        when(userConfigService.requireAvailableModelConfig())
-                .thenReturn(new LlmProviderRuntimeConfig(
+        LlmExecutionConfig executionConfig = new LlmExecutionConfig(
+                new LlmProviderRuntimeConfig(
                         "deepseek",
                         "https://api.deepseek.com",
                         "test-key",
-                        "deepseek-v4-flash"));
+                        "deepseek-v4-flash"),
+                new LlmExecutionConfigDescriptor("deepseek", "deepseek-v4-flash", 1, 1));
+        when(userConfigService.requireAvailableExecutionConfig()).thenReturn(executionConfig);
         when(providerFactory.create(any())).thenReturn(provider);
+        when(providerFactory.createObserved(any(), any())).thenReturn(provider);
         when(provider.capabilities()).thenReturn(
                 new LlmProviderCapabilities(true, true, false, 16384, 4096));
         when(contextBindingService.buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class)))

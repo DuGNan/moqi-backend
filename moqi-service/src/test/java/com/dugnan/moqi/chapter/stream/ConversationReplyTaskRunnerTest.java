@@ -3,11 +3,13 @@ package com.dugnan.moqi.chapter.stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -18,10 +20,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
-import com.dugnan.moqi.chapter.entity.LlmModelCallEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
-import com.dugnan.moqi.chapter.mapper.LlmModelCallMapper;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextBuildCommand;
 import com.dugnan.moqi.context.StoryContextItem;
@@ -30,6 +30,9 @@ import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSourceType;
 import com.dugnan.moqi.context.StoryContextTaskBindingService;
 import com.dugnan.moqi.llm.LlmProvider;
+import com.dugnan.moqi.llm.LlmCallContext;
+import com.dugnan.moqi.llm.LlmExecutionConfig;
+import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
 import com.dugnan.moqi.llm.LlmProviderError;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
@@ -63,8 +66,12 @@ class ConversationReplyTaskRunnerTest {
     private ApplicationEventPublisher eventPublisher;
     @Mock
     private StoryContextTaskBindingService contextBindingService;
-    @Mock
-    private LlmModelCallMapper modelCallMapper;
+    @BeforeEach
+    void setUpObservedProvider() {
+        lenient().when(userConfigService.requireAvailableExecutionConfig())
+                .thenReturn(executionConfig("deepseek-v4-flash"));
+        lenient().when(providerFactory.createObserved(any(), any())).thenReturn(provider);
+    }
 
     @Test
     void streamsReplyThenPersistsAssistantMessage() {
@@ -72,7 +79,7 @@ class ConversationReplyTaskRunnerTest {
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
         when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
-        when(userConfigService.requireAvailableModelConfig())
+        lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
                         "https://api.deepseek.com",
@@ -115,7 +122,7 @@ class ConversationReplyTaskRunnerTest {
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
         when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
-        when(userConfigService.requireAvailableModelConfig())
+        lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
                         "https://api.deepseek.com",
@@ -174,7 +181,7 @@ class ConversationReplyTaskRunnerTest {
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
         when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
-        when(userConfigService.requireAvailableModelConfig())
+        lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
                         "https://api.deepseek.com",
@@ -236,7 +243,7 @@ class ConversationReplyTaskRunnerTest {
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
         when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
-        when(userConfigService.requireAvailableModelConfig())
+        lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
                         "https://api.deepseek.com",
@@ -249,12 +256,6 @@ class ConversationReplyTaskRunnerTest {
             message.setId(99L);
             return 1;
         });
-        when(modelCallMapper.insert(any(LlmModelCallEntity.class))).thenAnswer(invocation -> {
-            LlmModelCallEntity record = invocation.getArgument(0);
-            record.setId(100L);
-            return 1;
-        });
-
         new ConversationReplyTaskRunner(
                 taskMapper,
                 messageMapper,
@@ -265,21 +266,19 @@ class ConversationReplyTaskRunnerTest {
                 new LlmStreamCallRegistry(),
                 null,
                 null,
-                modelCallMapper,
                 new ObjectMapper()).run(12L);
 
-        ArgumentCaptor<LlmModelCallEntity> auditCaptor = ArgumentCaptor.forClass(LlmModelCallEntity.class);
-        verify(modelCallMapper).insert(auditCaptor.capture());
-        LlmModelCallEntity audit = auditCaptor.getValue();
-        assertThat(audit.getAiTaskId()).isEqualTo(12L);
-        assertThat(audit.getConversationId()).isEqualTo(8L);
-        assertThat(audit.getReplyMode()).isEqualTo("compare");
-        assertThat(audit.getReplyDepth()).isEqualTo("brief");
-        assertThat(audit.getReplyScopeSummary())
+        ArgumentCaptor<LlmCallContext> contextCaptor = ArgumentCaptor.forClass(LlmCallContext.class);
+        verify(providerFactory).createObserved(any(), contextCaptor.capture());
+        LlmCallContext context = contextCaptor.getValue();
+        assertThat(context.aiTaskId()).isEqualTo(12L);
+        assertThat(context.conversationId()).isEqualTo(8L);
+        assertThat(context.replyMode()).isEqualTo("compare");
+        assertThat(context.replyDepth()).isEqualTo("brief");
+        assertThat(context.replyScopeSummary())
                 .contains("compare_candidates")
                 .doesNotContain("不要写入审计")
                 .doesNotContain("请讨论本章目标");
-        assertThat(audit.getRequestHash()).hasSize(64);
     }
 
     /**
@@ -291,7 +290,7 @@ class ConversationReplyTaskRunnerTest {
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
         when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
-        when(userConfigService.requireAvailableModelConfig())
+        lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
                         "https://api.deepseek.com",
@@ -299,12 +298,6 @@ class ConversationReplyTaskRunnerTest {
                         "deepseek-v4-flash"));
         when(providerFactory.create(any())).thenReturn(provider);
         when(provider.stream(any(), any())).thenReturn(new FailedCall());
-        when(modelCallMapper.insert(any(LlmModelCallEntity.class))).thenAnswer(invocation -> {
-            LlmModelCallEntity record = invocation.getArgument(0);
-            record.setId(100L);
-            return 1;
-        });
-
         new ConversationReplyTaskRunner(
                 taskMapper,
                 messageMapper,
@@ -315,7 +308,6 @@ class ConversationReplyTaskRunnerTest {
                 new LlmStreamCallRegistry(),
                 null,
                 null,
-                modelCallMapper,
                 new ObjectMapper()).run(12L);
 
         verify(messageMapper, never()).insert(any(ChapterConversationMessageEntity.class));
@@ -332,7 +324,7 @@ class ConversationReplyTaskRunnerTest {
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
         when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
-        when(userConfigService.requireAvailableModelConfig()).thenReturn(
+        lenient().when(userConfigService.requireAvailableModelConfig()).thenReturn(
                 new LlmProviderRuntimeConfig("deepseek", "https://api.deepseek.com", "test-key", "deepseek-v4-flash"));
         when(providerFactory.create(any())).thenReturn(provider);
         when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, true, false, 16384, 8192));
@@ -399,8 +391,9 @@ class ConversationReplyTaskRunnerTest {
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
         when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
-        when(userConfigService.requireAvailableModelConfig()).thenReturn(
+        lenient().when(userConfigService.requireAvailableModelConfig()).thenReturn(
                 new LlmProviderRuntimeConfig("deepseek", "https://api.deepseek.com", "test-key", "small-context"));
+        when(userConfigService.requireAvailableExecutionConfig()).thenReturn(executionConfig("small-context"));
         when(providerFactory.create(any())).thenReturn(provider);
         when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, true, false, 4096, 8192));
         when(contextBindingService.buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class)))
@@ -464,6 +457,16 @@ class ConversationReplyTaskRunnerTest {
         task.setVersion(version);
         task.setDeleted(0);
         return task;
+    }
+
+    private LlmExecutionConfig executionConfig(String model) {
+        return new LlmExecutionConfig(
+                new LlmProviderRuntimeConfig(
+                        "deepseek",
+                        "https://api.deepseek.com",
+                        "test-key",
+                        model),
+                new LlmExecutionConfigDescriptor("deepseek", model, 1, 1));
     }
 
     private ChapterConversationMessageEntity userMessage() {

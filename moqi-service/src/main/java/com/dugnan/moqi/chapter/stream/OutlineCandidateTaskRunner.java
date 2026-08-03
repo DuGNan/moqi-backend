@@ -28,6 +28,8 @@ import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextTaskBindingException;
 import com.dugnan.moqi.context.StoryContextTaskBindingService;
 import com.dugnan.moqi.llm.LlmOptions;
+import com.dugnan.moqi.llm.LlmCallContext;
+import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderFactory;
@@ -48,6 +50,7 @@ public class OutlineCandidateTaskRunner {
     private static final String STATUS_FAILED = "failed";
     private static final String STATUS_RUNNING = "running";
     private static final String TYPE_INITIAL = "initial";
+    private static final String TEMPLATE_VERSION = "outline-candidate-v1";
     private static final String ADJUSTMENT_TASK_INSTRUCTION = """
             请根据已确认的章节共识、当前正式大纲和用户调整要求，输出一个完整的 OutlineCandidateContent JSON 对象。
             只能输出 schemaVersion、chapterPurpose、openingState、chapterGoal、coreConflict、beats、turningPoint、endingState、endingHook、constraints 字段。
@@ -118,8 +121,20 @@ public class OutlineCandidateTaskRunner {
             OutlineCandidateTaskInput input = taskInput(task);
             ChapterConversationEntity conversation = requireConversation(task, input.conversationId());
             ChapterBriefEntity brief = requireBrief(task.getChapterId(), input.confirmedBriefId());
-            LlmProvider provider = providerFactory.create(userConfigService.requireAvailableModelConfig());
+            LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
+            LlmProvider provider = providerFactory.create(executionConfig.runtimeConfig());
             StoryContextSnapshot snapshot = buildContext(task, conversation, candidate, brief, input, provider);
+            provider = providerFactory.createObserved(
+                    executionConfig,
+                    LlmCallContext.builder(TASK_TYPE, "generate_outline_candidate")
+                            .workId(task.getWorkId())
+                            .chapterId(task.getChapterId())
+                            .aiTaskId(task.getId())
+                            .conversationId(conversation.getId())
+                            .logicalCallId("ai-task:" + task.getId() + ":outline-candidate")
+                            .promptTemplateVersion(TEMPLATE_VERSION)
+                            .sourceFingerprint(snapshot.contentHash())
+                            .build());
             LlmResponse response = provider.generate(new LlmRequest(
                     snapshot.toMessages(),
                     new LlmOptions(snapshot.outputReserveTokens(), null, List.of(), LlmResponseFormat.JSON_OBJECT)));

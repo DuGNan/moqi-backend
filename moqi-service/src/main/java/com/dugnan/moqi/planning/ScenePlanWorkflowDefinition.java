@@ -15,6 +15,8 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.llm.LlmMessage;
+import com.dugnan.moqi.llm.LlmCallContext;
+import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmOptions;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderFactory;
@@ -40,6 +42,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
     public static final String WORKFLOW_TYPE = "scene_plan_generation";
     private static final String GENERATE = "generate_candidate";
     private static final String PUBLISH = "publish_candidate";
+    private static final String TEMPLATE_VERSION = "scene-plan-v1";
 
     private final ChapterPlanVersionMapper planMapper;
     private final ScenePlanVersionMapper sceneMapper;
@@ -93,7 +96,18 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
                 || !candidate.getOutlineRevision().equals(outline.getRevision())) {
             throw new IllegalStateException("场景规划候选的章节大纲已过期");
         }
-        LlmProvider provider = providerFactory.create(userConfigService.requireAvailableModelConfig());
+        LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
+        LlmProvider provider = providerFactory.createObserved(
+                executionConfig,
+                LlmCallContext.builder(WORKFLOW_TYPE, "generate_candidate")
+                        .workId(candidate.getWorkId())
+                        .chapterId(candidate.getChapterId())
+                        .agentRunId(context.runId())
+                        .agentStepId(context.stepId())
+                        .logicalCallId("agent-step:" + context.stepId() + ":scene-plan")
+                        .promptTemplateVersion(TEMPLATE_VERSION)
+                        .sourceFingerprint("outline:" + outline.getId() + ":" + outline.getRevision())
+                        .build());
         LlmResponse response;
         try {
             response = provider.generate(new LlmRequest(List.of(

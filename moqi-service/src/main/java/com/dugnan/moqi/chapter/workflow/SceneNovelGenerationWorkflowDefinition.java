@@ -24,10 +24,8 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
-import com.dugnan.moqi.chapter.entity.LlmModelCallEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
-import com.dugnan.moqi.chapter.mapper.LlmModelCallMapper;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -40,6 +38,7 @@ import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
+import com.dugnan.moqi.llm.LlmCallContext;
 import com.dugnan.moqi.llm.LlmOptions;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderException;
@@ -73,15 +72,11 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
     private static final String SCENE_RUNNING = "running";
     private static final String SCENE_COMPLETED = "completed";
     private static final String SCENE_COPIED = "copied";
-    private static final String CALL_RUNNING = "running";
-    private static final String CALL_COMPLETED = "completed";
-    private static final String CALL_FAILED = "failed";
     private static final String TEMPLATE_VERSION = "scene-novel-v1";
     private static final int MAX_ATTEMPTS = 3;
 
     private final ChapterGenerationMapper generationMapper;
     private final ChapterGenerationSceneMapper generationSceneMapper;
-    private final LlmModelCallMapper modelCallMapper;
     private final ScenePlanVersionMapper scenePlanMapper;
     private final StoryContextEngine contextEngine;
     private final StoryContextSnapshotQueryPort snapshotQueryPort;
@@ -93,7 +88,6 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
     public SceneNovelGenerationWorkflowDefinition(
             ChapterGenerationMapper generationMapper,
             ChapterGenerationSceneMapper generationSceneMapper,
-            LlmModelCallMapper modelCallMapper,
             ScenePlanVersionMapper scenePlanMapper,
             StoryContextEngine contextEngine,
             StoryContextSnapshotQueryPort snapshotQueryPort,
@@ -103,7 +97,6 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
             ApplicationEventPublisher eventPublisher) {
         this.generationMapper = generationMapper;
         this.generationSceneMapper = generationSceneMapper;
-        this.modelCallMapper = modelCallMapper;
         this.scenePlanMapper = scenePlanMapper;
         this.contextEngine = contextEngine;
         this.snapshotQueryPort = snapshotQueryPort;
@@ -179,7 +172,18 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         LlmExecutionConfig executionConfig = verifyExecutionConfig(generation, context);
         LlmProvider provider = providerFactory.create(executionConfig.runtimeConfig());
         StoryContextSnapshot snapshot = contextSnapshot(generation, scene, provider);
-        LlmModelCallEntity callRecord = startModelCall(context, scene, executionConfig, snapshot);
+        provider = providerFactory.createObserved(
+                executionConfig,
+                LlmCallContext.builder(WORKFLOW_TYPE, "generate_scene")
+                        .workId(generation.getWorkId())
+                        .chapterId(generation.getChapterId())
+                        .generationSceneId(scene.getId())
+                        .agentRunId(context.runId())
+                        .agentStepId(context.stepId())
+                        .logicalCallId("agent-step:" + context.stepId() + ":scene")
+                        .promptTemplateVersion(TEMPLATE_VERSION)
+                        .sourceFingerprint(snapshot.contentHash())
+                        .build());
         StringBuilder content = new StringBuilder();
         long started = System.nanoTime();
         LlmStreamCall call = null;
@@ -204,15 +208,15 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
             Map<String, Object> output = new LinkedHashMap<>();
             output.put("sceneId", scene.getId());
             output.put("contextSnapshotId", snapshot.id());
-            output.put("modelCallId", callRecord.getId());
+            Long modelCallId = streamResult.metadata() == null ? null : streamResult.metadata().modelCallId();
+            output.put("modelCallId", modelCallId);
             output.put("content", content.toString());
             output.put("elapsedMillis", Duration.ofNanos(System.nanoTime() - started).toMillis());
             putMetadata(output, streamResult.metadata());
             return new AgentStepResult(output, Map.of("lastSceneId", scene.getId()),
-                    nextStep(generationId, scene.getSequenceNo()), String.valueOf(callRecord.getId()), null);
-        } catch (RuntimeException exception) {
-            failModelCall(callRecord, exception, Duration.ofNanos(System.nanoTime() - started).toMillis());
-            throw exception;
+                    nextStep(generationId, scene.getSequenceNo()),
+                    modelCallId == null ? null : String.valueOf(modelCallId),
+                    null);
         } finally {
             context.callRegistry().unregister(context.runId(), call);
         }
@@ -273,29 +277,6 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         return snapshot;
     }
 
-    private LlmModelCallEntity startModelCall(
-            AgentStepExecutionContext context,
-            ChapterGenerationSceneEntity scene,
-            LlmExecutionConfig executionConfig,
-            StoryContextSnapshot snapshot) {
-        LlmModelCallEntity call = new LlmModelCallEntity();
-        call.setGenerationSceneId(scene.getId());
-        call.setAgentRunId(context.runId());
-        call.setAgentStepId(context.stepId());
-        call.setProvider(executionConfig.descriptor().provider());
-        call.setModel(executionConfig.descriptor().model());
-        call.setConfigVersion(executionConfig.descriptor().configVersion());
-        call.setCredentialVersion(executionConfig.descriptor().credentialVersion());
-        call.setPromptTemplateVersion(TEMPLATE_VERSION);
-        call.setRequestHash(sha256(snapshot.contentHash() + ":" + scene.getId() + ":" + TEMPLATE_VERSION));
-        call.setCallStatus(CALL_RUNNING);
-        call.setStartedAt(LocalDateTime.now());
-        call.setDeleted(0);
-        call.setVersion(0);
-        modelCallMapper.insert(call);
-        return call;
-    }
-
     private void applySceneResult(AgentStepExecutionContext context, AgentStepResult result, Long generationId) {
         Long sceneId = longValue(result.outputSummary().get("sceneId"));
         if (Boolean.TRUE.equals(result.outputSummary().get("skipped"))) {
@@ -324,8 +305,6 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         if (changed != 1) {
             throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "场景候选已被并发修改");
         }
-        Long callId = longValue(result.outputSummary().get("modelCallId"));
-        completeModelCall(callId, result.outputSummary());
         ChapterGenerationEntity generation = requireGeneration(generationId);
         eventPublisher.publishEvent(SceneGenerationEvent.scene("generation.scene.completed", generation.getChapterId(),
                 generationId, sceneId, scene.getSceneKey(), SCENE_COMPLETED));
@@ -417,35 +396,6 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
             throw new BusinessException(ErrorCode.GENERATION_SCENE_NOT_FOUND, "场景候选不存在");
         }
         return scene;
-    }
-
-    private void completeModelCall(Long callId, Map<String, Object> output) {
-        if (callId == null) {
-            return;
-        }
-        modelCallMapper.update(null, new UpdateWrapper<LlmModelCallEntity>()
-                .eq("id", callId).eq("call_status", CALL_RUNNING)
-                .set("call_status", CALL_COMPLETED).set("finish_reason", stringValue(output.get("finishReason")))
-                .set("provider_request_id", stringValue(output.get("providerRequestId")))
-                .set("input_tokens", integerValue(output.get("inputTokens")))
-                .set("output_tokens", integerValue(output.get("outputTokens")))
-                .set("total_tokens", integerValue(output.get("totalTokens")))
-                .set("elapsed_millis", longValue(output.get("elapsedMillis"))).set("finished_at", LocalDateTime.now())
-                .setSql("version = version + 1").set("gmt_modified", LocalDateTime.now()));
-    }
-
-    private void failModelCall(LlmModelCallEntity call, RuntimeException exception, long elapsedMillis) {
-        if (call == null || call.getId() == null) {
-            return;
-        }
-        String category = exception instanceof LlmProviderException providerException
-                ? providerException.getError().name() : "INTERNAL_ERROR";
-        modelCallMapper.update(null, new UpdateWrapper<LlmModelCallEntity>()
-                .eq("id", call.getId()).eq("call_status", CALL_RUNNING)
-                .set("call_status", CALL_FAILED).set("error_category", category).set("error_code", category)
-                .set("error_message", safeMessage(exception)).set("elapsed_millis", elapsedMillis)
-                .set("finished_at", LocalDateTime.now()).setSql("version = version + 1")
-                .set("gmt_modified", LocalDateTime.now()));
     }
 
     private void putMetadata(Map<String, Object> output, LlmResponseMetadata metadata) {

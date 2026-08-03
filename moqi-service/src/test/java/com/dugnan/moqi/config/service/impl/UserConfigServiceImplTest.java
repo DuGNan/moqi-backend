@@ -72,6 +72,9 @@ class UserConfigServiceImplTest {
         org.mockito.Mockito.lenient()
                 .when(credentialService.summary(any()))
                 .thenReturn(CredentialSummary.missing());
+        org.mockito.Mockito.lenient()
+                .when(providerFactory.createObserved(any(), any()))
+                .thenReturn(provider);
         service = new UserConfigServiceImpl(
                 configMapper,
                 objectMapper,
@@ -643,7 +646,7 @@ class UserConfigServiceImplTest {
     void persistsSuccessfulConnectionTest() {
         configureStoredCredential();
         when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
-        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.lenient().when(providerFactory.create(any())).thenReturn(provider);
         when(configMapper.update(any(), any())).thenReturn(1);
 
         var result = service.testModelConnection(2);
@@ -664,7 +667,7 @@ class UserConfigServiceImplTest {
     void persistsSafeFailedConnectionTest() {
         configureStoredCredential();
         when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
-        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.lenient().when(providerFactory.create(any())).thenReturn(provider);
         org.mockito.Mockito.doThrow(new LlmProviderException(LlmProviderError.AUTHENTICATION))
                 .when(provider).testConnection();
         when(configMapper.update(any(), any())).thenReturn(1);
@@ -684,7 +687,7 @@ class UserConfigServiceImplTest {
     void rejectsConnectionTestWriteBackWhenConfigVersionChanged() {
         configureStoredCredential();
         when(configMapper.selectList(any())).thenReturn(List.of(deepSeekConfig(2)));
-        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.lenient().when(providerFactory.create(any())).thenReturn(provider);
         when(configMapper.update(any(), any())).thenReturn(0);
 
         assertThatThrownBy(() -> service.testModelConnection(2))

@@ -12,5 +12,20 @@ public record LlmResponseMetadata(
         Integer inputTokens,
         Integer outputTokens,
         Integer totalTokens,
-        String providerRequestId) {
+        String providerRequestId,
+        Long modelCallId) {
+
+    /**
+     * 保留 Provider 层不感知持久化调用 ID 的构造入口。
+     */
+    public LlmResponseMetadata(
+            String provider,
+            String model,
+            String finishReason,
+            Integer inputTokens,
+            Integer outputTokens,
+            Integer totalTokens,
+            String providerRequestId) {
+        this(provider, model, finishReason, inputTokens, outputTokens, totalTokens, providerRequestId, null);
+    }
 }

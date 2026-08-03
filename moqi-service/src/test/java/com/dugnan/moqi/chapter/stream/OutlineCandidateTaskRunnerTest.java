@@ -34,6 +34,8 @@ import com.dugnan.moqi.context.StoryContextTaskBindingService;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderCapabilities;
 import com.dugnan.moqi.llm.LlmProviderFactory;
+import com.dugnan.moqi.llm.LlmExecutionConfig;
+import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.llm.LlmResponse;
@@ -83,8 +85,9 @@ class OutlineCandidateTaskRunnerTest {
         when(persistenceService.claim(task, candidate)).thenReturn(true);
         when(conversationMapper.selectById(3L)).thenReturn(conversation());
         when(briefMapper.findByIdAndChapterId(4L, 2L)).thenReturn(brief());
-        when(userConfigService.requireAvailableModelConfig()).thenReturn(config());
+        when(userConfigService.requireAvailableExecutionConfig()).thenReturn(executionConfig());
         when(providerFactory.create(any())).thenReturn(provider);
+        when(providerFactory.createObserved(any(), any())).thenReturn(provider);
         when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, true, false, 16384, 4096));
         when(contextBindingService.buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class)))
                 .thenReturn(snapshot());
@@ -171,6 +174,12 @@ class OutlineCandidateTaskRunnerTest {
 
     private LlmProviderRuntimeConfig config() {
         return new LlmProviderRuntimeConfig("fake", "https://example.test", "test-key", "fake-model");
+    }
+
+    private LlmExecutionConfig executionConfig() {
+        return new LlmExecutionConfig(
+                config(),
+                new LlmExecutionConfigDescriptor("fake", "fake-model", 1, 1));
     }
 
     private StoryContextSnapshot snapshot() {
