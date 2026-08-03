@@ -23,6 +23,7 @@ import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageCreated;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.BriefRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.DiscussionFocusRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineRequest;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ReplyControlRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.SendMessageRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
@@ -140,6 +141,56 @@ class ChapterCollaborationServiceImplTest {
                         && task.getTaskInputJson().contains("\"messageId\":11")
                         && task.getTaskInputJson().contains("\"replyMode\":\"clarify\"")
                         && !task.getTaskInputJson().contains("讨论本章目标")));
+    }
+
+    /**
+     * 继续展开不能引用其他会话中的助手消息。
+     */
+    @Test
+    void rejectsContinuationFromAnotherConversation() {
+        when(conversationMapper.selectById(8L)).thenReturn(conversation(8L, 1L, 2L));
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        ChapterConversationMessageEntity assistant = new ChapterConversationMessageEntity();
+        assistant.setId(91L);
+        assistant.setConversationId(9L);
+        assistant.setMessageRole("assistant");
+        assistant.setAiTaskId(19L);
+        assistant.setDeleted(0);
+        when(messageMapper.selectById(91L)).thenReturn(assistant);
+
+        assertThatThrownBy(() -> service.sendMessage(8L, new SendMessageRequest(
+                "user", "继续展开上一轮内容", true, null,
+                new ReplyControlRequest("deep", "auto", null, 91L))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("continuationMessageId");
+        verify(messageMapper, never()).insert(any(ChapterConversationMessageEntity.class));
+    }
+
+    /**
+     * 继续展开不能引用未成功完成的助手任务。
+     */
+    @Test
+    void rejectsContinuationFromFailedAssistantReply() {
+        when(conversationMapper.selectById(8L)).thenReturn(conversation(8L, 1L, 2L));
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        ChapterConversationMessageEntity assistant = new ChapterConversationMessageEntity();
+        assistant.setId(92L);
+        assistant.setConversationId(8L);
+        assistant.setMessageRole("assistant");
+        assistant.setAiTaskId(20L);
+        assistant.setDeleted(0);
+        AiTaskEntity failed = new AiTaskEntity();
+        failed.setId(20L);
+        failed.setTaskStatus("failed");
+        when(messageMapper.selectById(92L)).thenReturn(assistant);
+        when(aiTaskMapper.selectById(20L)).thenReturn(failed);
+
+        assertThatThrownBy(() -> service.sendMessage(8L, new SendMessageRequest(
+                "user", "继续展开上一轮内容", true, null,
+                new ReplyControlRequest("deep", "auto", null, 92L))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("continuationMessageId");
+        verify(messageMapper, never()).insert(any(ChapterConversationMessageEntity.class));
     }
 
     /**

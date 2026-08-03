@@ -1,6 +1,8 @@
 package com.dugnan.moqi.chapter.controller;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -86,5 +88,22 @@ class ReplyPolicyPreferenceControllerTest {
                 .andExpect(jsonPath("$.data.scopeId").value(8))
                 .andExpect(jsonPath("$.data.replyDepth").value("deep"))
                 .andExpect(jsonPath("$.data.version").value(4));
+    }
+
+    /**
+     * DELETE 接口将客户端版本透传给会话偏好软删除流程。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
+    @Test
+    void clearsConversationPreferenceWithVersion() throws Exception {
+        mvc.perform(delete("/api/reply-policy/preferences")
+                        .param("scopeType", "conversation")
+                        .param("scopeId", "8")
+                        .param("baseVersion", "4"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("SUCCESS"));
+
+        verify(preferenceService).clear("conversation", 8L, 4);
     }
 }

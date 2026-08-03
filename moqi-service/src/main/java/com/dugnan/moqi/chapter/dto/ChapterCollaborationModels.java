@@ -41,6 +41,8 @@ public final class ChapterCollaborationModels {
             Long aiTaskId,
             Long focusBriefId,
             String focusDecisionKey,
+            Long continuationMessageId,
+            ReplyPolicySnapshot effectiveReplyPolicy,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
 
@@ -65,7 +67,7 @@ public final class ChapterCollaborationModels {
                 Long aiTaskId,
                 LocalDateTime gmtCreate,
                 LocalDateTime gmtModified) {
-            this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, gmtCreate, gmtModified);
+            this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, null, null, gmtCreate, gmtModified);
         }
     }
 
@@ -79,6 +81,8 @@ public final class ChapterCollaborationModels {
             Long aiTaskId,
             Long focusBriefId,
             String focusDecisionKey,
+            Long continuationMessageId,
+            ReplyPolicySnapshot effectiveReplyPolicy,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
 
@@ -103,7 +107,7 @@ public final class ChapterCollaborationModels {
                 Long aiTaskId,
                 LocalDateTime gmtCreate,
                 LocalDateTime gmtModified) {
-            this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, gmtCreate, gmtModified);
+            this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, null, null, gmtCreate, gmtModified);
         }
     }
 
@@ -149,7 +153,21 @@ public final class ChapterCollaborationModels {
      * @param scopeMode auto 或 current_only
      * @param scopeText 可选的本轮范围说明
      */
-    public record ReplyControlRequest(String depth, String scopeMode, String scopeText) {
+    public record ReplyControlRequest(String depth, String scopeMode, String scopeText, Long continuationMessageId) {
+
+        public ReplyControlRequest(String depth, String scopeMode, String scopeText) {
+            this(depth, scopeMode, scopeText, null);
+        }
+    }
+
+    /**
+     * 已创建回复任务的安全策略快照，用于刷新后恢复界面状态。
+     */
+    public record ReplyPolicySnapshot(
+            String replyMode,
+            String replyDepth,
+            String scopeMode,
+            boolean convergenceApplied) {
     }
 
     /**
