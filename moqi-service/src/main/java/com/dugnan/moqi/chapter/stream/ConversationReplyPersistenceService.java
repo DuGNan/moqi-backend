@@ -5,11 +5,18 @@ import java.time.LocalDateTime;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.workflow.ChapterConsensusMaturityStarter;
+import org.springframework.context.ApplicationEventPublisher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * @author dgn
@@ -18,9 +25,13 @@ import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
  */
 @Service
 public class ConversationReplyPersistenceService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ConversationReplyPersistenceService.class);
 
     private final AiTaskMapper taskMapper;
     private final ChapterConversationMessageMapper messageMapper;
+    private final ApplicationEventPublisher eventPublisher;
+    private final ChapterBriefMapper briefMapper;
+    private final ChapterConsensusMaturityStarter maturityStarter;
 
     /**
      * 创建回复结果持久化服务。
@@ -28,11 +39,25 @@ public class ConversationReplyPersistenceService {
      * @param taskMapper AI 任务数据访问对象
      * @param messageMapper 会话消息数据访问对象
      */
+    @Autowired
+    public ConversationReplyPersistenceService(
+            AiTaskMapper taskMapper,
+            ChapterConversationMessageMapper messageMapper,
+            ApplicationEventPublisher eventPublisher,
+            ChapterBriefMapper briefMapper,
+            ChapterConsensusMaturityStarter maturityStarter) {
+        this.taskMapper = taskMapper;
+        this.messageMapper = messageMapper;
+        this.eventPublisher = eventPublisher;
+        this.briefMapper = briefMapper;
+        this.maturityStarter = maturityStarter;
+    }
+
+    /** 保留既有单元测试使用的无事件构造入口。 */
     public ConversationReplyPersistenceService(
             AiTaskMapper taskMapper,
             ChapterConversationMessageMapper messageMapper) {
-        this.taskMapper = taskMapper;
-        this.messageMapper = messageMapper;
+        this(taskMapper, messageMapper, event -> { }, null, null);
     }
 
     /**
@@ -57,6 +82,12 @@ public class ConversationReplyPersistenceService {
         message.setDeleted(0);
         messageMapper.insert(message);
         int version = task.getVersion() == null ? 0 : task.getVersion();
+        try {
+            startMaturityRun(task, input, message);
+        } catch (RuntimeException exception) {
+            LOGGER.warn("章节共识成熟度 Run 创建失败，不影响讨论回复，taskId={}, chapterId={}", task.getId(),
+                    task.getChapterId(), exception);
+        }
         if (taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
                 .eq("id", task.getId())
                 .eq("deleted", 0)
@@ -69,5 +100,15 @@ public class ConversationReplyPersistenceService {
             throw new ConversationReplyTaskCanceledException();
         }
         return message.getId();
+    }
+
+    private void startMaturityRun(AiTaskEntity task, ChapterConversationMessageEntity input,
+            ChapterConversationMessageEntity assistantMessage) {
+        if (maturityStarter == null) {
+            return;
+        }
+        ChapterBriefEntity latestBrief = briefMapper.findLatestByChapterId(task.getChapterId());
+        maturityStarter.start(task.getWorkId(), task.getChapterId(), input.getConversationId(), input.getId(),
+                assistantMessage.getId(), latestBrief == null ? null : latestBrief.getId(), task.getId());
     }
 }

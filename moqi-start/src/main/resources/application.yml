@@ -50,3 +50,10 @@ moqi:
     credentials:
       active-key-id: ${MOQI_CREDENTIAL_ACTIVE_KEY_ID:}
       keys: ${MOQI_CREDENTIAL_KEYS:}
+  chapter:
+    consensus-maturity:
+      minimum-new-messages: 2
+      minimum-confidence: 0.75
+      timeout-seconds: 120
+      cooldown-minutes: 5
+      max-input-characters: 12000

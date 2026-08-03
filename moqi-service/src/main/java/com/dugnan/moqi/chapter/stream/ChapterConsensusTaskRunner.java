@@ -192,7 +192,8 @@ public class ChapterConsensusTaskRunner {
             Long briefId = generateAndPersistWithOneRepair(
                     task, conversation.getId(), snapshot, provider, baseBriefContent);
             eventPublisher.publishEvent(
-                    ChapterBriefEvent.draftUpdated(task.getChapterId(), task.getId(), briefId));
+                    ChapterBriefEvent.draftUpdated(task.getChapterId(), task.getId(), briefId,
+                            input.triggerSource()));
         } catch (ChapterConsensusTaskCompletionException | StoryContextTaskBindingException exception) {
             // 任务已被取消或并发完成，不覆盖最新终态。
         } catch (ChapterConsensusJsonException exception) {

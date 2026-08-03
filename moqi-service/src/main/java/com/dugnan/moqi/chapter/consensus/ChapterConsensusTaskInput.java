@@ -8,5 +8,15 @@ package com.dugnan.moqi.chapter.consensus;
 public record ChapterConsensusTaskInput(
         Long conversationId,
         Long baseBriefId,
-        Long currentMessageId) {
+        Long currentMessageId,
+        String triggerSource,
+        Long lastMessageId,
+        String evaluatorVersion,
+        String idempotencyKey,
+        java.util.List<Long> evidenceMessageIds,
+        java.util.List<String> reasonCodes) {
+
+    public ChapterConsensusTaskInput(Long conversationId, Long baseBriefId, Long currentMessageId) {
+        this(conversationId, baseBriefId, currentMessageId, "manual", null, null, null, java.util.List.of(), java.util.List.of());
+    }
 }
