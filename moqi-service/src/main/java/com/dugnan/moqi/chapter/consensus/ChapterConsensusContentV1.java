@@ -52,6 +52,26 @@ public record ChapterConsensusContentV1(
             boolean required,
             String prompt,
             String candidateSummary,
-            List<Long> sourceMessageIds) {
+            List<Long> sourceMessageIds,
+            List<SourceQuote> sourceQuotes) {
+
+        public Decision(
+                String key,
+                String title,
+                String status,
+                boolean required,
+                String prompt,
+                String candidateSummary,
+                List<Long> sourceMessageIds) {
+            this(key, title, status, required, prompt, candidateSummary, sourceMessageIds, List.of());
+        }
+    }
+
+    /**
+     * @author dgn
+     * @date 2026-08-03
+     * @description 定义待决结论引用的精确消息原文摘录。
+     */
+    public record SourceQuote(Long messageId, String quote) {
     }
 }

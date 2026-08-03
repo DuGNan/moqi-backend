@@ -20,6 +20,7 @@ import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.BriefView;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ConfirmBriefRequest;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.CreateBriefDraftRequest;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.DecisionSources;
+import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ResolveDecisionRequest;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.SourceMessagePreview;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
@@ -91,6 +92,9 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
                 briefMapper.findLatestByChapterIdAndStatus(chapterId, STATUS_DRAFT);
         ChapterBriefEntity latestConfirmed =
                 briefMapper.findLatestByChapterIdAndStatus(chapterId, STATUS_CONFIRMED);
+        if (!isNewerDraft(latestDraft, latestConfirmed)) {
+            latestDraft = null;
+        }
         return new BriefState(viewOrNull(latestDraft), viewOrNull(latestConfirmed));
     }
 
@@ -110,7 +114,9 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
                     ErrorCode.CHAPTER_CONSENSUS_INVALID,
                     "引用来源消息时必须提供 conversationId");
         }
-        validateSourceMessages(chapterId, conversationId, sourceIds);
+        Map<Long, ChapterConversationMessageEntity> sourceMessages =
+                validateSourceMessages(chapterId, conversationId, sourceIds);
+        validateSourceQuotes(normalized, sourceMessages);
 
         ChapterBriefEntity brief = new ChapterBriefEntity();
         brief.setWorkId(chapter.getWorkId());
@@ -163,6 +169,61 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
     }
 
     @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public BriefView resolveDecision(
+            Long chapterId,
+            Long briefId,
+            String decisionKey,
+            ResolveDecisionRequest request) {
+        requireChapterAndWork(chapterId);
+        if (request == null || request.baseVersion() == null || request.baseVersion() < 0) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "baseVersion 必须为非负整数");
+        }
+        String action = request.action() == null ? "" : request.action().trim();
+        String status = decisionStatus(action);
+        String normalizedKey = StringUtils.hasText(decisionKey) ? decisionKey.trim() : "";
+        ChapterBriefEntity brief = requireBrief(chapterId, briefId);
+        ChapterBriefEntity latest = currentDraft(chapterId);
+        if (latest == null || !latest.getId().equals(briefId)) {
+            if (latest != null && decisionHasStatus(latest, normalizedKey, status)) {
+                return view(latest);
+            }
+            throw versionConflict();
+        }
+        if (!request.baseVersion().equals(brief.getVersion())) {
+            throw versionConflict();
+        }
+        ChapterConsensusDocument document = codec.read(brief.getBriefContent());
+        if (document.consensus() == null) {
+            throw new BusinessException(ErrorCode.CHAPTER_CONSENSUS_INVALID, "历史文本 Brief 没有可处理的待决项");
+        }
+        Decision currentDecision = document.consensus().decisions().stream()
+                .filter(item -> item.key().equals(normalizedKey))
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(
+                        ErrorCode.CHAPTER_CONSENSUS_INVALID, "Brief 中不存在指定 decisionKey"));
+        if (currentDecision.status().equals(status)) {
+            return view(brief);
+        }
+        List<Decision> decisions = document.consensus().decisions().stream()
+                .map(decision -> resolveDecision(decision, normalizedKey, status))
+                .toList();
+        ChapterConsensusContentV1 updated = new ChapterConsensusContentV1(
+                document.consensus().schemaVersion(), document.consensus().chapterTask(),
+                document.consensus().stateChange(), document.consensus().keyPush(),
+                document.consensus().readerProgress(), document.consensus().writingBoundaries(), decisions);
+        ChapterBriefEntity appended = new ChapterBriefEntity();
+        appended.setWorkId(brief.getWorkId());
+        appended.setChapterId(chapterId);
+        appended.setBriefStatus(STATUS_DRAFT);
+        appended.setBriefContent(codec.write(validator.normalizeDraft(updated)));
+        appended.setDeleted(0);
+        appended.setVersion(0);
+        briefMapper.insert(appended);
+        return view(appended);
+    }
+
+    @Override
     public DecisionSources getDecisionSources(Long chapterId, Long briefId, String decisionKey) {
         requireChapterAndWork(chapterId);
         String normalizedKey = StringUtils.hasText(decisionKey) ? decisionKey.trim() : "";
@@ -180,9 +241,15 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
         List<Long> sourceIds = decision.sourceMessageIds();
         Map<Long, ChapterConversationMessageEntity> messages =
                 validateSourceMessages(chapterId, null, new LinkedHashSet<>(sourceIds));
+        Map<Long, List<String>> quotes = decision.sourceQuotes().stream()
+                .collect(java.util.stream.Collectors.groupingBy(
+                        ChapterConsensusContentV1.SourceQuote::messageId,
+                        LinkedHashMap::new,
+                        java.util.stream.Collectors.mapping(
+                                ChapterConsensusContentV1.SourceQuote::quote,
+                                java.util.stream.Collectors.toList())));
         List<SourceMessagePreview> previews = sourceIds.stream()
-                .map(messages::get)
-                .map(this::sourcePreview)
+                .map(id -> sourcePreview(messages.get(id), quotes.getOrDefault(id, List.of())))
                 .toList();
         return new DecisionSources(briefId, normalizedKey, previews);
     }
@@ -222,6 +289,29 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
     }
 
     /**
+     * 获取仍可继续处理的草稿；已确认版本之后不存在新草稿时，历史草稿不再是当前态。
+     *
+     * @param chapterId 章节 ID
+     * @return 当前草稿，不存在时返回 {@code null}
+     */
+    private ChapterBriefEntity currentDraft(Long chapterId) {
+        ChapterBriefEntity latestDraft = briefMapper.findLatestByChapterIdAndStatus(chapterId, STATUS_DRAFT);
+        ChapterBriefEntity latestConfirmed = briefMapper.findLatestByChapterIdAndStatus(chapterId, STATUS_CONFIRMED);
+        return isNewerDraft(latestDraft, latestConfirmed) ? latestDraft : null;
+    }
+
+    /**
+     * 判断草稿是否在已确认版本之后创建。
+     *
+     * @param draft 最近草稿
+     * @param confirmed 最近确认版本
+     * @return 草稿可作为当前态时返回 {@code true}
+     */
+    private boolean isNewerDraft(ChapterBriefEntity draft, ChapterBriefEntity confirmed) {
+        return draft != null && (confirmed == null || draft.getId() > confirmed.getId());
+    }
+
+    /**
      * 收集共识引用的全部来源消息 ID。
      *
      * @param content 结构化共识
@@ -233,6 +323,49 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
             sourceIds.addAll(decision.sourceMessageIds());
         }
         return sourceIds;
+    }
+
+    private void validateSourceQuotes(
+            ChapterConsensusContentV1 content,
+            Map<Long, ChapterConversationMessageEntity> messages) {
+        for (Decision decision : content.decisions()) {
+            for (ChapterConsensusContentV1.SourceQuote sourceQuote : decision.sourceQuotes()) {
+                ChapterConversationMessageEntity message = messages.get(sourceQuote.messageId());
+                if (message == null || !normalizeForQuote(message.getContent()).contains(normalizeForQuote(sourceQuote.quote()))) {
+                    throw new BusinessException(ErrorCode.CHAPTER_CONSENSUS_INVALID, "sourceQuotes 未命中来源消息原文");
+                }
+            }
+        }
+    }
+
+    private String normalizeForQuote(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", "");
+    }
+
+    private String decisionStatus(String action) {
+        return switch (action) {
+            case "adopt" -> STATUS_CONFIRMED;
+            case "reject" -> "rejected";
+            case "discuss" -> "discussing";
+            default -> throw new BusinessException(ErrorCode.BAD_REQUEST, "action 仅支持 adopt、reject 或 discuss");
+        };
+    }
+
+    private boolean decisionHasStatus(ChapterBriefEntity brief, String decisionKey, String status) {
+        ChapterConsensusDocument document = codec.read(brief.getBriefContent());
+        return document.consensus() != null && document.consensus().decisions().stream()
+                .anyMatch(item -> item.key().equals(decisionKey) && item.status().equals(status));
+    }
+
+    private Decision resolveDecision(Decision decision, String decisionKey, String status) {
+        if (!decision.key().equals(decisionKey)) {
+            return decision;
+        }
+        if (STATUS_CONFIRMED.equals(status) && decision.candidateSummary().isBlank()) {
+            throw new BusinessException(ErrorCode.CHAPTER_CONSENSUS_INVALID, "采用候选前必须存在候选摘要");
+        }
+        return new Decision(decision.key(), decision.title(), status, decision.required(), decision.prompt(),
+                decision.candidateSummary(), decision.sourceMessageIds(), decision.sourceQuotes());
     }
 
     /**
@@ -311,7 +444,7 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
      * @param message 消息实体
      * @return 消息预览
      */
-    private SourceMessagePreview sourcePreview(ChapterConversationMessageEntity message) {
+    private SourceMessagePreview sourcePreview(ChapterConversationMessageEntity message, List<String> quotes) {
         String content = message.getContent() == null
                 ? ""
                 : message.getContent().trim().replaceAll("\\s+", " ");
@@ -323,7 +456,8 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
                 message.getConversationId(),
                 message.getMessageRole(),
                 preview,
-                message.getGmtCreate());
+                message.getGmtCreate(),
+                quotes);
     }
 
     /**

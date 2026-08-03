@@ -63,6 +63,19 @@ class ChapterConsensusResponseParserTest {
         assertThat(content.decisions().get(0).status()).isEqualTo("resolved");
     }
 
+    /** 验证决策的精确原文摘录可被解析为结构化共识。 */
+    @Test
+    void parsesDecisionSourceQuotes() throws Exception {
+        ChapterConsensusContentV1 result = parser.parse(objectMapper.readTree(validJson()));
+
+        assertThat(result.decisions()).singleElement().satisfies(decision -> {
+            assertThat(decision.sourceQuotes()).singleElement().satisfies(quote -> {
+                assertThat(quote.messageId()).isEqualTo(11L);
+                assertThat(quote.quote()).isEqualTo("追查信号");
+            });
+        });
+    }
+
     private String validJson() {
         return """
                 {
@@ -78,8 +91,9 @@ class ChapterConsensusResponseParserTest {
                     "status": "pending",
                     "required": true,
                     "prompt": "救人还是追击",
-                    "candidateSummary": "",
-                    "sourceMessageIds": [11]
+                    "candidateSummary": "追查信号",
+                    "sourceMessageIds": [11],
+                    "sourceQuotes": [{"messageId": 11, "quote": "追查信号"}]
                   }]
                 }
                 """;

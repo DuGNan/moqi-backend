@@ -5,14 +5,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.dugnan.moqi.chapter.consensus.ChapterConsensusContentV1.Decision;
@@ -20,6 +23,7 @@ import com.dugnan.moqi.chapter.consensus.ChapterConsensusContentV1.ReaderProgres
 import com.dugnan.moqi.chapter.consensus.ChapterConsensusContentV1.StateChange;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ConfirmBriefRequest;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.CreateBriefDraftRequest;
+import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ResolveDecisionRequest;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
@@ -111,6 +115,21 @@ class ChapterConsensusServiceImplTest {
         assertThat(result.latestConfirmed().id()).isEqualTo(20L);
     }
 
+    /** 验证确认版本之后不存在新草稿时，不会重新暴露历史草稿。 */
+    @Test
+    void hidesDraftThatPredatesLatestConfirmedBrief() {
+        prepareChapter();
+        when(briefMapper.findLatestByChapterIdAndStatus(2L, "draft"))
+                .thenReturn(brief(21L, "draft", 0));
+        when(briefMapper.findLatestByChapterIdAndStatus(2L, "confirmed"))
+                .thenReturn(brief(22L, "confirmed", 1));
+
+        var result = service.getState(2L);
+
+        assertThat(result.latestDraft()).isNull();
+        assertThat(result.latestConfirmed().id()).isEqualTo(22L);
+    }
+
     /**
      * 验证确认使用预期版本并返回版本递增后的确认态。
      */
@@ -159,6 +178,82 @@ class ChapterConsensusServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.CHAPTER_CONSENSUS_INVALID);
+    }
+
+    /** 验证 adopt、reject 和 discuss 均追加新草稿，不覆盖当前 Brief。 */
+    @Test
+    void resolvesCandidateByAppendingDraft() {
+        prepareChapter();
+        ChapterBriefEntity draft = briefWithDecision(21L, 2, "candidates", true);
+        when(briefMapper.findByIdAndChapterId(21L, 2L)).thenReturn(draft);
+        when(briefMapper.findLatestByChapterIdAndStatus(2L, "draft")).thenReturn(draft);
+        AtomicLong ids = new AtomicLong(22L);
+        when(briefMapper.insert(any(ChapterBriefEntity.class))).thenAnswer(invocation -> {
+            invocation.<ChapterBriefEntity>getArgument(0).setId(ids.getAndIncrement());
+            return 1;
+        });
+
+        service.resolveDecision(2L, 21L, "protagonist_choice", new ResolveDecisionRequest(2, "adopt"));
+        service.resolveDecision(2L, 21L, "protagonist_choice", new ResolveDecisionRequest(2, "reject"));
+        var result = service.resolveDecision(2L, 21L, "protagonist_choice", new ResolveDecisionRequest(2, "discuss"));
+
+        ArgumentCaptor<ChapterBriefEntity> captor = ArgumentCaptor.forClass(ChapterBriefEntity.class);
+        verify(briefMapper, org.mockito.Mockito.times(3)).insert(captor.capture());
+        ChapterConsensusCodec codec = new ChapterConsensusCodec(
+                new com.fasterxml.jackson.databind.ObjectMapper(), new ChapterConsensusValidator());
+        assertThat(captor.getAllValues()).extracting(entity -> codec.read(entity.getBriefContent())
+                .consensus().decisions().get(0).status()).containsExactly("confirmed", "rejected", "discussing");
+        assertThat(result.id()).isEqualTo(24L);
+        assertThat(draft.getBriefStatus()).isEqualTo("draft");
+    }
+
+    /** 验证过期草稿和版本均映射为稳定冲突。 */
+    @Test
+    void rejectsStaleDraftOrVersionWhenResolvingCandidate() {
+        prepareChapter();
+        ChapterBriefEntity draft = briefWithDecision(21L, 2, "candidates", true);
+        when(briefMapper.findByIdAndChapterId(21L, 2L)).thenReturn(draft);
+        when(briefMapper.findLatestByChapterIdAndStatus(2L, "draft"))
+                .thenReturn(briefWithDecision(22L, 0, "candidates", true));
+
+        assertThatThrownBy(() -> service.resolveDecision(
+                        2L, 21L, "protagonist_choice", new ResolveDecisionRequest(2, "reject")))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.CHAPTER_BRIEF_VERSION_CONFLICT);
+    }
+
+    /** 验证相同动作对已处理的当前草稿幂等返回，且不追加版本。 */
+    @Test
+    void returnsCurrentDraftForIdempotentDecisionAction() {
+        prepareChapter();
+        ChapterBriefEntity draft = briefWithDecision(21L, 2, "rejected", true);
+        when(briefMapper.findByIdAndChapterId(21L, 2L)).thenReturn(draft);
+        when(briefMapper.findLatestByChapterIdAndStatus(2L, "draft")).thenReturn(draft);
+
+        var result = service.resolveDecision(2L, 21L, "protagonist_choice", new ResolveDecisionRequest(2, "reject"));
+
+        assertThat(result.id()).isEqualTo(21L);
+        verify(briefMapper, never()).insert(any(ChapterBriefEntity.class));
+    }
+
+    /** 验证必要 rejected 仍阻塞确认，而可选 rejected 不阻塞。 */
+    @Test
+    void blocksRequiredRejectedDecisionButAllowsOptionalRejectedDecision() {
+        prepareChapter();
+        ChapterBriefEntity required = briefWithDecision(21L, 0, "rejected", true);
+        when(briefMapper.findByIdAndChapterId(21L, 2L)).thenReturn(required);
+        assertThatThrownBy(() -> service.confirm(2L, 21L, new ConfirmBriefRequest(0)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.CHAPTER_BRIEF_CONFIRMATION_BLOCKED);
+
+        ChapterBriefEntity optional = briefWithDecision(22L, 0, "rejected", false);
+        ChapterBriefEntity confirmed = briefWithDecision(22L, 1, "rejected", false);
+        confirmed.setBriefStatus("confirmed");
+        when(briefMapper.findByIdAndChapterId(22L, 2L)).thenReturn(optional).thenReturn(confirmed);
+        when(briefMapper.confirmDraft(22L, 2L, 0)).thenReturn(1);
+        assertThat(service.confirm(2L, 22L, new ConfirmBriefRequest(0)).briefStatus()).isEqualTo("confirmed");
     }
 
     /**
@@ -219,6 +314,17 @@ class ChapterConsensusServiceImplTest {
                 new ChapterConsensusValidator()).write(content()));
         brief.setDeleted(0);
         brief.setVersion(version);
+        return brief;
+    }
+
+    private ChapterBriefEntity briefWithDecision(Long id, Integer version, String decisionStatus, boolean required) {
+        ChapterBriefEntity brief = brief(id, "draft", version);
+        ChapterConsensusContentV1 consensus = new ChapterConsensusContentV1(
+                1, "推进主角选择", new StateChange("犹豫", "决断"), "主角承担代价",
+                new ReaderProgress("得到阶段反馈", "谁泄露了情报"), List.of(), List.of(new Decision(
+                        "protagonist_choice", "主角选择", decisionStatus, required, "选择救人还是追击", "先救人", List.of())));
+        brief.setBriefContent(new ChapterConsensusCodec(
+                new com.fasterxml.jackson.databind.ObjectMapper(), new ChapterConsensusValidator()).write(consensus));
         return brief;
     }
 

@@ -61,6 +61,14 @@ public final class ChapterConsensusModels {
     }
 
     /**
+     * @author dgn
+     * @date 2026-08-03
+     * @description 定义用户处理待决候选的乐观并发请求。
+     */
+    public record ResolveDecisionRequest(Integer baseVersion, String action) {
+    }
+
+    /**
      * 创建异步共识收束任务请求。
      *
      * @param conversationId 会话 ID
@@ -144,6 +152,16 @@ public final class ChapterConsensusModels {
             Long conversationId,
             String messageRole,
             String contentPreview,
-            LocalDateTime gmtCreate) {
+            LocalDateTime gmtCreate,
+            List<String> quotes) {
+
+        public SourceMessagePreview(
+                Long id,
+                Long conversationId,
+                String messageRole,
+                String contentPreview,
+                LocalDateTime gmtCreate) {
+            this(id, conversationId, messageRole, contentPreview, gmtCreate, List.of());
+        }
     }
 }

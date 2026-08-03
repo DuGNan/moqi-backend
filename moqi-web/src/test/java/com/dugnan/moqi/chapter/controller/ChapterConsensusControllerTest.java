@@ -11,6 +11,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.mockito.ArgumentCaptor;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -23,6 +24,7 @@ import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.BriefView;
 import com.dugnan.moqi.chapter.service.ChapterConsensusService;
 import com.dugnan.moqi.chapter.service.ChapterConsensusTaskService;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ConsensusTaskCreated;
+import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ResolveDecisionRequest;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.web.exception.GlobalExceptionHandler;
@@ -134,6 +136,25 @@ class ChapterConsensusControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.taskId").value(31))
                 .andExpect(jsonPath("$.data.taskStatus").value("queued"));
+    }
+
+    /** 验证候选处理路径、请求体和服务委派保持一致。 */
+    @Test
+    void resolvesDecisionCandidate() throws Exception {
+        when(consensusService.resolveDecision(Mockito.eq(2L), Mockito.eq(21L), Mockito.eq("protagonist_choice"), Mockito.any()))
+                .thenReturn(view(22L, "draft", 0));
+
+        mvc.perform(post("/api/chapters/2/briefs/21/decisions/protagonist_choice/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"baseVersion\":3,\"action\":\"reject\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(22));
+
+        ArgumentCaptor<ResolveDecisionRequest> requestCaptor = ArgumentCaptor.forClass(ResolveDecisionRequest.class);
+        Mockito.verify(consensusService).resolveDecision(
+                Mockito.eq(2L), Mockito.eq(21L), Mockito.eq("protagonist_choice"), requestCaptor.capture());
+        org.assertj.core.api.Assertions.assertThat(requestCaptor.getValue().baseVersion()).isEqualTo(3);
+        org.assertj.core.api.Assertions.assertThat(requestCaptor.getValue().action()).isEqualTo("reject");
     }
 
     /**

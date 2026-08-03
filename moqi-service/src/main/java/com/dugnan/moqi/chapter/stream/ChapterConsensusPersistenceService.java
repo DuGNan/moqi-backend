@@ -1,9 +1,12 @@
 package com.dugnan.moqi.chapter.stream;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
+import java.util.LinkedHashMap;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.stereotype.Service;
@@ -75,8 +78,29 @@ public class ChapterConsensusPersistenceService {
             AiTaskEntity task,
             Long conversationId,
             ChapterConsensusContentV1 content) {
-        ChapterConsensusContentV1 normalized = validator.normalizeGeneratedDraft(content);
-        validateSources(task.getChapterId(), conversationId, normalized);
+        return complete(task, conversationId, content, null);
+    }
+
+    /**
+     * 保存新的 draft，并保留基础 Brief 中已经由用户处理的决定。
+     *
+     * @param task 正在运行的任务
+     * @param conversationId 会话 ID
+     * @param content 模型生成共识
+     * @param baseBriefContent 任务创建时的基础 Brief 内容
+     * @return 新 Brief ID
+     */
+    @Transactional(rollbackFor = RuntimeException.class)
+    public Long complete(
+            AiTaskEntity task,
+            Long conversationId,
+            ChapterConsensusContentV1 content,
+            String baseBriefContent) {
+        ChapterConsensusContentV1 normalized = preserveUserResolvedDecisions(
+                validator.normalizeGeneratedDraft(content), baseBriefContent);
+        Map<Long, ChapterConversationMessageEntity> messages =
+                validateSources(task.getChapterId(), conversationId, normalized);
+        validateQuotes(normalized, messages);
 
         ChapterBriefEntity brief = new ChapterBriefEntity();
         brief.setWorkId(task.getWorkId());
@@ -105,13 +129,67 @@ public class ChapterConsensusPersistenceService {
     }
 
     /**
+     * 将基础 Brief 中已由用户操作确定的决定原样带入新的模型草稿。
+     *
+     * @param generated 模型生成的规范化草稿
+     * @param baseBriefContent 基础 Brief 内容
+     * @return 不会降级用户决定的草稿
+     */
+    private ChapterConsensusContentV1 preserveUserResolvedDecisions(
+            ChapterConsensusContentV1 generated,
+            String baseBriefContent) {
+        if (baseBriefContent == null || baseBriefContent.isBlank()) {
+            return generated;
+        }
+        ChapterConsensusContentV1 base = codec.read(baseBriefContent).consensus();
+        if (base == null) {
+            return generated;
+        }
+        List<Decision> merged = new ArrayList<>(generated.decisions());
+        for (Decision baseDecision : base.decisions()) {
+            if (!isUserResolved(baseDecision)) {
+                continue;
+            }
+            int index = decisionIndex(merged, baseDecision.key());
+            if (index >= 0) {
+                merged.set(index, baseDecision);
+            } else {
+                merged.add(baseDecision);
+            }
+        }
+        return new ChapterConsensusContentV1(
+                generated.schemaVersion(),
+                generated.chapterTask(),
+                generated.stateChange(),
+                generated.keyPush(),
+                generated.readerProgress(),
+                generated.writingBoundaries(),
+                merged);
+    }
+
+    private boolean isUserResolved(Decision decision) {
+        return "confirmed".equals(decision.status())
+                || "rejected".equals(decision.status())
+                || "discussing".equals(decision.status());
+    }
+
+    private int decisionIndex(List<Decision> decisions, String decisionKey) {
+        for (int index = 0; index < decisions.size(); index++) {
+            if (decisions.get(index).key().equals(decisionKey)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    /**
      * 批量校验模型只能引用任务会话内的消息。
      *
      * @param chapterId 章节 ID
      * @param conversationId 会话 ID
      * @param content 结构化共识
      */
-    private void validateSources(
+    private Map<Long, ChapterConversationMessageEntity> validateSources(
             Long chapterId,
             Long conversationId,
             ChapterConsensusContentV1 content) {
@@ -120,9 +198,10 @@ public class ChapterConsensusPersistenceService {
             sourceIds.addAll(decision.sourceMessageIds());
         }
         if (sourceIds.isEmpty()) {
-            return;
+            return Map.of();
         }
         List<ChapterConversationMessageEntity> messages = messageMapper.selectBatchIds(sourceIds);
+        Map<Long, ChapterConversationMessageEntity> indexed = new LinkedHashMap<>();
         long validCount = messages.stream()
                 .filter(message -> message != null
                         && chapterId.equals(message.getChapterId())
@@ -136,5 +215,40 @@ public class ChapterConsensusPersistenceService {
                     ErrorCode.CHAPTER_CONSENSUS_INVALID,
                     "模型共识引用了任务会话之外的消息");
         }
+        for (ChapterConversationMessageEntity message : messages) {
+            if (message != null) {
+                indexed.put(message.getId(), message);
+            }
+        }
+        return indexed;
+    }
+
+    private void validateQuotes(
+            ChapterConsensusContentV1 content,
+            Map<Long, ChapterConversationMessageEntity> messages) {
+        for (Decision decision : content.decisions()) {
+            for (ChapterConsensusContentV1.SourceQuote sourceQuote : decision.sourceQuotes()) {
+                ChapterConversationMessageEntity message = messages.get(sourceQuote.messageId());
+                String source = normalizeVisibleText(message == null ? null : message.getContent());
+                String quote = normalizeVisibleText(sourceQuote.quote());
+                if (!source.contains(quote)) {
+                    throw new BusinessException(ErrorCode.CHAPTER_CONSENSUS_INVALID, "模型共识引用的摘录未命中原消息");
+                }
+            }
+        }
+    }
+
+    private String normalizeVisibleText(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value
+                .replace("**", "")
+                .replace("__", "")
+                .replace("~~", "")
+                .replace("`", "")
+                .replaceAll("(?m)^\\s{0,3}#{1,6}\\s*", "")
+                .replaceAll("(?m)^\\s{0,3}>\\s?", "")
+                .replaceAll("\\s+", "");
     }
 }

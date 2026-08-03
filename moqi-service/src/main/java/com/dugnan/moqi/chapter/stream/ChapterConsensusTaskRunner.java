@@ -1,6 +1,7 @@
 package com.dugnan.moqi.chapter.stream;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -69,6 +70,9 @@ public class ChapterConsensusTaskRunner {
 
     private static final String CONSENSUS_SAFE_MESSAGE = "章节共识不符合结构化契约";
 
+    private static final String REPAIR_INSTRUCTION = "上一次输出未通过结构化契约校验。仅重新输出完整合法的 JSON object；"
+            + "不得输出 Markdown、解释或额外字段，所有 sourceQuotes 必须逐字摘自对应 sourceMessageIds 的原消息。";
+
     private static final String TASK_INSTRUCTION = """
             请把章节共创讨论收束为且仅为一个 ChapterConsensusContentV1 JSON object。
             必须完整输出以下字段，不得增加字段：
@@ -86,11 +90,14 @@ public class ChapterConsensusTaskRunner {
                 "required": true,
                 "prompt": "string",
                 "candidateSummary": "string",
-                "sourceMessageIds": [1]
+                "sourceMessageIds": [1],
+                "sourceQuotes": [{"messageId": 1, "quote": "来自原消息的连续原文"}]
               }]
             }
             writingBoundaries、decisions 和 sourceMessageIds 必须是 JSON array，允许为空。
             sourceMessageIds 只能引用上下文中 [sourceMessageIds=[...]] 标出的真实消息 ID。
+            如果基础 Brief 中存在 status 为 confirmed、rejected 或 discussing 的 decisions，它们都是用户已作出的决定：
+            必须保留原 key、状态、候选摘要和来源，不得删除或改回 candidates、pending；只能为未处理或新增事项给出候选。
             这是草稿，不得把 Brief 标记为 confirmed，不得输出 Markdown 或解释文字。
             """;
 
@@ -179,20 +186,11 @@ public class ChapterConsensusTaskRunner {
                             input.currentMessageId());
             LlmProvider provider =
                     providerFactory.create(userConfigService.requireAvailableModelConfig());
+            String baseBriefContent = baseBriefContent(task.getChapterId(), input.baseBriefId());
             StoryContextSnapshot snapshot =
-                    buildContext(task, input, currentMessage, provider);
-            LlmResponse response = provider.generate(new LlmRequest(
-                    providerMessages(snapshot),
-                    new LlmOptions(
-                            snapshot.outputReserveTokens(),
-                            null,
-                            List.of(),
-                            LlmResponseFormat.JSON_OBJECT)));
-            if (response == null || response.structuredContent() == null) {
-                throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
-            }
-            ChapterConsensusContentV1 consensus = responseParser.parse(response.structuredContent());
-            Long briefId = persistenceService.complete(task, conversation.getId(), consensus);
+                    buildContext(task, input, currentMessage, provider, baseBriefContent);
+            Long briefId = generateAndPersistWithOneRepair(
+                    task, conversation.getId(), snapshot, provider, baseBriefContent);
             eventPublisher.publishEvent(
                     ChapterBriefEvent.draftUpdated(task.getChapterId(), task.getId(), briefId));
         } catch (ChapterConsensusTaskCompletionException | StoryContextTaskBindingException exception) {
@@ -227,6 +225,65 @@ public class ChapterConsensusTaskRunner {
                     exception);
             fail(task, ErrorCode.INTERNAL_ERROR.name(), "章节共识收束失败，请稍后重试");
         }
+    }
+
+    private Long generateAndPersistWithOneRepair(
+            AiTaskEntity task,
+            Long conversationId,
+            StoryContextSnapshot snapshot,
+            LlmProvider provider,
+            String baseBriefContent) {
+        try {
+            return generateAndPersist(
+                    task, conversationId, provider, providerMessages(snapshot), snapshot.outputReserveTokens(), baseBriefContent);
+        } catch (ChapterConsensusJsonException exception) {
+            return repairAndPersist(task, conversationId, snapshot, provider, baseBriefContent);
+        } catch (BusinessException exception) {
+            if (exception.getErrorCode() != ErrorCode.CHAPTER_CONSENSUS_INVALID) {
+                throw exception;
+            }
+            return repairAndPersist(task, conversationId, snapshot, provider, baseBriefContent);
+        } catch (LlmProviderException exception) {
+            if (exception.getError() != LlmProviderError.INVALID_RESPONSE) {
+                throw exception;
+            }
+            return repairAndPersist(task, conversationId, snapshot, provider, baseBriefContent);
+        }
+    }
+
+    private Long repairAndPersist(
+            AiTaskEntity task,
+            Long conversationId,
+            StoryContextSnapshot snapshot,
+            LlmProvider provider,
+            String baseBriefContent) {
+        LOGGER.info("章节共识首次结构化结果无效，使用同一快照自动修复一次，taskId={}, chapterId={}",
+                task.getId(), task.getChapterId());
+        List<LlmMessage> repairMessages = new ArrayList<>(providerMessages(snapshot));
+        repairMessages.add(new LlmMessage(LlmRole.USER, REPAIR_INSTRUCTION));
+        return generateAndPersist(
+                task, conversationId, provider, repairMessages, snapshot.outputReserveTokens(), baseBriefContent);
+    }
+
+    private Long generateAndPersist(
+            AiTaskEntity task,
+            Long conversationId,
+            LlmProvider provider,
+            List<LlmMessage> messages,
+            int outputReserveTokens,
+            String baseBriefContent) {
+        LlmResponse response = provider.generate(new LlmRequest(
+                messages,
+                new LlmOptions(
+                        outputReserveTokens,
+                        0D,
+                        List.of(),
+                        LlmResponseFormat.JSON_OBJECT)));
+        if (response == null || response.structuredContent() == null) {
+            throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
+        }
+        ChapterConsensusContentV1 consensus = responseParser.parse(response.structuredContent());
+        return persistenceService.complete(task, conversationId, consensus, baseBriefContent);
     }
 
     /**
@@ -318,7 +375,8 @@ public class ChapterConsensusTaskRunner {
             AiTaskEntity task,
             ChapterConsensusTaskInput input,
             ChapterConversationMessageEntity currentMessage,
-            LlmProvider provider) {
+            LlmProvider provider,
+            String baseBriefContent) {
         int contextWindow = provider.capabilities().maxContextTokens() == null
                 ? 32768 : provider.capabilities().maxContextTokens();
         int outputReserve = StoryContextProfile.CHAPTER_DISCUSSION.defaultOutputReserveTokens();
@@ -333,7 +391,7 @@ public class ChapterConsensusTaskRunner {
                 currentMessage.getId(),
                 TASK_INSTRUCTION,
                 currentMessage.getContent(),
-                baseBriefContent(task.getChapterId(), input.baseBriefId()),
+                baseBriefContent,
                 contextWindow,
                 outputReserve), task);
     }

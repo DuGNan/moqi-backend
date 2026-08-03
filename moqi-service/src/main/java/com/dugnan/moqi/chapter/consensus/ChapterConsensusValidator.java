@@ -24,6 +24,7 @@ public class ChapterConsensusValidator {
 
     private static final int SCHEMA_VERSION = 1;
     private static final String STATUS_CONFIRMED = "confirmed";
+    private static final String STATUS_REJECTED = "rejected";
 
     private static final int MAIN_TEXT_MAX_LENGTH = 2000;
 
@@ -49,7 +50,7 @@ public class ChapterConsensusValidator {
             Pattern.compile("[a-z][a-z0-9_]{0," + (DECISION_KEY_MAX_LENGTH - 1) + "}");
 
     private static final Set<String> DECISION_STATUSES =
-            Set.of(STATUS_CONFIRMED, "candidates", "discussing", "pending");
+            Set.of(STATUS_CONFIRMED, STATUS_REJECTED, "candidates", "discussing", "pending");
 
     /**
      * 校验并规范化可保存的共识草稿。
@@ -108,8 +109,14 @@ public class ChapterConsensusValidator {
             throw invalid("模型共识缺少必填结构");
         }
         for (Decision decision : content.decisions()) {
-            if (decision == null || decision.sourceMessageIds() == null) {
-                throw invalid("模型共识 decision 缺少 sourceMessageIds");
+            if (decision == null || decision.sourceMessageIds() == null || decision.sourceQuotes() == null) {
+                throw invalid("模型共识 decision 缺少来源依据");
+            }
+            if (STATUS_REJECTED.equals(decision.status())) {
+                throw invalid("模型共识不得生成 rejected 决策状态");
+            }
+            if (!decision.sourceMessageIds().isEmpty() && decision.sourceQuotes().isEmpty()) {
+                throw invalid("模型共识必须为来源消息提供精确摘录");
             }
         }
         return normalizeDraft(content);
@@ -225,6 +232,8 @@ public class ChapterConsensusValidator {
             throw invalid("已确认的 decision 必须提供 candidateSummary");
         }
         List<Long> sourceMessageIds = normalizeSourceMessageIds(decision.sourceMessageIds());
+        List<ChapterConsensusContentV1.SourceQuote> sourceQuotes = normalizeSourceQuotes(
+                decision.sourceQuotes(), sourceMessageIds);
         return new Decision(
                 key,
                 title,
@@ -232,7 +241,30 @@ public class ChapterConsensusValidator {
                 decision.required(),
                 prompt,
                 candidateSummary,
-                sourceMessageIds);
+                sourceMessageIds,
+                sourceQuotes);
+    }
+
+    private List<ChapterConsensusContentV1.SourceQuote> normalizeSourceQuotes(
+            List<ChapterConsensusContentV1.SourceQuote> sourceQuotes,
+            List<Long> sourceMessageIds) {
+        if (sourceQuotes == null || sourceQuotes.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        List<ChapterConsensusContentV1.SourceQuote> normalized = new ArrayList<>();
+        for (ChapterConsensusContentV1.SourceQuote sourceQuote : sourceQuotes) {
+            if (sourceQuote == null || sourceQuote.messageId() == null
+                    || !sourceMessageIds.contains(sourceQuote.messageId())) {
+                throw invalid("sourceQuotes 必须引用 sourceMessageIds 中的消息");
+            }
+            String quote = normalizeText(sourceQuote.quote(), MAIN_TEXT_MAX_LENGTH, "sourceQuotes.quote");
+            if (quote.isBlank() || !ids.add(sourceQuote.messageId())) {
+                throw invalid("sourceQuotes 必须包含每条消息唯一的非空摘录");
+            }
+            normalized.add(new ChapterConsensusContentV1.SourceQuote(sourceQuote.messageId(), quote));
+        }
+        return List.copyOf(normalized);
     }
 
     /**
