@@ -18,6 +18,7 @@ import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateConfir
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateCreated;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateDetail;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateDiff;
+import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.UpdateOutlineCandidateRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
@@ -29,6 +30,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterOutlineCandidateMapper;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContentCodec;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateTaskInput;
+import com.dugnan.moqi.chapter.outline.OutlineCandidateDiffService;
 import com.dugnan.moqi.chapter.service.OutlineCandidateService;
 import com.dugnan.moqi.chapter.stream.OutlineCandidateEvent;
 import com.dugnan.moqi.chapter.stream.OutlineCandidateTaskSubmittedEvent;
@@ -44,18 +46,23 @@ import com.dugnan.moqi.work.mapper.WorkMapper;
 /**
  * @author dgn
  * @date 2026-07-30
- * @description 实现大纲调整候选的数据库事实源与确认落版事务。
+ * @description 实现首版和调整大纲候选的数据库事实源、编辑与确认落版事务。
  */
 @Service
 public class OutlineCandidateServiceImpl implements OutlineCandidateService {
 
     private static final String TASK_TYPE = "outline_adjustment_candidate";
+    private static final String TYPE_INITIAL = "initial";
+    private static final String TYPE_ADJUSTMENT = "adjustment";
+    private static final int TASK_INPUT_SCHEMA_VERSION = 2;
     private static final String STATUS_QUEUED = "queued";
     private static final String BRIEF_STATUS_CONFIRMED = "confirmed";
     private static final String STATUS_READY = "ready";
     private static final String STATUS_ABANDONED = "abandoned";
     private static final String STATUS_CONFIRMED = "confirmed";
     private static final int MAX_INSTRUCTION_LENGTH = 2000;
+    private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
+    private static final String DEFAULT_INITIAL_INSTRUCTION = "根据已确认的本章共识生成完整的首版章纲";
 
     private final WorkMapper workMapper;
     private final ChapterMapper chapterMapper;
@@ -66,6 +73,7 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
     private final AiTaskMapper taskMapper;
     private final OutlineCandidateContentCodec contentCodec;
     private final ChapterConsensusImpactService impactService;
+    private final OutlineCandidateDiffService diffService;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
 
@@ -82,6 +90,7 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
             AiTaskMapper taskMapper,
             OutlineCandidateContentCodec contentCodec,
             ChapterConsensusImpactService impactService,
+            OutlineCandidateDiffService diffService,
             ObjectMapper objectMapper,
             ApplicationEventPublisher eventPublisher) {
         this.workMapper = workMapper;
@@ -93,6 +102,7 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         this.taskMapper = taskMapper;
         this.contentCodec = contentCodec;
         this.impactService = impactService;
+        this.diffService = diffService;
         this.objectMapper = objectMapper;
         this.eventPublisher = eventPublisher;
     }
@@ -100,13 +110,31 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public OutlineCandidateCreated create(Long chapterId, CreateOutlineCandidateRequest request) {
-        ChapterEntity chapter = requireChapterAndWork(chapterId);
+        ChapterEntity chapter = requireChapterAndWorkForUpdate(chapterId);
         ChapterConversationEntity conversation = requireConversation(chapter, request == null ? null : request.conversationId());
         ChapterBriefEntity brief = requireCurrentConfirmedBrief(chapterId,
                 request == null ? null : request.confirmedBriefId());
-        ChapterOutlineEntity outline = requireBaseOutline(chapterId,
-                request == null ? null : request.baseOutlineRevision());
-        String instruction = requiredInstruction(request == null ? null : request.instruction());
+        String candidateType = candidateType(request == null ? null : request.candidateType());
+        String idempotencyKey = idempotencyKey(request == null ? null : request.idempotencyKey(), candidateType);
+        ChapterOutlineCandidateEntity existing = idempotencyKey == null ? null
+                : candidateMapper.findByIdempotencyKey(chapterId, idempotencyKey);
+        if (existing != null) {
+            if (!candidateType.equals(existing.getCandidateType())
+                    || !brief.getId().equals(existing.getConfirmedBriefId())
+                    || !conversation.getId().equals(existing.getConversationId())) {
+                throw stateConflict("幂等键已用于不同的候选请求");
+            }
+            return created(existing);
+        }
+        ChapterOutlineEntity outline = resolveBaseOutline(chapterId,
+                request == null ? null : request.baseOutlineRevision(), candidateType);
+        if (TYPE_INITIAL.equals(candidateType)) {
+            ChapterOutlineCandidateEntity active = candidateMapper.findActiveInitial(chapterId);
+            if (active != null) {
+                throw stateConflict("已有首版章纲候选正在生成或等待处理");
+            }
+        }
+        String instruction = instruction(request == null ? null : request.instruction(), candidateType);
 
         AiTaskEntity task = new AiTaskEntity();
         task.setTaskType(TASK_TYPE);
@@ -114,7 +142,9 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         task.setWorkId(chapter.getWorkId());
         task.setChapterId(chapterId);
         task.setTaskInputJson(taskInputJson(new OutlineCandidateTaskInput(
-                conversation.getId(), brief.getId(), outline.getId(), outline.getRevision(), instruction)));
+                TASK_INPUT_SCHEMA_VERSION, candidateType, conversation.getId(), brief.getId(),
+                outline == null ? null : outline.getId(), outline == null ? null : outline.getRevision(),
+                instruction, idempotencyKey)));
         task.setDeleted(0);
         task.setVersion(0);
         taskMapper.insert(task);
@@ -125,9 +155,11 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         candidate.setConversationId(conversation.getId());
         candidate.setAiTaskId(task.getId());
         candidate.setConfirmedBriefId(brief.getId());
-        candidate.setBaseOutlineId(outline.getId());
-        candidate.setBaseOutlineRevision(outline.getRevision());
-        candidate.setBaseOutlineContent(outline.getOutlineContent());
+        candidate.setCandidateType(candidateType);
+        candidate.setIdempotencyKey(idempotencyKey);
+        candidate.setBaseOutlineId(outline == null ? null : outline.getId());
+        candidate.setBaseOutlineRevision(outline == null ? null : outline.getRevision());
+        candidate.setBaseOutlineContent(outline == null ? null : outline.getOutlineContent());
         candidate.setCandidateStatus(STATUS_QUEUED);
         candidate.setAdjustmentInstruction(instruction);
         candidate.setDeleted(0);
@@ -138,9 +170,9 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         taskMapper.updateById(task);
         eventPublisher.publishEvent(new OutlineCandidateTaskSubmittedEvent(task.getId()));
         eventPublisher.publishEvent(OutlineCandidateEvent.updated(
-                chapterId, task.getId(), candidate.getId(), STATUS_QUEUED, STATUS_QUEUED, outline.getId(), outline.getRevision()));
-        return new OutlineCandidateCreated(
-                chapterId, outline.getId(), outline.getRevision(), candidate.getId(), task.getId(), STATUS_QUEUED);
+                chapterId, task.getId(), candidate.getId(), STATUS_QUEUED, STATUS_QUEUED,
+                candidate.getBaseOutlineId(), candidate.getBaseOutlineRevision()));
+        return created(candidate);
     }
 
     @Override
@@ -154,6 +186,46 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
     public OutlineCandidateDetail get(Long chapterId, Long candidateId) {
         requireChapterAndWork(chapterId);
         return detail(requireCandidate(chapterId, candidateId));
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public OutlineCandidateDetail update(
+            Long chapterId,
+            Long candidateId,
+            UpdateOutlineCandidateRequest request) {
+        requireChapterAndWork(chapterId);
+        ChapterOutlineCandidateEntity candidate = requireCandidate(chapterId, candidateId);
+        if (!STATUS_READY.equals(candidate.getCandidateStatus())) {
+            throw stateConflict("仅可编辑已就绪候选");
+        }
+        if (request == null || request.baseCandidateVersion() == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "baseCandidateVersion 不能为空");
+        }
+        OutlineCandidateContent content = contentCodec.normalize(request.candidateContent());
+        ChapterBriefEntity brief = requireCurrentConfirmedBrief(chapterId, candidate.getConfirmedBriefId());
+        OutlineCandidateDiff diff = isInitial(candidate) ? null
+                : diffService.diff(contentCodec.read(candidate.getBaseOutlineContent()), content);
+        ConsensusImpact impact = impactService.assess(brief.getBriefContent(), contentCodec.write(content));
+        int changed = candidateMapper.update(null, new UpdateWrapper<ChapterOutlineCandidateEntity>()
+                .eq("id", candidateId)
+                .eq("chapter_id", chapterId)
+                .eq("deleted", 0)
+                .eq("candidate_status", STATUS_READY)
+                .eq("version", request.baseCandidateVersion())
+                .set("candidate_content", contentCodec.write(content))
+                .set("diff_json", writeOrNull(diff))
+                .set("consensus_impact_json", writeOrNull(impact))
+                .set("version", request.baseCandidateVersion() + 1)
+                .set("gmt_modified", LocalDateTime.now()));
+        if (changed != 1) {
+            throw stateConflict("候选版本已变化，请刷新后重试");
+        }
+        candidate.setCandidateContent(contentCodec.write(content));
+        candidate.setDiffJson(writeOrNull(diff));
+        candidate.setConsensusImpactJson(writeOrNull(impact));
+        candidate.setVersion(request.baseCandidateVersion() + 1);
+        return detail(candidate);
     }
 
     @Override
@@ -199,24 +271,21 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
             throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_NOT_FOUND, "大纲调整候选不存在");
         }
         if (STATUS_CONFIRMED.equals(candidate.getCandidateStatus())) {
-            return new OutlineCandidateConfirmation(detail(candidate), outlineDetail(requireOutline(chapterId)));
+            ChapterOutlineEntity confirmed = requireOutline(chapterId);
+            if (!confirmed.getId().equals(candidate.getResultOutlineId())) {
+                throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_STALE, "候选确认结果与正式大纲不一致");
+            }
+            return new OutlineCandidateConfirmation(detail(candidate), outlineDetail(confirmed));
         }
         if (!STATUS_READY.equals(candidate.getCandidateStatus())) {
             throw stateConflict("候选尚未就绪，不能确认落版");
         }
         requireCurrentConfirmedBrief(chapterId, candidate.getConfirmedBriefId());
-        ChapterOutlineEntity outline = requireOutline(chapterId);
-        if (!candidate.getBaseOutlineId().equals(outline.getId())
-                || !candidate.getBaseOutlineRevision().equals(outline.getRevision())) {
-            throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_STALE, "正式大纲已更新，请重新生成调整候选");
-        }
         OutlineCandidateContent content = contentCodec.read(candidate.getCandidateContent());
-        int changedOutline = outlineMapper.updateByRevisionAndVersion(
-                outline.getId(), chapterId, candidate.getConfirmedBriefId(), outline.getOutlineStatus(),
-                contentCodec.write(content), outline.getRevision(), version(outline));
-        if (changedOutline != 1) {
-            throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_STALE, "正式大纲已更新，请重新生成调整候选");
-        }
+        ChapterOutlineEntity outline = isInitial(candidate)
+                ? createInitialOutline(chapterId, candidate, content)
+                : updateAdjustmentOutline(chapterId, candidate, content);
+        int resultRevision = outline.getRevision();
         int candidateVersion = version(candidate);
         int changedCandidate = candidateMapper.update(null, new UpdateWrapper<ChapterOutlineCandidateEntity>()
                 .eq("id", candidate.getId())
@@ -226,7 +295,7 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
                 .eq("candidate_status", STATUS_READY)
                 .set("candidate_status", STATUS_CONFIRMED)
                 .set("result_outline_id", outline.getId())
-                .set("result_outline_revision", outline.getRevision() + 1)
+                .set("result_outline_revision", resultRevision)
                 .set("version", candidateVersion + 1)
                 .set("gmt_modified", LocalDateTime.now()));
         if (changedCandidate != 1) {
@@ -234,7 +303,7 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         }
         candidate.setCandidateStatus(STATUS_CONFIRMED);
         candidate.setResultOutlineId(outline.getId());
-        candidate.setResultOutlineRevision(outline.getRevision() + 1);
+        candidate.setResultOutlineRevision(resultRevision);
         candidate.setVersion(candidateVersion + 1);
         ChapterOutlineEntity confirmedOutline = requireOutline(chapterId);
         eventPublisher.publishEvent(OutlineCandidateEvent.updated(
@@ -246,6 +315,18 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
     private ChapterEntity requireChapterAndWork(Long chapterId) {
         ChapterEntity chapter = chapterId == null ? null : chapterMapper.selectById(chapterId);
         if (chapter == null || Integer.valueOf(1).equals(chapter.getDeleted())) {
+            throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
+        }
+        WorkEntity work = chapter.getWorkId() == null ? null : workMapper.selectById(chapter.getWorkId());
+        if (work == null || Integer.valueOf(1).equals(work.getDeleted())) {
+            throw new BusinessException(ErrorCode.WORK_NOT_FOUND, "作品不存在");
+        }
+        return chapter;
+    }
+
+    private ChapterEntity requireChapterAndWorkForUpdate(Long chapterId) {
+        ChapterEntity chapter = chapterId == null ? null : chapterMapper.selectByIdForUpdate(chapterId);
+        if (chapter == null) {
             throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
         }
         WorkEntity work = chapter.getWorkId() == null ? null : workMapper.selectById(chapter.getWorkId());
@@ -285,6 +366,20 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         return outline;
     }
 
+    private ChapterOutlineEntity resolveBaseOutline(Long chapterId, Integer baseRevision, String candidateType) {
+        ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
+        if (TYPE_INITIAL.equals(candidateType)) {
+            if (outline != null && !Integer.valueOf(1).equals(outline.getDeleted())) {
+                throw stateConflict("正式大纲已存在，请改为生成调整候选");
+            }
+            if (baseRevision != null) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "首版章纲不能指定 baseOutlineRevision");
+            }
+            return null;
+        }
+        return requireBaseOutline(chapterId, baseRevision);
+    }
+
     private ChapterOutlineEntity requireOutline(Long chapterId) {
         ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
         if (outline == null || Integer.valueOf(1).equals(outline.getDeleted())) {
@@ -302,10 +397,35 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         return candidate;
     }
 
-    private String requiredInstruction(String instruction) {
+    private String instruction(String instruction, String candidateType) {
         String normalized = instruction == null ? "" : instruction.trim();
+        if (!StringUtils.hasText(normalized) && TYPE_INITIAL.equals(candidateType)) {
+            return DEFAULT_INITIAL_INSTRUCTION;
+        }
         if (!StringUtils.hasText(normalized) || normalized.length() > MAX_INSTRUCTION_LENGTH) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "调整要求不能为空且长度不能超过 2000 字符");
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "候选要求不能为空且长度不能超过 2000 字符");
+        }
+        return normalized;
+    }
+
+    private String candidateType(String candidateType) {
+        String normalized = StringUtils.hasText(candidateType) ? candidateType.trim() : TYPE_ADJUSTMENT;
+        if (!TYPE_INITIAL.equals(normalized) && !TYPE_ADJUSTMENT.equals(normalized)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "candidateType 仅支持 initial 或 adjustment");
+        }
+        return normalized;
+    }
+
+    private String idempotencyKey(String idempotencyKey, String candidateType) {
+        String normalized = idempotencyKey == null ? "" : idempotencyKey.trim();
+        if (!StringUtils.hasText(normalized)) {
+            if (TYPE_INITIAL.equals(candidateType)) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "首版章纲请求必须提供 idempotencyKey");
+            }
+            return null;
+        }
+        if (normalized.length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "idempotencyKey 长度不能超过 128 字符");
         }
         return normalized;
     }
@@ -321,13 +441,86 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
     private OutlineCandidateDetail detail(ChapterOutlineCandidateEntity candidate) {
         return new OutlineCandidateDetail(
                 candidate.getId(), candidate.getWorkId(), candidate.getChapterId(), candidate.getConversationId(),
-                candidate.getAiTaskId(), candidate.getConfirmedBriefId(), candidate.getBaseOutlineId(),
-                candidate.getBaseOutlineRevision(), contentCodec.read(candidate.getBaseOutlineContent()),
+                candidate.getAiTaskId(), candidate.getConfirmedBriefId(), candidate.getCandidateType(),
+                candidate.getIdempotencyKey(), version(candidate), candidate.getBaseOutlineId(),
+                candidate.getBaseOutlineRevision(), readOutlineOrNull(candidate.getBaseOutlineContent()),
                 candidate.getCandidateStatus(), candidate.getAdjustmentInstruction(),
                 readOrNull(candidate.getCandidateContent(), OutlineCandidateContent.class),
                 readOrNull(candidate.getDiffJson(), OutlineCandidateDiff.class),
                 readOrNull(candidate.getConsensusImpactJson(), ConsensusImpact.class), candidate.getResultOutlineId(),
                 candidate.getResultOutlineRevision(), candidate.getGmtCreate(), candidate.getGmtModified());
+    }
+
+    private OutlineCandidateCreated created(ChapterOutlineCandidateEntity candidate) {
+        AiTaskEntity task = taskMapper.selectById(candidate.getAiTaskId());
+        return new OutlineCandidateCreated(
+                candidate.getChapterId(), candidate.getBaseOutlineId(), candidate.getBaseOutlineRevision(),
+                candidate.getId(), candidate.getAiTaskId(),
+                task == null ? candidate.getCandidateStatus() : task.getTaskStatus(),
+                candidate.getCandidateType(), candidate.getIdempotencyKey());
+    }
+
+    private ChapterOutlineEntity createInitialOutline(
+            Long chapterId,
+            ChapterOutlineCandidateEntity candidate,
+            OutlineCandidateContent content) {
+        if (outlineMapper.findLatest(chapterId) != null) {
+            throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_STALE, "正式大纲已存在，首版候选不能覆盖");
+        }
+        ChapterOutlineEntity outline = new ChapterOutlineEntity();
+        outline.setWorkId(candidate.getWorkId());
+        outline.setChapterId(chapterId);
+        outline.setConfirmedBriefId(candidate.getConfirmedBriefId());
+        outline.setOutlineStatus(STATUS_CONFIRMED);
+        outline.setOutlineContent(contentCodec.write(content));
+        outline.setRevision(0);
+        outline.setDeleted(0);
+        outline.setVersion(0);
+        try {
+            outlineMapper.insert(outline);
+        } catch (org.springframework.dao.DuplicateKeyException exception) {
+            throw new BusinessException(
+                    ErrorCode.OUTLINE_CANDIDATE_STALE, "正式大纲已被其他请求创建，请刷新后重试", exception);
+        }
+        return outline;
+    }
+
+    private ChapterOutlineEntity updateAdjustmentOutline(
+            Long chapterId,
+            ChapterOutlineCandidateEntity candidate,
+            OutlineCandidateContent content) {
+        ChapterOutlineEntity outline = requireOutline(chapterId);
+        if (!candidate.getBaseOutlineId().equals(outline.getId())
+                || !candidate.getBaseOutlineRevision().equals(outline.getRevision())) {
+            throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_STALE, "正式大纲已更新，请重新生成调整候选");
+        }
+        int changed = outlineMapper.updateByRevisionAndVersion(
+                outline.getId(), chapterId, candidate.getConfirmedBriefId(), outline.getOutlineStatus(),
+                contentCodec.write(content), outline.getRevision(), version(outline));
+        if (changed != 1) {
+            throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_STALE, "正式大纲已更新，请重新生成调整候选");
+        }
+        outline.setRevision(outline.getRevision() + 1);
+        return outline;
+    }
+
+    private boolean isInitial(ChapterOutlineCandidateEntity candidate) {
+        return TYPE_INITIAL.equals(candidate.getCandidateType());
+    }
+
+    private OutlineCandidateContent readOutlineOrNull(String json) {
+        return StringUtils.hasText(json) ? contentCodec.read(json) : null;
+    }
+
+    private String writeOrNull(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "候选数据无法序列化", exception);
+        }
     }
 
     private OutlineDetail outlineDetail(ChapterOutlineEntity outline) {

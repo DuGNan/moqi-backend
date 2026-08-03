@@ -117,8 +117,8 @@ public class OutlineCandidatePersistenceService {
             String briefContent,
             OutlineCandidateContent generatedContent) {
         OutlineCandidateContent content = contentCodec.normalize(generatedContent);
-        OutlineCandidateContent base = contentCodec.read(candidate.getBaseOutlineContent());
-        OutlineCandidateDiff diff = diffService.diff(base, content);
+        OutlineCandidateDiff diff = candidate.getBaseOutlineContent() == null
+                ? null : diffService.diff(contentCodec.read(candidate.getBaseOutlineContent()), content);
         ConsensusImpact impact = impactService.assess(briefContent, contentCodec.write(content));
         int candidateVersion = version(candidate);
         int candidateChanged = candidateMapper.update(null, new UpdateWrapper<ChapterOutlineCandidateEntity>()

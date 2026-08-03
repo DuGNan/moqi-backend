@@ -24,7 +24,25 @@ public final class OutlineCandidateModels {
             Long conversationId,
             Long confirmedBriefId,
             Integer baseOutlineRevision,
-            String instruction) {
+            String instruction,
+            String candidateType,
+            String idempotencyKey) {
+
+        /**
+         * 兼容旧调整候选调用方。
+         */
+        public CreateOutlineCandidateRequest(
+                Long conversationId,
+                Long confirmedBriefId,
+                Integer baseOutlineRevision,
+                String instruction) {
+            this(conversationId, confirmedBriefId, baseOutlineRevision, instruction, "adjustment", null);
+        }
+    }
+
+    public record UpdateOutlineCandidateRequest(
+            OutlineCandidateContent candidateContent,
+            Integer baseCandidateVersion) {
     }
 
     public record RefreshOutlineRequest(
@@ -40,7 +58,22 @@ public final class OutlineCandidateModels {
             Integer baseOutlineRevision,
             Long candidateId,
             Long aiTaskId,
-            String taskStatus) {
+            String taskStatus,
+            String candidateType,
+            String idempotencyKey) {
+
+        /**
+         * 兼容旧调整候选响应构造。
+         */
+        public OutlineCandidateCreated(
+                Long chapterId,
+                Long outlineId,
+                Integer baseOutlineRevision,
+                Long candidateId,
+                Long aiTaskId,
+                String taskStatus) {
+            this(chapterId, outlineId, baseOutlineRevision, candidateId, aiTaskId, taskStatus, "adjustment", null);
+        }
     }
 
     public record ValueDiff(boolean changed, String beforeValue, String afterValue) {
@@ -74,6 +107,9 @@ public final class OutlineCandidateModels {
             Long conversationId,
             Long aiTaskId,
             Long confirmedBriefId,
+            String candidateType,
+            String idempotencyKey,
+            Integer candidateVersion,
             Long baseOutlineId,
             Integer baseOutlineRevision,
             OutlineCandidateContent baseOutlineContent,
