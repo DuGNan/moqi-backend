@@ -15,10 +15,13 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.entity.LlmModelCallEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.mapper.LlmModelCallMapper;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextBuildCommand;
 import com.dugnan.moqi.context.StoryContextItem;
@@ -27,6 +30,7 @@ import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSourceType;
 import com.dugnan.moqi.context.StoryContextTaskBindingService;
 import com.dugnan.moqi.llm.LlmProvider;
+import com.dugnan.moqi.llm.LlmProviderError;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 import com.dugnan.moqi.llm.LlmProviderCapabilities;
@@ -59,6 +63,8 @@ class ConversationReplyTaskRunnerTest {
     private ApplicationEventPublisher eventPublisher;
     @Mock
     private StoryContextTaskBindingService contextBindingService;
+    @Mock
+    private LlmModelCallMapper modelCallMapper;
 
     @Test
     void streamsReplyThenPersistsAssistantMessage() {
@@ -138,6 +144,188 @@ class ConversationReplyTaskRunnerTest {
         assertThat(callRegistry.isCancellationRequested(12L)).isFalse();
     }
 
+    /**
+     * 验证 Runner 只消费任务创建时的策略快照，并据此区分规划和正文预算。
+     */
+    @Test
+    void consumesPersistedPolicySnapshot() {
+        AiTaskEntity task = task("queued", 0);
+        task.setTaskInputJson("""
+                {
+                  "schemaVersion":1,
+                  "messageId":11,
+                  "conversationId":8,
+                  "replyMode":"plan",
+                  "replyDepth":"deep",
+                  "replyScope":{
+                    "primaryIntent":"build_plan",
+                    "targetType":"chapter_plan",
+                    "targetReference":null,
+                    "allowedChanges":"requested_plan",
+                    "maxCandidates":1,
+                    "allowNewTerms":true
+                  },
+                  "controlSource":"conversation",
+                  "policyVersion":"chapter-reply-policy-v1",
+                  "contextAuthorityVersion":"story-context-authority-v2",
+                  "convergenceApplied":false
+                }
+                """);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        when(userConfigService.requireAvailableModelConfig())
+                .thenReturn(new LlmProviderRuntimeConfig(
+                        "deepseek",
+                        "https://api.deepseek.com",
+                        "test-key",
+                        "deepseek-v4-flash"));
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(provider.stream(any(), any())).thenReturn(new CompletedCall());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(99L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper,
+                messageMapper,
+                userConfigService,
+                providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher,
+                new LlmStreamCallRegistry()).run(12L);
+
+        ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).stream(requestCaptor.capture(), any());
+        assertThat(requestCaptor.getValue().options().maxOutputTokens()).isEqualTo(4096);
+        assertThat(requestCaptor.getValue().messages().get(0).content())
+                .contains("结构化规划")
+                .contains("不生成正文")
+                .contains("不得宣称已经确认");
+    }
+
+    /**
+     * 验证模型审计只保存策略安全摘要，不保存用户正文或完整 Prompt。
+     */
+    @Test
+    void auditsSafePolicySummaryWithoutPrompt() {
+        AiTaskEntity task = task("queued", 0);
+        task.setTaskInputJson("""
+                {
+                  "schemaVersion":1,
+                  "messageId":11,
+                  "conversationId":8,
+                  "replyMode":"compare",
+                  "replyDepth":"brief",
+                  "replyScope":{
+                    "primaryIntent":"compare_candidates",
+                    "targetType":"current_discussion",
+                    "targetReference":"不要写入审计的用户范围文本",
+                    "allowedChanges":"candidate_summaries",
+                    "maxCandidates":3,
+                    "allowNewTerms":false
+                  },
+                  "controlSource":"message",
+                  "policyVersion":"chapter-reply-policy-v1",
+                  "contextAuthorityVersion":"story-context-authority-v2",
+                  "convergenceApplied":false
+                }
+                """);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        when(userConfigService.requireAvailableModelConfig())
+                .thenReturn(new LlmProviderRuntimeConfig(
+                        "deepseek",
+                        "https://api.deepseek.com",
+                        "test-key",
+                        "deepseek-v4-flash"));
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(provider.stream(any(), any())).thenReturn(new CompletedCall());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(99L);
+            return 1;
+        });
+        when(modelCallMapper.insert(any(LlmModelCallEntity.class))).thenAnswer(invocation -> {
+            LlmModelCallEntity record = invocation.getArgument(0);
+            record.setId(100L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper,
+                messageMapper,
+                userConfigService,
+                providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher,
+                new LlmStreamCallRegistry(),
+                null,
+                null,
+                modelCallMapper,
+                new ObjectMapper()).run(12L);
+
+        ArgumentCaptor<LlmModelCallEntity> auditCaptor = ArgumentCaptor.forClass(LlmModelCallEntity.class);
+        verify(modelCallMapper).insert(auditCaptor.capture());
+        LlmModelCallEntity audit = auditCaptor.getValue();
+        assertThat(audit.getAiTaskId()).isEqualTo(12L);
+        assertThat(audit.getConversationId()).isEqualTo(8L);
+        assertThat(audit.getReplyMode()).isEqualTo("compare");
+        assertThat(audit.getReplyDepth()).isEqualTo("brief");
+        assertThat(audit.getReplyScopeSummary())
+                .contains("compare_candidates")
+                .doesNotContain("不要写入审计")
+                .doesNotContain("请讨论本章目标");
+        assertThat(audit.getRequestHash()).hasSize(64);
+    }
+
+    /**
+     * 验证 Provider 失败只发布安全错误且不持久化不完整回复。
+     */
+    @Test
+    void recordsSafeProviderFailureWithoutPartialReply() {
+        AiTaskEntity task = task("queued", 0);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        when(userConfigService.requireAvailableModelConfig())
+                .thenReturn(new LlmProviderRuntimeConfig(
+                        "deepseek",
+                        "https://api.deepseek.com",
+                        "test-key",
+                        "deepseek-v4-flash"));
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(provider.stream(any(), any())).thenReturn(new FailedCall());
+        when(modelCallMapper.insert(any(LlmModelCallEntity.class))).thenAnswer(invocation -> {
+            LlmModelCallEntity record = invocation.getArgument(0);
+            record.setId(100L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper,
+                messageMapper,
+                userConfigService,
+                providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher,
+                new LlmStreamCallRegistry(),
+                null,
+                null,
+                modelCallMapper,
+                new ObjectMapper()).run(12L);
+
+        verify(messageMapper, never()).insert(any(ChapterConversationMessageEntity.class));
+        verify(eventPublisher).publishEvent(ChapterReplyEvent.failed(
+                2L,
+                12L,
+                "SERVICE_UNAVAILABLE",
+                LlmProviderError.SERVICE_UNAVAILABLE.safeMessage()));
+    }
+
     @Test
     void buildsAndSendsStoryContextBeforeStreaming() {
         AiTaskEntity task = task("queued", 0);
@@ -179,6 +367,91 @@ class ConversationReplyTaskRunnerTest {
         assertThat(requestCaptor.getValue().options().maxOutputTokens()).isEqualTo(4096);
         org.mockito.Mockito.verify(contextBindingService)
                 .buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class));
+    }
+
+    /**
+     * 验证小上下文模型会压缩输出预算，并为输入上下文至少保留 1024 tokens。
+     */
+    @Test
+    void capsDraftOutputBudgetToPreserveInputContext() {
+        AiTaskEntity task = task("queued", 0);
+        task.setTaskInputJson("""
+                {
+                  "schemaVersion":1,
+                  "messageId":11,
+                  "conversationId":8,
+                  "replyMode":"draft",
+                  "replyDepth":"deep",
+                  "replyScope":{
+                    "primaryIntent":"draft_prose",
+                    "targetType":"chapter_draft",
+                    "targetReference":null,
+                    "allowedChanges":"requested_draft",
+                    "maxCandidates":1,
+                    "allowNewTerms":true
+                  },
+                  "controlSource":"message",
+                  "policyVersion":"chapter-reply-policy-v1",
+                  "contextAuthorityVersion":"story-context-authority-v2",
+                  "convergenceApplied":false
+                }
+                """);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        when(userConfigService.requireAvailableModelConfig()).thenReturn(
+                new LlmProviderRuntimeConfig("deepseek", "https://api.deepseek.com", "test-key", "small-context"));
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, true, false, 4096, 8192));
+        when(contextBindingService.buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class)))
+                .thenAnswer(invocation -> {
+                    StoryContextBuildCommand command = invocation.getArgument(0);
+                    return new StoryContextSnapshot(
+                            88L, "chapter_discussion:1:2:8", 1L, 2L, 8L,
+                            StoryContextProfile.CHAPTER_DISCUSSION, 2, 1,
+                            command.contextWindowTokens(),
+                            command.outputReserveTokens(),
+                            command.inputBudgetTokens(),
+                            12,
+                            "hash",
+                            List.of(new StoryContextItem(
+                                    StoryContextSourceType.USER_INPUT,
+                                    "11",
+                                    null,
+                                    null,
+                                    "USER",
+                                    "讨论本章目标",
+                                    true,
+                                    1000,
+                                    500,
+                                    3,
+                                    3,
+                                    "INCLUDED")),
+                            List.of(),
+                            null);
+                });
+        when(provider.stream(any(), any())).thenReturn(new CompletedCall());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(99L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper, messageMapper, userConfigService, providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher, new LlmStreamCallRegistry(), contextBindingService).run(12L);
+
+        ArgumentCaptor<StoryContextBuildCommand> commandCaptor =
+                ArgumentCaptor.forClass(StoryContextBuildCommand.class);
+        verify(contextBindingService).buildAndAttach(commandCaptor.capture(), any(AiTaskEntity.class));
+        assertThat(commandCaptor.getValue().contextWindowTokens()).isEqualTo(4096);
+        assertThat(commandCaptor.getValue().outputReserveTokens()).isEqualTo(3072);
+        assertThat(commandCaptor.getValue().inputBudgetTokens()).isEqualTo(1024);
+
+        ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).stream(requestCaptor.capture(), any());
+        assertThat(requestCaptor.getValue().options().maxOutputTokens()).isEqualTo(3072);
     }
 
     private AiTaskEntity task(String status, int version) {
@@ -233,6 +506,27 @@ class ConversationReplyTaskRunnerTest {
         @Override
         public LlmStreamResult await() {
             return new LlmStreamResult(LlmStreamStatus.CANCELED, null, null);
+        }
+
+        @Override
+        public boolean isDone() {
+            return true;
+        }
+    }
+
+    private static final class FailedCall implements LlmStreamCall {
+
+        @Override
+        public boolean cancel() {
+            return false;
+        }
+
+        @Override
+        public LlmStreamResult await() {
+            return new LlmStreamResult(
+                    LlmStreamStatus.FAILED,
+                    null,
+                    LlmProviderError.SERVICE_UNAVAILABLE);
         }
 
         @Override

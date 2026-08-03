@@ -101,6 +101,7 @@ public class ChapterDiscussionFocusResolver {
                 brief.getId(),
                 brief.getVersion(),
                 decision.key(),
+                decision.status(),
                 decision.title(),
                 decision.prompt(),
                 decision.candidateSummary(),

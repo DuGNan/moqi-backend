@@ -6,6 +6,8 @@ import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
@@ -14,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.policy.ConversationReplyTaskInputV1;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterOutlineCandidateMapper;
@@ -27,6 +30,7 @@ import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.task.dto.AiTaskModels.AiTaskCanceled;
 import com.dugnan.moqi.task.dto.AiTaskModels.AiTaskDetail;
+import com.dugnan.moqi.task.dto.AiTaskModels.EffectiveReplyPolicy;
 import com.dugnan.moqi.task.event.AiTaskCancellationSignal;
 import com.dugnan.moqi.task.service.AiTaskService;
 
@@ -247,10 +251,31 @@ public class AiTaskServiceImpl implements AiTaskService {
                 task.getResultBriefId(),
                 task.getResultOutlineCandidateId(),
                 agentRunId(task.getId()),
+                effectiveReplyPolicy(task),
                 task.getErrorCode(),
                 task.getErrorMessage(),
                 task.getGmtCreate(),
                 task.getGmtModified());
+    }
+
+    private EffectiveReplyPolicy effectiveReplyPolicy(AiTaskEntity task) {
+        if (task == null || !TASK_TYPE_CONVERSATION_REPLY.equals(task.getTaskType())
+                || task.getTaskInputJson() == null || task.getTaskInputJson().isBlank()) {
+            return null;
+        }
+        try {
+            ConversationReplyTaskInputV1 input =
+                    new ObjectMapper().readValue(task.getTaskInputJson(), ConversationReplyTaskInputV1.class);
+            return new EffectiveReplyPolicy(
+                    input.replyMode().value(),
+                    input.replyDepth().value(),
+                    input.replyScope(),
+                    input.controlSource(),
+                    input.policyVersion(),
+                    input.convergenceApplied());
+        } catch (JsonProcessingException | NullPointerException exception) {
+            return null;
+        }
     }
 
     /**

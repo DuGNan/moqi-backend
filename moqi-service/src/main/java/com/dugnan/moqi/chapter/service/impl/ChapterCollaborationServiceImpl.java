@@ -4,6 +4,8 @@ import java.util.List;
 import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
@@ -29,6 +31,9 @@ import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.policy.ConversationReplyTaskInputV1;
+import com.dugnan.moqi.chapter.policy.ReplyPolicyPreferenceService;
+import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.chapter.service.ChapterCollaborationService;
 import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
 import com.dugnan.moqi.common.api.ErrorCode;
@@ -70,6 +75,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     private final ApplicationEventPublisher eventPublisher;
     private final ChapterDiscussionFocusResolver focusResolver;
     private final ChapterConsensusImpactService impactService;
+    private final ReplyPolicyPreferenceService replyPolicyService;
+    private final ObjectMapper objectMapper;
 
     /**
      * 创建章节共创服务。
@@ -101,6 +108,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 outlineMapper,
                 aiTaskMapper,
                 eventPublisher,
+                null,
+                null,
                 null,
                 null);
     }
@@ -139,6 +148,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 aiTaskMapper,
                 eventPublisher,
                 focusResolver,
+                null,
+                null,
                 null);
     }
 
@@ -155,6 +166,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      * @param eventPublisher 应用事件发布器
      * @param focusResolver 讨论对焦解析器
      * @param impactService 共识影响判断服务
+     * @param replyPolicyService 回复策略服务
+     * @param objectMapper JSON 映射器
      */
     @Autowired
     public ChapterCollaborationServiceImpl(
@@ -167,7 +180,9 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             AiTaskMapper aiTaskMapper,
             ApplicationEventPublisher eventPublisher,
             ChapterDiscussionFocusResolver focusResolver,
-            ChapterConsensusImpactService impactService) {
+            ChapterConsensusImpactService impactService,
+            ReplyPolicyPreferenceService replyPolicyService,
+            ObjectMapper objectMapper) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.conversationMapper = conversationMapper;
@@ -178,6 +193,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         this.eventPublisher = eventPublisher;
         this.focusResolver = focusResolver;
         this.impactService = impactService;
+        this.replyPolicyService = replyPolicyService;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -242,12 +259,15 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         messageMapper.insert(message);
 
         if (request != null && Boolean.TRUE.equals(request.createAiTask())) {
+            ResolvedReplyPolicy policy = resolveReplyPolicy(conversation, content, request);
             AiTaskEntity aiTask = new AiTaskEntity();
             aiTask.setTaskType(AI_TASK_TYPE);
             aiTask.setTaskStatus(AI_TASK_STATUS);
             aiTask.setWorkId(conversation.getWorkId());
             aiTask.setChapterId(conversation.getChapterId());
             aiTask.setResultMessageId(null);
+            aiTask.setTaskInputJson(taskInputJson(ConversationReplyTaskInputV1.from(
+                    message.getId(), conversationId, policy)));
             aiTask.setDeleted(0);
             aiTask.setVersion(0);
             aiTaskMapper.insert(aiTask);
@@ -256,6 +276,30 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             eventPublisher.publishEvent(new ConversationReplyTaskSubmittedEvent(aiTask.getId()));
         }
         return messageCreated(message);
+    }
+
+    private ResolvedReplyPolicy resolveReplyPolicy(
+            ChapterConversationEntity conversation,
+            String content,
+            SendMessageRequest request) {
+        if (replyPolicyService == null) {
+            return new com.dugnan.moqi.chapter.policy.DefaultReplyPolicyResolver()
+                    .resolve(content, request.replyControl(), java.util.Map.of());
+        }
+        try {
+            return replyPolicyService.resolve(conversation.getId(), content, request.replyControl());
+        } catch (IllegalArgumentException exception) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, exception.getMessage());
+        }
+    }
+
+    private String taskInputJson(ConversationReplyTaskInputV1 input) {
+        ObjectMapper mapper = objectMapper == null ? new ObjectMapper() : objectMapper;
+        try {
+            return mapper.writeValueAsString(input);
+        } catch (JsonProcessingException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "回复策略快照序列化失败", exception);
+        }
     }
 
     @Override
