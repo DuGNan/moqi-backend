@@ -35,6 +35,7 @@ import com.dugnan.moqi.credential.CredentialStateConflictException;
 import com.dugnan.moqi.credential.CredentialSummary;
 import com.dugnan.moqi.credential.LlmCredentialService;
 import com.dugnan.moqi.llm.LlmProviderException;
+import com.dugnan.moqi.llm.LlmCallContext;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
 import com.dugnan.moqi.llm.LlmProviderFactory;
@@ -233,7 +234,21 @@ public class UserConfigServiceImpl implements UserConfigService {
         String testStatus = "success";
         String safeError = null;
         try {
-            providerFactory.create(runtimeConfig(configValue))
+            LlmProviderRuntimeConfig runtimeConfig = runtimeConfig(configValue);
+            LlmExecutionConfig executionConfig = new LlmExecutionConfig(
+                    runtimeConfig,
+                    new LlmExecutionConfigDescriptor(
+                            runtimeConfig.provider(),
+                            runtimeConfig.model(),
+                            version(entity),
+                            credential.version()));
+            providerFactory.createObserved(
+                            executionConfig,
+                            LlmCallContext.builder("model_configuration", "test_connection")
+                                    .logicalCallId("model-test:" + version(entity))
+                                    .promptTemplateVersion("connection-test-v1")
+                                    .sourceFingerprint("config:" + version(entity))
+                                    .build())
                     .testConnection();
         } catch (LlmProviderException exception) {
             testStatus = "failed";

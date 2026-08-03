@@ -37,6 +37,8 @@ import com.dugnan.moqi.context.StoryContextTaskBindingException;
 import com.dugnan.moqi.context.StoryContextTaskBindingService;
 import com.dugnan.moqi.llm.LlmMessage;
 import com.dugnan.moqi.llm.LlmOptions;
+import com.dugnan.moqi.llm.LlmCallContext;
+import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderError;
 import com.dugnan.moqi.llm.LlmProviderException;
@@ -69,6 +71,7 @@ public class ChapterConsensusTaskRunner {
     private static final String JSON_ERROR_CODE = "CHAPTER_CONSENSUS_JSON_INVALID";
 
     private static final String CONSENSUS_SAFE_MESSAGE = "章节共识不符合结构化契约";
+    private static final String TEMPLATE_VERSION = "chapter-consensus-v1";
 
     private static final String REPAIR_INSTRUCTION = "上一次输出未通过结构化契约校验。仅重新输出完整合法的 JSON object；"
             + "不得输出 Markdown、解释或额外字段，所有 sourceQuotes 必须逐字摘自对应 sourceMessageIds 的原消息。";
@@ -184,11 +187,22 @@ public class ChapterConsensusTaskRunner {
                             task.getChapterId(),
                             conversation.getId(),
                             input.currentMessageId());
-            LlmProvider provider =
-                    providerFactory.create(userConfigService.requireAvailableModelConfig());
+            LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
+            LlmProvider provider = providerFactory.create(executionConfig.runtimeConfig());
             String baseBriefContent = baseBriefContent(task.getChapterId(), input.baseBriefId());
             StoryContextSnapshot snapshot =
                     buildContext(task, input, currentMessage, provider, baseBriefContent);
+            provider = providerFactory.createObserved(
+                    executionConfig,
+                    LlmCallContext.builder(TASK_TYPE, "generate_consensus")
+                            .workId(task.getWorkId())
+                            .chapterId(task.getChapterId())
+                            .aiTaskId(task.getId())
+                            .conversationId(conversation.getId())
+                            .logicalCallId("ai-task:" + task.getId() + ":consensus")
+                            .promptTemplateVersion(TEMPLATE_VERSION)
+                            .sourceFingerprint(snapshot.contentHash())
+                            .build());
             Long briefId = generateAndPersistWithOneRepair(
                     task, conversation.getId(), snapshot, provider, baseBriefContent);
             eventPublisher.publishEvent(
