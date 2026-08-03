@@ -3,6 +3,7 @@ package com.dugnan.moqi.task.dto;
 import java.time.LocalDateTime;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.dugnan.moqi.chapter.policy.ReplyScope;
 
 /**
  * @author dgn
@@ -29,6 +30,7 @@ public final class AiTaskModels {
             Long resultBriefId,
             Long resultOutlineCandidateId,
             Long agentRunId,
+            EffectiveReplyPolicy effectiveReplyPolicy,
             String errorCode,
             String errorMessage,
             LocalDateTime gmtCreate,
@@ -72,11 +74,54 @@ public final class AiTaskModels {
                     null,
                     null,
                     null,
+                    null,
                     errorCode,
                     errorMessage,
                     gmtCreate,
                     gmtModified);
         }
+
+        /**
+         * 保留不含有效回复策略的既有完整构造入口。
+         */
+        public AiTaskDetail(
+                Long id,
+                String taskType,
+                String taskStatus,
+                Long workId,
+                Long chapterId,
+                Long resultMessageId,
+                Long resultGenerationId,
+                Long resultBriefId,
+                Long resultOutlineCandidateId,
+                Long agentRunId,
+                String errorCode,
+                String errorMessage,
+                LocalDateTime gmtCreate,
+                LocalDateTime gmtModified) {
+            this(id, taskType, taskStatus, workId, chapterId, resultMessageId, resultGenerationId,
+                    resultBriefId, resultOutlineCandidateId, agentRunId, null,
+                    errorCode, errorMessage, gmtCreate, gmtModified);
+        }
+    }
+
+    /**
+     * conversation_reply 对前端公开的最终有效策略。
+     *
+     * @param replyMode 回复模式
+     * @param replyDepth 回复深度
+     * @param replyScope 本轮推进范围
+     * @param controlSource 控制来源
+     * @param policyVersion 策略版本
+     * @param convergenceApplied 是否应用收敛反馈
+     */
+    public record EffectiveReplyPolicy(
+            String replyMode,
+            String replyDepth,
+            ReplyScope replyScope,
+            String controlSource,
+            String policyVersion,
+            boolean convergenceApplied) {
     }
 
     public record AiTaskCanceled(

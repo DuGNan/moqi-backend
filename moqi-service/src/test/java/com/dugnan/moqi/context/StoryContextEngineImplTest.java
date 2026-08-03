@@ -173,7 +173,19 @@ class StoryContextEngineImplTest {
                 0,
                 "protagonist_choice",
                 "待决：主角选择",
-                "{\"schemaVersion\":1}",
+                """
+                        {
+                          "schemaVersion":1,
+                          "chapterTask":"救人",
+                          "decisions":[
+                            {"key":"confirmed","title":"已确认","status":"confirmed","candidateSummary":"救人"},
+                            {"key":"old_year","title":"旧纪年","status":"rejected",
+                             "candidateSummary":"潮元 171 年"},
+                            {"key":"other","title":"其他候选","status":"candidate",
+                             "candidateSummary":"不相关候选"}
+                          ]
+                        }
+                        """,
                 List.of(new StoryContextFocus.StoryContextFocusSource(11L, "user", "先救人")));
 
         StoryContextSnapshot result = engine.build(new StoryContextBuildCommand(
@@ -195,6 +207,27 @@ class StoryContextEngineImplTest {
                         StoryContextSourceType.CHAPTER_CONSENSUS,
                         StoryContextSourceType.DECISION_SOURCE_MESSAGE)
                 .endsWith(StoryContextSourceType.USER_INPUT);
+        assertThat(result.items())
+                .filteredOn(item -> item.sourceType() == StoryContextSourceType.DECISION_FOCUS)
+                .extracting(StoryContextItem::authorityStatus)
+                .containsOnly(StoryContextAuthorityStatus.CANDIDATE);
+        assertThat(result.items())
+                .filteredOn(item -> item.sourceType() == StoryContextSourceType.CHAPTER_CONSENSUS
+                        && item.authorityStatus() == StoryContextAuthorityStatus.CONFIRMED)
+                .extracting(StoryContextItem::authorityStatus)
+                .containsOnly(StoryContextAuthorityStatus.CONFIRMED);
+        assertThat(result.items())
+                .filteredOn(item -> item.authorityStatus() == StoryContextAuthorityStatus.CONFIRMED)
+                .extracting(StoryContextItem::content)
+                .allMatch(content -> !content.contains("潮元 171 年") && !content.contains("不相关候选"));
+        assertThat(result.items())
+                .filteredOn(item -> item.authorityStatus() == StoryContextAuthorityStatus.REJECTED)
+                .extracting(StoryContextItem::content)
+                .anyMatch(content -> content.contains("旧纪年") && !content.contains("潮元 171 年"));
+        assertThat(result.items())
+                .filteredOn(item -> item.sourceType() == StoryContextSourceType.USER_INPUT)
+                .extracting(StoryContextItem::authorityStatus)
+                .containsOnly(StoryContextAuthorityStatus.EVIDENCE);
     }
 
     private ChapterEntity chapter(Long id, Long workId) {

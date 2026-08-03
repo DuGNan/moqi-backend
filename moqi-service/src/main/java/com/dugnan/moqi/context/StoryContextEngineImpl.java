@@ -18,7 +18,10 @@ import java.util.stream.Collectors;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,9 +53,9 @@ import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
 import com.dugnan.moqi.work.mapper.WorkMapper;
 
 /**
- * Story Context Engine V1 的确定性实现。
- *
  * @author dgn
+ * @date 2026-08-03
+ * @description 确定性组装带权威状态的故事上下文并持久化版本化快照。
  */
 @Service
 public class StoryContextEngineImpl implements StoryContextEngine, StoryContextSnapshotQueryPort {
@@ -63,6 +66,10 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
     private static final int KEY_EVENT_LIMIT = 200;
     private static final int MESSAGE_LIMIT = 100;
     private static final int MAX_VERSION_INSERT_RETRIES = 3;
+    private static final String DECISIONS_FIELD = "decisions";
+    private static final String STATUS_CONFIRMED = "confirmed";
+    private static final String STATUS_CANDIDATE = "candidate";
+    private static final String STATUS_REJECTED = "rejected";
     private static final String SYSTEM_RULE =
             "你是墨契的章节共创助手。请严格遵循已确认的故事设定，围绕当前任务给出清晰、可执行的创作建议。";
 
@@ -157,7 +164,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         entity.setChapterId(command.chapterId());
         entity.setConversationId(command.conversationId());
         entity.setProfile(command.profile().name());
-        entity.setSchemaVersion(1);
+        entity.setSchemaVersion(2);
         entity.setSnapshotVersion(version);
         entity.setContextWindowTokens(command.contextWindowTokens());
         entity.setOutputReserveTokens(command.outputReserveTokens());
@@ -172,7 +179,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                 snapshotMapper.insert(entity);
                 return new StoryContextSnapshot(
                         entity.getId(), scopeKey, command.workId(), command.chapterId(), command.conversationId(),
-                        command.profile(), 1, entity.getSnapshotVersion(), command.contextWindowTokens(),
+                        command.profile(), 2, entity.getSnapshotVersion(), command.contextWindowTokens(),
                         command.outputReserveTokens(), command.inputBudgetTokens(), selection.estimatedTokens(), hash,
                         selection.items(), selection.decisions(), entity.getGmtCreate());
             } catch (DuplicateKeyException exception) {
@@ -262,19 +269,27 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                 20,
                 focus.briefVersion(),
                 null,
-                Category.STRUCTURE);
+                Category.STRUCTURE,
+                focusAuthority(focus.decisionStatus()));
         add(
                 candidates,
                 StoryContextSourceType.CHAPTER_CONSENSUS,
                 id(focus.briefId()),
                 "SYSTEM",
-                focus.consensusContent(),
+                confirmedConsensusContent(focus.consensusContent()),
                 true,
                 990,
                 30,
                 focus.briefVersion(),
                 null,
-                Category.STRUCTURE);
+                Category.STRUCTURE,
+                StoryContextAuthorityStatus.CONFIRMED);
+        addRejectedDecisionTombstones(
+                candidates,
+                focus.consensusContent(),
+                id(focus.briefId()),
+                focus.briefVersion(),
+                31);
         int order = 40;
         for (StoryContextFocus.StoryContextFocusSource source : focus.sources()) {
             add(
@@ -315,16 +330,38 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         List<ChapterBriefEntity> briefs = briefMapper.selectList(new LambdaQueryWrapper<ChapterBriefEntity>()
                 .eq(ChapterBriefEntity::getChapterId, chapter.getId())
                 .eq(ChapterBriefEntity::getDeleted, 0)
-                .in(ChapterBriefEntity::getBriefStatus, List.of("confirmed", "draft"))
-                .orderByAsc(ChapterBriefEntity::getBriefStatus)
+                .eq(ChapterBriefEntity::getBriefStatus, "confirmed")
                 .orderByDesc(ChapterBriefEntity::getGmtModified)
                 .orderByDesc(ChapterBriefEntity::getId)
                 .last("LIMIT 1"));
         if (!briefs.isEmpty()) {
             ChapterBriefEntity brief = briefs.get(0);
-            add(candidates, StoryContextSourceType.CHAPTER_BRIEF, id(brief.getId()), "SYSTEM", brief.getBriefContent(),
-                    false, "confirmed".equals(brief.getBriefStatus()) ? 900 : 650, 100,
+            add(candidates, StoryContextSourceType.CHAPTER_BRIEF, id(brief.getId()), "SYSTEM",
+                    confirmedConsensusContent(brief.getBriefContent()),
+                    false, 900, 100,
                     brief.getVersion(), brief.getGmtModified(), Category.STRUCTURE);
+            addRejectedDecisionTombstones(
+                    candidates,
+                    brief.getBriefContent(),
+                    id(brief.getId()),
+                    brief.getVersion(),
+                    101);
+        }
+        if (command.profile() == StoryContextProfile.CHAPTER_DISCUSSION) {
+            List<ChapterBriefEntity> rejected = briefMapper.selectList(new LambdaQueryWrapper<ChapterBriefEntity>()
+                    .eq(ChapterBriefEntity::getChapterId, chapter.getId())
+                    .eq(ChapterBriefEntity::getBriefStatus, "rejected")
+                    .eq(ChapterBriefEntity::getDeleted, 0)
+                    .orderByDesc(ChapterBriefEntity::getGmtModified)
+                    .orderByDesc(ChapterBriefEntity::getId)
+                    .last("LIMIT 1"));
+            if (!rejected.isEmpty()) {
+                ChapterBriefEntity brief = rejected.get(0);
+                add(candidates, StoryContextSourceType.CHAPTER_BRIEF, id(brief.getId()), "SYSTEM",
+                        "已否定 Brief #" + brief.getId() + "，不得继承其内容。", false, 880, 105,
+                        brief.getVersion(), brief.getGmtModified(), Category.STRUCTURE,
+                        StoryContextAuthorityStatus.REJECTED);
+            }
         }
     }
 
@@ -332,8 +369,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         List<ChapterOutlineEntity> outlines = outlineMapper.selectList(new LambdaQueryWrapper<ChapterOutlineEntity>()
                 .eq(ChapterOutlineEntity::getChapterId, chapter.getId())
                 .eq(ChapterOutlineEntity::getDeleted, 0)
-                .ne(ChapterOutlineEntity::getOutlineStatus, "outdated")
-                .orderByAsc(ChapterOutlineEntity::getOutlineStatus)
+                .eq(ChapterOutlineEntity::getOutlineStatus, "confirmed")
                 .orderByDesc(ChapterOutlineEntity::getRevision)
                 .orderByDesc(ChapterOutlineEntity::getId)
                 .last("LIMIT 1"));
@@ -533,12 +569,115 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             Object contentVersion,
             LocalDateTime updatedAt,
             Category category) {
+        add(candidates, sourceType, sourceId, role, content, required, priority, order,
+                contentVersion, updatedAt, category, authorityStatus(sourceType));
+    }
+
+    private void add(
+            List<Candidate> candidates,
+            StoryContextSourceType sourceType,
+            String sourceId,
+            String role,
+            String content,
+            boolean required,
+            int priority,
+            int order,
+            Object contentVersion,
+            LocalDateTime updatedAt,
+            Category category,
+            StoryContextAuthorityStatus authorityStatus) {
         if (!StringUtils.hasText(content)) {
             return;
         }
+        String labeledContent = labelAuthority(content, authorityStatus);
         candidates.add(new Candidate(sourceType, sourceId, contentVersion == null ? null : String.valueOf(contentVersion),
-                updatedAt, role, content, required, priority, order, tokenEstimator.estimate(content),
-                tokenEstimator.estimate(content), "INCLUDED", category));
+                updatedAt, role, labeledContent, required, priority, order, tokenEstimator.estimate(labeledContent),
+                tokenEstimator.estimate(labeledContent), "INCLUDED", category, authorityStatus));
+    }
+
+    private StoryContextAuthorityStatus authorityStatus(StoryContextSourceType sourceType) {
+        return switch (sourceType) {
+            case SYSTEM_RULE, TASK_RULE, WORK_METADATA, CHAPTER_BRIEF, CHAPTER_OUTLINE,
+                    SETTING_ENTRY, FORESHADOWING, CHAPTER_SUMMARY, CHAPTER_KEY_EVENT, SCENE_PLAN ->
+                    StoryContextAuthorityStatus.CONFIRMED;
+            case DECISION_FOCUS -> StoryContextAuthorityStatus.PENDING;
+            case CHAPTER_CONSENSUS -> StoryContextAuthorityStatus.CANDIDATE;
+            default -> StoryContextAuthorityStatus.EVIDENCE;
+        };
+    }
+
+    private StoryContextAuthorityStatus focusAuthority(String decisionStatus) {
+        if (STATUS_REJECTED.equals(decisionStatus)) {
+            return StoryContextAuthorityStatus.REJECTED;
+        }
+        if (STATUS_CANDIDATE.equals(decisionStatus)) {
+            return StoryContextAuthorityStatus.CANDIDATE;
+        }
+        return StoryContextAuthorityStatus.PENDING;
+    }
+
+    private String labelAuthority(String content, StoryContextAuthorityStatus authorityStatus) {
+        if (authorityStatus == StoryContextAuthorityStatus.EVIDENCE) {
+            return "【权威状态：evidence（证据）】" + content;
+        }
+        return "【权威状态：" + authorityStatus.value() + "】" + content;
+    }
+
+    private String confirmedConsensusContent(String content) {
+        if (!StringUtils.hasText(content)) {
+            return content;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(content);
+            if (!(root instanceof ObjectNode object)
+                    || !(object.get(DECISIONS_FIELD) instanceof ArrayNode decisions)) {
+                return content;
+            }
+            ArrayNode confirmed = objectMapper.createArrayNode();
+            for (JsonNode decision : decisions) {
+                if (STATUS_CONFIRMED.equals(decision.path("status").asText())) {
+                    confirmed.add(decision);
+                }
+            }
+            ObjectNode copy = object.deepCopy();
+            copy.set(DECISIONS_FIELD, confirmed);
+            return objectMapper.writeValueAsString(copy);
+        } catch (JsonProcessingException exception) {
+            return content;
+        }
+    }
+
+    private void addRejectedDecisionTombstones(
+            List<Candidate> candidates,
+            String content,
+            String briefId,
+            Object contentVersion,
+            int firstOrder) {
+        if (!StringUtils.hasText(content)) {
+            return;
+        }
+        try {
+            JsonNode decisions = objectMapper.readTree(content).path(DECISIONS_FIELD);
+            if (!decisions.isArray()) {
+                return;
+            }
+            int order = firstOrder;
+            for (JsonNode decision : decisions) {
+                if (!STATUS_REJECTED.equals(decision.path("status").asText())) {
+                    continue;
+                }
+                String key = decision.path("key").asText("unknown");
+                String title = decision.path("title").asText(key);
+                add(candidates, StoryContextSourceType.CHAPTER_CONSENSUS,
+                        briefId + ":rejected:" + key, "SYSTEM",
+                        "已否定决定：" + title + "（" + key + "），不得继承候选内容。",
+                        false, 970, order, contentVersion, null, Category.STRUCTURE,
+                        StoryContextAuthorityStatus.REJECTED);
+                order++;
+            }
+        } catch (JsonProcessingException exception) {
+            // 历史自由文本 Brief 没有结构化决定，不伪造拒绝状态。
+        }
     }
 
     private Candidate prefer(Candidate first, Candidate second) {
@@ -737,11 +876,12 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             int tokens,
             int selectedTokens,
             String reason,
-            Category category) {
+            Category category,
+            StoryContextAuthorityStatus authorityStatus) {
 
         private Candidate withContent(String value, int selectedTokenCount, String selectionReason) {
             return new Candidate(sourceType, sourceId, contentVersion, updatedAt, role, value, required,
-                    priority, order, tokens, selectedTokenCount, selectionReason, category);
+                    priority, order, tokens, selectedTokenCount, selectionReason, category, authorityStatus);
         }
 
         private String dedupeKey() {
@@ -750,7 +890,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
 
         private StoryContextItem item() {
             return new StoryContextItem(sourceType, sourceId, contentVersion, updatedAt, role, content, required,
-                    priority, order, tokens, selectedTokens, reason);
+                    priority, order, tokens, selectedTokens, reason, authorityStatus);
         }
     }
 

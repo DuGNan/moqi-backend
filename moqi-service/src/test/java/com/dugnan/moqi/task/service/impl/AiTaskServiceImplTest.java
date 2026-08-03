@@ -78,6 +78,27 @@ class AiTaskServiceImplTest {
     @Test
     void retriesFailedConversationReplyWithoutCreatingAnotherTask() {
         AiTaskEntity task = task(9001L, "failed");
+        task.setTaskInputJson("""
+                {
+                  "schemaVersion":1,
+                  "messageId":11,
+                  "conversationId":8,
+                  "replyMode":"compare",
+                  "replyDepth":"brief",
+                  "replyScope":{
+                    "primaryIntent":"compare_candidates",
+                    "targetType":"current_discussion",
+                    "targetReference":null,
+                    "allowedChanges":"candidate_summaries",
+                    "maxCandidates":3,
+                    "allowNewTerms":false
+                  },
+                  "controlSource":"message",
+                  "policyVersion":"chapter-reply-policy-v1",
+                  "contextAuthorityVersion":"story-context-authority-v2",
+                  "convergenceApplied":false
+                }
+                """);
         task.setResultMessageId(7001L);
         task.setErrorCode("PROVIDER_UNAVAILABLE");
         task.setErrorMessage("Provider unavailable");
@@ -89,6 +110,9 @@ class AiTaskServiceImplTest {
 
         assertThat(result.id()).isEqualTo(9001L);
         assertThat(result.taskStatus()).isEqualTo("queued");
+        assertThat(result.effectiveReplyPolicy().replyMode()).isEqualTo("compare");
+        assertThat(result.effectiveReplyPolicy().replyDepth()).isEqualTo("brief");
+        assertThat(result.effectiveReplyPolicy().replyScope().maxCandidates()).isEqualTo(3);
         verify(eventPublisher).publishEvent(new ConversationReplyTaskSubmittedEvent(9001L));
     }
 
