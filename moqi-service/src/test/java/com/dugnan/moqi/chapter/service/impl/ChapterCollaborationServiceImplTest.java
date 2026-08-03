@@ -135,7 +135,11 @@ class ChapterCollaborationServiceImplTest {
         verify(messageMapper).updateById(any(ChapterConversationMessageEntity.class));
         verify(eventPublisher).publishEvent(new ConversationReplyTaskSubmittedEvent(12L));
         verify(aiTaskMapper).insert(org.mockito.ArgumentMatchers.<AiTaskEntity>argThat(task ->
-                task.getResultMessageId() == null));
+                task.getResultMessageId() == null
+                        && task.getTaskInputJson().contains("\"schemaVersion\":1")
+                        && task.getTaskInputJson().contains("\"messageId\":11")
+                        && task.getTaskInputJson().contains("\"replyMode\":\"clarify\"")
+                        && !task.getTaskInputJson().contains("讨论本章目标")));
     }
 
     /**

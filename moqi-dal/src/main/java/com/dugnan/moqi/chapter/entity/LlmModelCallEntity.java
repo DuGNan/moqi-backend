@@ -19,6 +19,13 @@ import com.dugnan.moqi.common.entity.BaseEntity;
 public class LlmModelCallEntity extends BaseEntity {
 
     private Long generationSceneId;
+    private Long aiTaskId;
+    private Long conversationId;
+    private String replyMode;
+    private String replyDepth;
+    private String replyScopeSummary;
+    private String controlSource;
+    private String policyVersion;
     private Long agentRunId;
     private Long agentStepId;
     private String provider;

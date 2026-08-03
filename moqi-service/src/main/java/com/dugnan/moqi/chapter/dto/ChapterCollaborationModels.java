@@ -111,7 +111,8 @@ public final class ChapterCollaborationModels {
             String messageRole,
             String content,
             Boolean createAiTask,
-            DiscussionFocusRequest discussionFocus) {
+            DiscussionFocusRequest discussionFocus,
+            ReplyControlRequest replyControl) {
 
         /**
          * 保留不含讨论对焦的旧构造入口。
@@ -121,8 +122,34 @@ public final class ChapterCollaborationModels {
          * @param createAiTask 是否创建 AI 回复任务
          */
         public SendMessageRequest(String messageRole, String content, Boolean createAiTask) {
-            this(messageRole, content, createAiTask, null);
+            this(messageRole, content, createAiTask, null, null);
         }
+
+        /**
+         * 保留仅包含讨论对焦的兼容构造入口。
+         *
+         * @param messageRole 消息角色
+         * @param content 消息正文
+         * @param createAiTask 是否创建 AI 回复任务
+         * @param discussionFocus 讨论对焦
+         */
+        public SendMessageRequest(
+                String messageRole,
+                String content,
+                Boolean createAiTask,
+                DiscussionFocusRequest discussionFocus) {
+            this(messageRole, content, createAiTask, discussionFocus, null);
+        }
+    }
+
+    /**
+     * 单次消息的回复深度与范围控制。
+     *
+     * @param depth auto、brief、balanced 或 deep
+     * @param scopeMode auto 或 current_only
+     * @param scopeText 可选的本轮范围说明
+     */
+    public record ReplyControlRequest(String depth, String scopeMode, String scopeText) {
     }
 
     /**

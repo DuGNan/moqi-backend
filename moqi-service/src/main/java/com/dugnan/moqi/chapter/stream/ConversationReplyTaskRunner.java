@@ -1,7 +1,12 @@
 package com.dugnan.moqi.chapter.stream;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -11,13 +16,22 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.entity.LlmModelCallEntity;
 import com.dugnan.moqi.chapter.focus.ChapterDiscussionFocusResolver;
 import com.dugnan.moqi.chapter.focus.ResolvedDiscussionFocus;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.mapper.LlmModelCallMapper;
+import com.dugnan.moqi.chapter.policy.ConversationReplyTaskInputV1;
+import com.dugnan.moqi.chapter.policy.DefaultReplyPolicyResolver;
+import com.dugnan.moqi.chapter.policy.ReplyDepth;
+import com.dugnan.moqi.chapter.policy.ReplyMode;
+import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextBuildCommand;
@@ -40,6 +54,9 @@ import com.dugnan.moqi.llm.LlmStreamCallRegistry;
 import com.dugnan.moqi.llm.LlmStreamEvent;
 import com.dugnan.moqi.llm.LlmStreamResult;
 import com.dugnan.moqi.llm.LlmStreamStatus;
+import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
+import com.dugnan.moqi.llm.LlmExecutionConfig;
+import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
 
 /**
  * @author dgn
@@ -48,6 +65,10 @@ import com.dugnan.moqi.llm.LlmStreamStatus;
  */
 @Component
 public class ConversationReplyTaskRunner {
+
+    private static final int DEFAULT_CONTEXT_WINDOW_TOKENS = 32768;
+    private static final int MIN_CONTEXT_WINDOW_TOKENS = 2;
+    private static final int MIN_INPUT_RESERVE_TOKENS = 1024;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConversationReplyTaskRunner.class);
 
@@ -66,6 +87,8 @@ public class ConversationReplyTaskRunner {
     private final LlmStreamCallRegistry callRegistry;
     private final StoryContextTaskBindingService contextBindingService;
     private final ChapterDiscussionFocusResolver focusResolver;
+    private final LlmModelCallMapper modelCallMapper;
+    private final ObjectMapper objectMapper;
 
     /**
      * 创建完整接入上下文引擎与讨论对焦的回复任务执行器。
@@ -79,6 +102,8 @@ public class ConversationReplyTaskRunner {
      * @param callRegistry 流式调用注册表
      * @param contextBindingService 故事上下文绑定服务
      * @param focusResolver 讨论对焦解析器
+     * @param modelCallMapper 模型调用审计数据访问对象
+     * @param objectMapper JSON 映射器
      */
     @Autowired
     public ConversationReplyTaskRunner(
@@ -90,7 +115,9 @@ public class ConversationReplyTaskRunner {
             ApplicationEventPublisher eventPublisher,
             LlmStreamCallRegistry callRegistry,
             StoryContextTaskBindingService contextBindingService,
-            ChapterDiscussionFocusResolver focusResolver) {
+            ChapterDiscussionFocusResolver focusResolver,
+            LlmModelCallMapper modelCallMapper,
+            ObjectMapper objectMapper) {
         this.taskMapper = taskMapper;
         this.messageMapper = messageMapper;
         this.userConfigService = userConfigService;
@@ -100,6 +127,8 @@ public class ConversationReplyTaskRunner {
         this.callRegistry = callRegistry;
         this.contextBindingService = contextBindingService;
         this.focusResolver = focusResolver;
+        this.modelCallMapper = modelCallMapper;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -122,7 +151,7 @@ public class ConversationReplyTaskRunner {
             ApplicationEventPublisher eventPublisher,
             LlmStreamCallRegistry callRegistry) {
         this(taskMapper, messageMapper, userConfigService, providerFactory, persistenceService,
-                eventPublisher, callRegistry, null, null);
+                eventPublisher, callRegistry, null, null, null, null);
     }
 
     /**
@@ -155,7 +184,36 @@ public class ConversationReplyTaskRunner {
                 eventPublisher,
                 callRegistry,
                 contextBindingService,
+                null,
+                null,
                 null);
+    }
+
+    /**
+     * 保留同时接入上下文引擎和讨论对焦解析器的兼容构造入口。
+     *
+     * @param taskMapper AI 任务数据访问对象
+     * @param messageMapper 会话消息数据访问对象
+     * @param userConfigService 用户配置服务
+     * @param providerFactory LLM Provider 工厂
+     * @param persistenceService 回复持久化服务
+     * @param eventPublisher 应用事件发布器
+     * @param callRegistry 流式调用注册表
+     * @param contextBindingService 故事上下文绑定服务
+     * @param focusResolver 讨论对焦解析器
+     */
+    public ConversationReplyTaskRunner(
+            AiTaskMapper taskMapper,
+            ChapterConversationMessageMapper messageMapper,
+            UserConfigService userConfigService,
+            LlmProviderFactory providerFactory,
+            ConversationReplyPersistenceService persistenceService,
+            ApplicationEventPublisher eventPublisher,
+            LlmStreamCallRegistry callRegistry,
+            StoryContextTaskBindingService contextBindingService,
+            ChapterDiscussionFocusResolver focusResolver) {
+        this(taskMapper, messageMapper, userConfigService, providerFactory, persistenceService,
+                eventPublisher, callRegistry, contextBindingService, focusResolver, null, null);
     }
 
     /**
@@ -169,42 +227,36 @@ public class ConversationReplyTaskRunner {
                 || !TASK_TYPE.equals(task.getTaskType()) || !claim(task)) {
             return;
         }
-        LlmStreamCall call = null;
+        executeClaimedTask(task);
+    }
+
+    private void executeClaimedTask(AiTaskEntity task) {
+        ProviderCallState state = new ProviderCallState();
         try {
-            ChapterConversationMessageEntity input = requireInputMessage(task.getId());
-            LlmProvider provider = providerFactory.create(userConfigService.requireAvailableModelConfig());
-            StringBuilder response = new StringBuilder();
-            StoryContextSnapshot contextSnapshot = buildContext(task, input, provider);
-            eventPublisher.publishEvent(ChapterReplyEvent.started(task.getChapterId(), task.getId()));
-            call = provider.stream(
-                    contextSnapshot == null ? request(input) : request(contextSnapshot),
-                    event -> {
-                        if (event instanceof LlmStreamEvent.TextDelta delta
-                                && !callRegistry.isCancellationRequested(task.getId())
-                                && StringUtils.hasText(delta.text())) {
-                            response.append(delta.text());
-                            eventPublisher.publishEvent(ChapterReplyEvent.delta(
-                                    task.getChapterId(), task.getId(), delta.text()));
-                        }
-                    });
-            callRegistry.register(task.getId(), call);
-            LlmStreamResult streamResult = call.await();
-            if (streamResult.status() == LlmStreamStatus.CANCELED) {
-                throw new ConversationReplyTaskCanceledException();
-            }
-            if (streamResult.status() == LlmStreamStatus.FAILED) {
-                throw new LlmProviderException(streamResult.error());
-            }
-            ensureRunning(task);
-            Long messageId = persistenceService.complete(task, input, response.toString());
-            eventPublisher.publishEvent(ChapterReplyEvent.completed(task.getChapterId(), task.getId(), messageId));
+            performProviderCall(task, state);
         } catch (ConversationReplyTaskCanceledException exception) {
+            finishModelCall(
+                    state.callRecord, "canceled", "canceled", null, null, elapsedMillis(state.startedNanos));
             // 取消事件由取消服务发布，执行器不覆盖已取消状态。
         } catch (StoryContextTaskBindingException exception) {
             // 快照关联竞争失败时保持任务终态，不调用模型。
         } catch (LlmProviderException exception) {
+            finishModelCall(
+                    state.callRecord,
+                    "failed",
+                    null,
+                    "provider",
+                    exception.getError().name(),
+                    elapsedMillis(state.startedNanos));
             fail(task, exception.getError().name(), exception.getMessage());
         } catch (BusinessException exception) {
+            finishModelCall(
+                    state.callRecord,
+                    "failed",
+                    null,
+                    "business",
+                    exception.getErrorCode().name(),
+                    elapsedMillis(state.startedNanos));
             fail(task, exception.getErrorCode().name(), exception.getMessage());
         } catch (RuntimeException exception) {
             LOGGER.error(
@@ -213,9 +265,62 @@ public class ConversationReplyTaskRunner {
                     task.getChapterId(),
                     exception.getClass().getName(),
                     exception);
+            finishModelCall(
+                    state.callRecord,
+                    "failed",
+                    null,
+                    "internal",
+                    "INTERNAL_ERROR",
+                    elapsedMillis(state.startedNanos));
             fail(task, "INTERNAL_ERROR", "AI 回复生成失败，请稍后重试");
         } finally {
-            callRegistry.unregister(task.getId(), call);
+            callRegistry.unregister(task.getId(), state.call);
+        }
+    }
+
+    private void performProviderCall(AiTaskEntity task, ProviderCallState state) {
+        ChapterConversationMessageEntity input = requireInputMessage(task.getId());
+        ConversationReplyTaskInputV1 taskInput = readTaskInput(task, input);
+        LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
+        LlmProviderRuntimeConfig runtimeConfig = executionConfig == null
+                ? userConfigService.requireAvailableModelConfig() : executionConfig.runtimeConfig();
+        LlmExecutionConfigDescriptor configDescriptor = executionConfig == null
+                ? new LlmExecutionConfigDescriptor(runtimeConfig.provider(), runtimeConfig.model(), 0, 0)
+                : executionConfig.descriptor();
+        LlmProvider provider = providerFactory.create(runtimeConfig);
+        StringBuilder response = new StringBuilder();
+        StoryContextSnapshot contextSnapshot = buildContext(task, input, provider, taskInput);
+        eventPublisher.publishEvent(ChapterReplyEvent.started(task.getChapterId(), task.getId()));
+        state.startedNanos = System.nanoTime();
+        state.callRecord = startModelCall(task, taskInput, configDescriptor, contextSnapshot);
+        state.call = provider.stream(
+                contextSnapshot == null ? request(input, taskInput) : request(contextSnapshot),
+                event -> appendDelta(task, response, event));
+        callRegistry.register(task.getId(), state.call);
+        LlmStreamResult streamResult = state.call.await();
+        ensureCompleted(streamResult);
+        ensureRunning(task);
+        Long messageId = persistenceService.complete(task, input, response.toString());
+        completeModelCall(state.callRecord, streamResult, elapsedMillis(state.startedNanos));
+        eventPublisher.publishEvent(ChapterReplyEvent.completed(task.getChapterId(), task.getId(), messageId));
+    }
+
+    private void appendDelta(AiTaskEntity task, StringBuilder response, LlmStreamEvent event) {
+        if (event instanceof LlmStreamEvent.TextDelta delta
+                && !callRegistry.isCancellationRequested(task.getId())
+                && StringUtils.hasText(delta.text())) {
+            response.append(delta.text());
+            eventPublisher.publishEvent(ChapterReplyEvent.delta(
+                    task.getChapterId(), task.getId(), delta.text()));
+        }
+    }
+
+    private void ensureCompleted(LlmStreamResult streamResult) {
+        if (streamResult.status() == LlmStreamStatus.CANCELED) {
+            throw new ConversationReplyTaskCanceledException();
+        }
+        if (streamResult.status() == LlmStreamStatus.FAILED) {
+            throw new LlmProviderException(streamResult.error());
         }
     }
 
@@ -292,23 +397,29 @@ public class ConversationReplyTaskRunner {
     private StoryContextSnapshot buildContext(
             AiTaskEntity task,
             ChapterConversationMessageEntity input,
-            LlmProvider provider) {
+            LlmProvider provider,
+            ConversationReplyTaskInputV1 taskInput) {
         if (contextBindingService == null) {
             return null;
         }
         int contextWindow = provider.capabilities().maxContextTokens() == null
-                ? 32768 : provider.capabilities().maxContextTokens();
-        int outputReserve = StoryContextProfile.CHAPTER_DISCUSSION.defaultOutputReserveTokens();
+                ? DEFAULT_CONTEXT_WINDOW_TOKENS : provider.capabilities().maxContextTokens();
+        if (contextWindow < MIN_CONTEXT_WINDOW_TOKENS) {
+            throw new IllegalStateException("模型上下文窗口至少需要 2 tokens");
+        }
+        int outputReserve = outputBudget(taskInput.replyMode(), taskInput.replyDepth());
         if (provider.capabilities().maxOutputTokens() != null) {
             outputReserve = Math.min(outputReserve, provider.capabilities().maxOutputTokens());
         }
+        int inputReserve = Math.min(MIN_INPUT_RESERVE_TOKENS, contextWindow - 1);
+        outputReserve = Math.min(outputReserve, contextWindow - inputReserve);
         return contextBindingService.buildAndAttach(new StoryContextBuildCommand(
                 StoryContextProfile.CHAPTER_DISCUSSION,
                 task.getWorkId(),
                 task.getChapterId(),
                 input.getConversationId(),
                 input.getId(),
-                "围绕用户当前问题给出清晰、可执行的章节共创建议。",
+                taskRule(taskInput),
                 input.getContent(),
                 null,
                 contextWindow,
@@ -339,9 +450,12 @@ public class ConversationReplyTaskRunner {
                 input.getConversationId(),
                 input.getFocusBriefId(),
                 input.getFocusDecisionKey());
-        String decisionContent = "待决：" + resolved.decisionTitle()
-                + "\n问题：" + resolved.decisionPrompt()
-                + "\n当前候选：" + resolved.candidateSummary();
+        boolean isRejected = "rejected".equals(resolved.decisionStatus());
+        String decisionContent = isRejected
+                ? "已否定决定：" + resolved.decisionTitle() + "（" + resolved.decisionKey() + "），不得继承其内容。"
+                : "待决：" + resolved.decisionTitle()
+                        + "\n问题：" + resolved.decisionPrompt()
+                        + "\n当前候选：" + resolved.candidateSummary();
         List<StoryContextFocusSource> sources = resolved.sources().stream()
                 .map(source -> new StoryContextFocusSource(
                         source.messageId(),
@@ -352,6 +466,7 @@ public class ConversationReplyTaskRunner {
                 resolved.briefId(),
                 resolved.briefVersion(),
                 resolved.decisionKey(),
+                resolved.decisionStatus(),
                 decisionContent,
                 resolved.consensusContent(),
                 sources);
@@ -364,13 +479,197 @@ public class ConversationReplyTaskRunner {
     }
 
     private LlmRequest request(ChapterConversationMessageEntity input) {
+        return request(input, legacyTaskInput(input));
+    }
+
+    private LlmRequest request(
+            ChapterConversationMessageEntity input,
+            ConversationReplyTaskInputV1 taskInput) {
         return new LlmRequest(
                 List.of(
                         new LlmMessage(
                                 LlmRole.SYSTEM,
-                                "你是墨契的章节共创助手，请围绕用户当前问题给出清晰、可执行的创作建议。"),
+                                taskRule(taskInput)),
                         new LlmMessage(LlmRole.USER, input.getContent())),
-                new LlmOptions(null, null, List.of(), LlmResponseFormat.TEXT));
+                new LlmOptions(
+                        outputBudget(taskInput.replyMode(), taskInput.replyDepth()),
+                        null,
+                        List.of(),
+                        LlmResponseFormat.TEXT));
+    }
+
+    private ConversationReplyTaskInputV1 readTaskInput(
+            AiTaskEntity task,
+            ChapterConversationMessageEntity input) {
+        if (!StringUtils.hasText(task.getTaskInputJson())) {
+            return legacyTaskInput(input);
+        }
+        try {
+            ObjectMapper mapper = objectMapper == null ? new ObjectMapper() : objectMapper;
+            ConversationReplyTaskInputV1 snapshot =
+                    mapper.readValue(task.getTaskInputJson(), ConversationReplyTaskInputV1.class);
+            if (snapshot.schemaVersion() != ConversationReplyTaskInputV1.SCHEMA_VERSION
+                    || !input.getId().equals(snapshot.messageId())
+                    || !input.getConversationId().equals(snapshot.conversationId())
+                    || snapshot.replyMode() == null
+                    || snapshot.replyDepth() == null
+                    || snapshot.replyScope() == null) {
+                throw new IllegalStateException("conversation_reply 策略快照与输入消息不一致");
+            }
+            return snapshot;
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("conversation_reply 策略快照无法读取", exception);
+        }
+    }
+
+    private ConversationReplyTaskInputV1 legacyTaskInput(ChapterConversationMessageEntity input) {
+        ResolvedReplyPolicy policy = new DefaultReplyPolicyResolver()
+                .resolve(input.getContent(), null, Map.of());
+        return ConversationReplyTaskInputV1.from(input.getId(), input.getConversationId(), policy);
+    }
+
+    private String taskRule(ConversationReplyTaskInputV1 input) {
+        String modeRule = switch (input.replyMode()) {
+            case CLARIFY -> "只提出一个最影响方向的澄清问题，不自行扩写完整方案。";
+            case COMPARE -> "只给出差异明确的少量候选，每个候选保持简短并等待用户选择。";
+            case CONVERGE -> "只总结已确认内容和剩余待决，不新增大范围设定。";
+            case PLAN -> "仅在请求范围内输出结构化规划，不生成正文。";
+            case DRAFT -> "仅在请求范围内生成正文草稿，不把草稿自动确认为正式内容。";
+        };
+        String depthRule = switch (input.replyDepth()) {
+            case BRIEF -> "保持简洁，优先约 150 至 400 字的体验基线。";
+            case BALANCED -> "给出足够决策的信息，避免跨阶段扩写。";
+            case DEEP -> "可以深入，但仍只处理本轮唯一主要意图。";
+        };
+        return "你是墨契的章节共创助手。"
+                + modeRule
+                + depthRule
+                + "本轮主要意图：" + input.replyScope().primaryIntent()
+                + "；允许修改：" + input.replyScope().allowedChanges()
+                + "；最多候选数：" + input.replyScope().maxCandidates()
+                + "。已确认内容才是权威事实；候选、待决、证据与已否定内容不得混用。"
+                + "不得宣称已经确认、保存或更新任何 Brief、大纲、场景规划或正文。";
+    }
+
+    private int outputBudget(ReplyMode mode, ReplyDepth depth) {
+        if (mode == ReplyMode.DRAFT) {
+            return depth == ReplyDepth.BRIEF ? 1536 : depth == ReplyDepth.BALANCED ? 4096 : 8192;
+        }
+        if (mode == ReplyMode.PLAN) {
+            return depth == ReplyDepth.BRIEF ? 1024 : depth == ReplyDepth.BALANCED ? 2048 : 4096;
+        }
+        return depth == ReplyDepth.BRIEF ? 768 : depth == ReplyDepth.BALANCED ? 1536 : 3072;
+    }
+
+    private LlmModelCallEntity startModelCall(
+            AiTaskEntity task,
+            ConversationReplyTaskInputV1 taskInput,
+            LlmExecutionConfigDescriptor configDescriptor,
+            StoryContextSnapshot contextSnapshot) {
+        if (modelCallMapper == null) {
+            return null;
+        }
+        LlmModelCallEntity record = new LlmModelCallEntity();
+        record.setAiTaskId(task.getId());
+        record.setConversationId(taskInput.conversationId());
+        record.setReplyMode(taskInput.replyMode().name().toLowerCase(Locale.ROOT));
+        record.setReplyDepth(taskInput.replyDepth().name().toLowerCase(Locale.ROOT));
+        record.setReplyScopeSummary(scopeSummary(taskInput));
+        record.setControlSource(taskInput.controlSource());
+        record.setPolicyVersion(taskInput.policyVersion());
+        record.setProvider(configDescriptor.provider());
+        record.setModel(configDescriptor.model());
+        record.setConfigVersion(configDescriptor.configVersion());
+        record.setCredentialVersion(configDescriptor.credentialVersion());
+        record.setPromptTemplateVersion(taskInput.policyVersion());
+        record.setRequestHash(requestHash(task, taskInput, contextSnapshot));
+        record.setCallStatus("running");
+        record.setStartedAt(LocalDateTime.now());
+        record.setDeleted(0);
+        record.setVersion(0);
+        modelCallMapper.insert(record);
+        return record;
+    }
+
+    private void completeModelCall(
+            LlmModelCallEntity record,
+            LlmStreamResult result,
+            long elapsedMillis) {
+        if (record == null || result == null) {
+            return;
+        }
+        com.dugnan.moqi.llm.LlmResponseMetadata metadata = result.metadata();
+        UpdateWrapper<LlmModelCallEntity> update = baseCallUpdate(record)
+                .set("call_status", "succeeded")
+                .set("finish_reason", metadata == null ? null : metadata.finishReason())
+                .set("provider_request_id", metadata == null ? null : metadata.providerRequestId())
+                .set("input_tokens", metadata == null ? null : metadata.inputTokens())
+                .set("output_tokens", metadata == null ? null : metadata.outputTokens())
+                .set("total_tokens", metadata == null ? null : metadata.totalTokens())
+                .set("finished_at", LocalDateTime.now())
+                .set("elapsed_millis", elapsedMillis)
+                .set("version", modelCallVersion(record) + 1);
+        modelCallMapper.update(null, update);
+    }
+
+    private void finishModelCall(
+            LlmModelCallEntity record,
+            String status,
+            String finishReason,
+            String errorCategory,
+            String errorCode,
+            long elapsedMillis) {
+        if (record == null || modelCallMapper == null) {
+            return;
+        }
+        modelCallMapper.update(null, baseCallUpdate(record)
+                .set("call_status", status)
+                .set("finish_reason", finishReason)
+                .set("error_category", errorCategory)
+                .set("error_code", errorCode)
+                .set("error_message", errorCode == null ? null : "模型调用未成功，详见安全错误码")
+                .set("finished_at", LocalDateTime.now())
+                .set("elapsed_millis", elapsedMillis)
+                .set("version", modelCallVersion(record) + 1));
+    }
+
+    private UpdateWrapper<LlmModelCallEntity> baseCallUpdate(LlmModelCallEntity record) {
+        return new UpdateWrapper<LlmModelCallEntity>()
+                .eq("id", record.getId())
+                .eq("deleted", 0)
+                .eq("version", modelCallVersion(record))
+                .eq("call_status", "running");
+    }
+
+    private String scopeSummary(ConversationReplyTaskInputV1 input) {
+        return "intent=" + input.replyScope().primaryIntent()
+                + ";target=" + input.replyScope().targetType()
+                + ";changes=" + input.replyScope().allowedChanges()
+                + ";maxCandidates=" + input.replyScope().maxCandidates();
+    }
+
+    private String requestHash(
+            AiTaskEntity task,
+            ConversationReplyTaskInputV1 input,
+            StoryContextSnapshot snapshot) {
+        String value = task.getId() + ":" + input.policyVersion() + ":"
+                + input.replyMode() + ":" + input.replyDepth() + ":"
+                + (snapshot == null ? "legacy" : snapshot.contentHash());
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(64);
+            for (byte item : digest) {
+                result.append(String.format(Locale.ROOT, "%02x", item));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 不可用", exception);
+        }
+    }
+
+    private long elapsedMillis(long startedNanos) {
+        return startedNanos == 0L ? 0L : (System.nanoTime() - startedNanos) / 1_000_000L;
     }
 
     private void fail(AiTaskEntity task, String errorCode, String errorMessage) {
@@ -396,6 +695,16 @@ public class ConversationReplyTaskRunner {
 
     private int version(AiTaskEntity task) {
         return task.getVersion() == null ? 0 : task.getVersion();
+    }
+
+    private int modelCallVersion(LlmModelCallEntity record) {
+        return record.getVersion() == null ? 0 : record.getVersion();
+    }
+
+    private static final class ProviderCallState {
+        private LlmStreamCall call;
+        private LlmModelCallEntity callRecord;
+        private long startedNanos;
     }
 
 }
