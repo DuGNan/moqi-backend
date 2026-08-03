@@ -6,12 +6,14 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PutMapping;
 
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.CreateOutlineCandidateRequest;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateConfirmation;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateCreated;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateDetail;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.RefreshOutlineRequest;
+import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.UpdateOutlineCandidateRequest;
 import com.dugnan.moqi.chapter.service.OutlineCandidateService;
 import com.dugnan.moqi.common.api.ApiResponse;
 
@@ -64,7 +66,9 @@ public class OutlineCandidateController {
                 request == null ? null : request.conversationId(),
                 request == null ? null : request.briefId(),
                 request == null ? null : request.baseRevision(),
-                request == null ? null : request.instruction())));
+                request == null ? null : request.instruction(),
+                "adjustment",
+                null)));
     }
 
     /**
@@ -90,6 +94,22 @@ public class OutlineCandidateController {
             @PathVariable Long chapterId,
             @PathVariable Long candidateId) {
         return ApiResponse.success(candidateService.get(chapterId, candidateId));
+    }
+
+    /**
+     * 保存用户编辑后的候选内容。
+     *
+     * @param chapterId 章节 ID
+     * @param candidateId 候选 ID
+     * @param request 候选内容和基础版本
+     * @return 更新后的候选
+     */
+    @PutMapping("/{chapterId}/outline/candidates/{candidateId}")
+    public ApiResponse<OutlineCandidateDetail> update(
+            @PathVariable Long chapterId,
+            @PathVariable Long candidateId,
+            @RequestBody UpdateOutlineCandidateRequest request) {
+        return ApiResponse.success(candidateService.update(chapterId, candidateId, request));
     }
 
     /**

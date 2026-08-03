@@ -5,6 +5,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -18,6 +19,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.CreateOutlineCandidateRequest;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateCreated;
+import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.UpdateOutlineCandidateRequest;
 import com.dugnan.moqi.chapter.service.OutlineCandidateService;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -103,6 +105,35 @@ class OutlineCandidateControllerTest {
                 .andExpect(jsonPath("$.data").doesNotExist());
 
         verify(candidateService).getLatest(2L);
+    }
+
+    /**
+     * 验证候选编辑接口传递结构化内容和基础候选版本。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
+    @Test
+    void updatesReadyCandidate() throws Exception {
+        mvc.perform(put("/api/chapters/2/outline/candidates/7")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "candidateContent": {
+                                    "goal": "本章目标",
+                                    "coreConflict": "核心冲突",
+                                    "scenes": [{"id":"scene-1","title":"开场","content":"进入冲突","tags":[]}],
+                                    "constraints": []
+                                  },
+                                  "baseCandidateVersion": 3
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<UpdateOutlineCandidateRequest> requestCaptor =
+                ArgumentCaptor.forClass(UpdateOutlineCandidateRequest.class);
+        verify(candidateService).update(eq(2L), eq(7L), requestCaptor.capture());
+        org.assertj.core.api.Assertions.assertThat(requestCaptor.getValue().baseCandidateVersion()).isEqualTo(3);
+        org.assertj.core.api.Assertions.assertThat(requestCaptor.getValue().candidateContent().goal()).isEqualTo("本章目标");
     }
 
     /**

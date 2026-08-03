@@ -4,6 +4,7 @@ import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.CreateOutlineCandidate
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateConfirmation;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateCreated;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateDetail;
+import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.UpdateOutlineCandidateRequest;
 
 /**
  * @author dgn
@@ -37,6 +38,16 @@ public interface OutlineCandidateService {
      * @return 候选详情
      */
     OutlineCandidateDetail get(Long chapterId, Long candidateId);
+
+    /**
+     * 保存用户编辑后的已就绪候选。
+     *
+     * @param chapterId 章节 ID
+     * @param candidateId 候选 ID
+     * @param request 候选内容和基础版本
+     * @return 更新后的候选
+     */
+    OutlineCandidateDetail update(Long chapterId, Long candidateId, UpdateOutlineCandidateRequest request);
 
     /**
      * 放弃已就绪候选。

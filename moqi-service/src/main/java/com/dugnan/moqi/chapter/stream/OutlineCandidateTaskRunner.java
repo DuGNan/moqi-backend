@@ -46,11 +46,19 @@ public class OutlineCandidateTaskRunner {
     private static final String BRIEF_STATUS_CONFIRMED = "confirmed";
     private static final String STATUS_FAILED = "failed";
     private static final String STATUS_RUNNING = "running";
-    private static final String TASK_INSTRUCTION = """
+    private static final String TYPE_INITIAL = "initial";
+    private static final String ADJUSTMENT_TASK_INSTRUCTION = """
             请根据已确认的章节共识、当前正式大纲和用户调整要求，输出一个完整的 OutlineCandidateContent JSON 对象。
             只能输出 goal、coreConflict、scenes、constraints 字段。每个 scene 必须包含 id、title、content、tags；
             保留的场景必须继续使用当前大纲的 scene.id，新场景使用新的唯一 ID。不得输出解释、Markdown 或其他字段。
             输出是待用户确认的候选，绝不能声称已保存或修改正式大纲。
+            """;
+    private static final String INITIAL_TASK_INSTRUCTION = """
+            请只根据指定的已确认章节共识生成完整的首版 OutlineCandidateContent JSON 对象。
+            只能输出 goal、coreConflict、scenes、constraints 字段。每个 scene 必须包含 id、title、content、tags；
+            scene.id 必须唯一且稳定。讨论历史只能作为证据，不能把未确认、待定或已否定内容写成权威事实。
+            不得输出解释、Markdown 或其他字段。输出仅是待用户编辑和确认的候选，
+            绝不能声称已保存、已确认或已成为正式章纲。
             """;
 
     private final AiTaskMapper taskMapper;
@@ -163,11 +171,15 @@ public class OutlineCandidateTaskRunner {
         if (provider.capabilities().maxOutputTokens() != null) {
             outputReserve = Math.min(outputReserve, provider.capabilities().maxOutputTokens());
         }
-        String targetText = "基础正式大纲：\n" + candidate.getBaseOutlineContent()
-                + "\n\n指定已确认 Brief：\n" + brief.getBriefContent();
+        boolean initial = TYPE_INITIAL.equals(input.candidateType());
+        String taskInstruction = initial ? INITIAL_TASK_INSTRUCTION : ADJUSTMENT_TASK_INSTRUCTION;
+        String targetText = initial
+                ? "唯一权威输入（已确认 Brief）：\n" + brief.getBriefContent()
+                : "基础正式大纲：\n" + candidate.getBaseOutlineContent()
+                    + "\n\n指定已确认 Brief：\n" + brief.getBriefContent();
         return contextBindingService.buildAndAttach(new StoryContextBuildCommand(
                 StoryContextProfile.OUTLINE_ADJUSTMENT,
-                task.getWorkId(), task.getChapterId(), conversation.getId(), null, TASK_INSTRUCTION,
+                task.getWorkId(), task.getChapterId(), conversation.getId(), null, taskInstruction,
                 input.instruction(), targetText, contextWindow, outputReserve), task);
     }
 
