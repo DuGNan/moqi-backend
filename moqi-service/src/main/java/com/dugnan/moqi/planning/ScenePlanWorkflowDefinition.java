@@ -8,6 +8,7 @@ import java.util.Map;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.dugnan.moqi.agent.AgentWorkflowDefinition;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentInterruptionRequest;
@@ -96,20 +97,22 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
                 || !candidate.getOutlineRevision().equals(outline.getRevision())) {
             throw new IllegalStateException("场景规划候选的章节大纲已过期");
         }
-        LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
-        LlmProvider provider = providerFactory.createObserved(
-                executionConfig,
-                LlmCallContext.builder(WORKFLOW_TYPE, "generate_candidate")
-                        .workId(candidate.getWorkId())
-                        .chapterId(candidate.getChapterId())
-                        .agentRunId(context.runId())
-                        .agentStepId(context.stepId())
-                        .logicalCallId("agent-step:" + context.stepId() + ":scene-plan")
-                        .promptTemplateVersion(TEMPLATE_VERSION)
-                        .sourceFingerprint("outline:" + outline.getId() + ":" + outline.getRevision())
-                        .build());
+        LlmExecutionConfig executionConfig;
+        LlmProvider provider;
         LlmResponse response;
         try {
+            executionConfig = userConfigService.requireAvailableExecutionConfig();
+            provider = providerFactory.createObserved(
+                    executionConfig,
+                    LlmCallContext.builder(WORKFLOW_TYPE, "generate_candidate")
+                            .workId(candidate.getWorkId())
+                            .chapterId(candidate.getChapterId())
+                            .agentRunId(context.runId())
+                            .agentStepId(context.stepId())
+                            .logicalCallId("agent-step:" + context.stepId() + ":scene-plan")
+                            .promptTemplateVersion(TEMPLATE_VERSION)
+                            .sourceFingerprint("outline:" + outline.getId() + ":" + outline.getRevision())
+                            .build());
             response = provider.generate(new LlmRequest(List.of(
                 new LlmMessage(LlmRole.SYSTEM, "只输出 JSON 对象：scenes 是 1 至 50 个对象的数组，每项必含 sceneKey、sequence、title、timeAnchor、goal、"
                         + "conflict、emotion、pacing、expectedOutcome、status。status 只能为 planned 或 disabled，"
@@ -143,6 +146,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
     }
 
     @Override
+    @Transactional(rollbackFor = RuntimeException.class)
     public void applyResult(String stepKey, AgentStepExecutionContext context, AgentStepResult result) {
         if (!GENERATE.equals(stepKey)) {
             return;
@@ -152,16 +156,14 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         if (candidate == null || !"queued".equals(candidate.getPlanStatus())) {
             return;
         }
-        String scenesJson = (String) result.outputSummary().get("scenesJson");
-        int changed = planMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("id", candidateId)
-                .eq("version", candidate.getVersion()).eq("plan_status", "queued").set("plan_status", "ready")
-                .setSql("version = version + 1"));
-        if (changed != 1) {
-            return;
-        }
+        List<ScenePlanContent> scenes = persistedScenes(result);
         try {
-            List<ScenePlanContent> scenes = objectMapper.readValue(scenesJson,
-                    objectMapper.getTypeFactory().constructCollectionType(List.class, ScenePlanContent.class));
+            int changed = planMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("id", candidateId)
+                    .eq("version", candidate.getVersion()).eq("plan_status", "queued").set("plan_status", "ready")
+                    .setSql("version = version + 1"));
+            if (changed != 1) {
+                return;
+            }
             for (ScenePlanContent scene : scenes) {
                 ScenePlanVersionEntity entity = new ScenePlanVersionEntity();
                 entity.setChapterPlanVersionId(candidateId);
@@ -173,7 +175,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
                 sceneMapper.insert(entity);
             }
         } catch (Exception exception) {
-            throw new IllegalStateException("场景候选持久化失败", exception);
+            throw new ScenePlanWorkflowException("SCENE_PLAN_PERSISTENCE_FAILED", "persistence", "场景候选持久化失败", exception);
         }
     }
 
@@ -206,6 +208,20 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
             return number.longValue();
         }
         throw new IllegalArgumentException("Agent Run 缺少 candidateId");
+    }
+
+    private List<ScenePlanContent> persistedScenes(AgentStepResult result) {
+        Object value = result.outputSummary().get("scenesJson");
+        if (!(value instanceof String scenesJson)) {
+            throw new ScenePlanWorkflowException("SCENE_PLAN_JSON_INVALID", "json", "场景规划结果缺少 scenesJson", null);
+        }
+        try {
+            List<ScenePlanContent> scenes = objectMapper.readValue(scenesJson,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, ScenePlanContent.class));
+            return codec.scenes(scenes);
+        } catch (Exception exception) {
+            throw new ScenePlanWorkflowException("SCENE_PLAN_VALIDATION_FAILED", "validation", "场景规划结果无法持久化", exception);
+        }
     }
 
     private record WorkflowOutput(List<ScenePlanContent> scenes) {
