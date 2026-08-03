@@ -187,7 +187,8 @@ public class ChapterConsensusPersistenceService {
                 generated.keyPush(),
                 generated.readerProgress(),
                 generated.writingBoundaries(),
-                merged);
+                merged,
+                generated.scopeCandidates());
     }
 
     private boolean isUserResolved(Decision decision) {
