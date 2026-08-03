@@ -104,6 +104,20 @@ class DeepSeekLlmProviderTest {
     }
 
     /**
+     * 验证格式失败诊断只保留受限摘要，不记录完整模型输出。
+     */
+    @Test
+    void summarizesInvalidJsonContentWithoutLoggingTheWholeResponse() {
+        String content = "{\"opening\":\"" + "a".repeat(100) + "\",\"ending\":\"tail\"}";
+
+        String summary = DeepSeekLlmProvider.summarizeInvalidJsonContent(content);
+
+        assertThat(summary).contains("length=130", "head=");
+        assertThat(summary).contains("tail");
+        assertThat(summary).doesNotContain(content);
+    }
+
+    /**
      * 验证读取超时不会暴露底层 URL 或密钥。
      */
     @Test

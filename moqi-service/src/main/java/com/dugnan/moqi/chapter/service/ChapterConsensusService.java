@@ -5,6 +5,7 @@ import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.BriefView;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ConfirmBriefRequest;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.CreateBriefDraftRequest;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.DecisionSources;
+import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ResolveDecisionRequest;
 
 /**
  * @author dgn
@@ -39,6 +40,17 @@ public interface ChapterConsensusService {
      * @return 已确认 Brief
      */
     BriefView confirm(Long chapterId, Long briefId, ConfirmBriefRequest request);
+
+    /**
+     * 追加一个用户处理后的 Brief 草稿，原 Brief 永不覆盖。
+     *
+     * @param chapterId 章节 ID
+     * @param briefId 当前最新草稿 ID
+     * @param decisionKey 待决键
+     * @param request 用户动作与版本
+     * @return 新草稿
+     */
+    BriefView resolveDecision(Long chapterId, Long briefId, String decisionKey, ResolveDecisionRequest request);
 
     /**
      * 查询某个待决引用的讨论消息。

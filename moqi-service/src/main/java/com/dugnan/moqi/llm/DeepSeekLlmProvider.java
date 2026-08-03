@@ -14,6 +14,8 @@ import java.util.function.Consumer;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletion;
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionChunk;
@@ -42,8 +44,12 @@ import reactor.core.Disposable;
  */
 public class DeepSeekLlmProvider implements LlmProvider {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(DeepSeekLlmProvider.class);
+
     static final int CONNECTION_TEST_MAX_TOKENS = 64;
     private static final int MAX_STOP_SEQUENCES = 16;
+    private static final int INVALID_RESPONSE_PREVIEW_LENGTH = 64;
+    private static final int INVALID_RESPONSE_PREVIEW_PART_COUNT = 2;
     private static final int MAX_CONTEXT_TOKENS = 1_000_000;
     private static final int MAX_OUTPUT_TOKENS = 384_000;
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
@@ -88,11 +94,13 @@ public class DeepSeekLlmProvider implements LlmProvider {
                     deepSeekApi.chatCompletionEntity(apiRequest(request, false));
             ChatCompletion body = response.getBody();
             if (body == null || body.choices() == null || body.choices().isEmpty()) {
+                logInvalidStructuredResponse("empty_choices", null);
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
             ChatCompletion.Choice choice = body.choices().get(0);
             if (choice == null || choice.message() == null
                     || !StringUtils.hasText(choice.message().content())) {
+                logInvalidStructuredResponse("empty_content", null);
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
             String content = choice.message().content();
@@ -203,12 +211,34 @@ public class DeepSeekLlmProvider implements LlmProvider {
         try {
             JsonNode parsed = OBJECT_MAPPER.readTree(content);
             if (parsed == null || !parsed.isObject()) {
+                logInvalidStructuredResponse("not_json_object", content);
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
             }
             return parsed;
         } catch (JsonProcessingException exception) {
+            logInvalidStructuredResponse(
+                    "json_parse_error:" + exception.getClass().getSimpleName(), content);
             throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
         }
+    }
+
+    private static void logInvalidStructuredResponse(String reason, String content) {
+        LOGGER.warn("DeepSeek structured response invalid: reason={}, {}", reason,
+                summarizeInvalidJsonContent(content));
+    }
+
+    static String summarizeInvalidJsonContent(String content) {
+        if (!StringUtils.hasText(content)) {
+            return "content=empty";
+        }
+        String normalized = content.replaceAll("\\s+", " ").trim();
+        if (normalized.length()
+                <= INVALID_RESPONSE_PREVIEW_LENGTH * INVALID_RESPONSE_PREVIEW_PART_COUNT) {
+            return "length=" + content.length() + ", preview=" + normalized;
+        }
+        return "length=" + content.length()
+                + ", head=" + normalized.substring(0, INVALID_RESPONSE_PREVIEW_LENGTH)
+                + ", tail=" + normalized.substring(normalized.length() - INVALID_RESPONSE_PREVIEW_LENGTH);
     }
 
     private LlmResponseMetadata metadata(

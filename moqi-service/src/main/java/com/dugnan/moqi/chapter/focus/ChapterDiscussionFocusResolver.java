@@ -77,9 +77,9 @@ public class ChapterDiscussionFocusResolver {
         }
         ChapterBriefEntity latestDraft =
                 briefMapper.findLatestByChapterIdAndStatus(chapterId, BRIEF_STATUS_DRAFT);
-        if (!BRIEF_STATUS_DRAFT.equals(brief.getBriefStatus())
-                || latestDraft == null
-                || !brief.getId().equals(latestDraft.getId())) {
+        ChapterBriefEntity latestConfirmed =
+                briefMapper.findLatestByChapterIdAndStatus(chapterId, "confirmed");
+        if (!isCurrentDraft(brief, latestDraft, latestConfirmed)) {
             throw stale();
         }
         ChapterConsensusDocument document = codec.read(brief.getBriefContent());
@@ -106,6 +106,20 @@ public class ChapterDiscussionFocusResolver {
                 decision.candidateSummary(),
                 brief.getBriefContent(),
                 sources);
+    }
+
+    private boolean isCurrentDraft(
+            ChapterBriefEntity brief,
+            ChapterBriefEntity latestDraft,
+            ChapterBriefEntity latestConfirmed) {
+        boolean isDraft = BRIEF_STATUS_DRAFT.equals(brief.getBriefStatus());
+        boolean hasNewerConfirmedBrief = latestConfirmed != null
+                && latestDraft != null
+                && latestDraft.getId() < latestConfirmed.getId();
+        return isDraft
+                && latestDraft != null
+                && !hasNewerConfirmedBrief
+                && brief.getId().equals(latestDraft.getId());
     }
 
     /**

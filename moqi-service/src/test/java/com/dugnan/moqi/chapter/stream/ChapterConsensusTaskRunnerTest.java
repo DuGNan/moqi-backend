@@ -94,7 +94,7 @@ class ChapterConsensusTaskRunnerTest {
                         }
                         """),
                 null));
-        when(persistenceService.complete(any(), any(), any(ChapterConsensusContentV1.class)))
+        when(persistenceService.complete(any(), any(), any(ChapterConsensusContentV1.class), any()))
                 .thenReturn(41L);
 
         runner(objectMapper).run(31L);
@@ -107,6 +107,30 @@ class ChapterConsensusTaskRunnerTest {
                 .extracting(message -> message.content())
                 .anyMatch(content -> content.contains("[sourceMessageIds=[9,10]]"))
                 .anyMatch(content -> content.contains("[sourceMessageIds=[11]]"));
+        verify(eventPublisher).publishEvent(ChapterBriefEvent.draftUpdated(2L, 31L, 41L));
+    }
+
+    /**
+     * 验证结构化输出首次无效时仅使用同一快照自动修复一次。
+     *
+     * @throws Exception JSON 构造失败
+     */
+    @Test
+    void repairsInvalidStructuredResponseOnce() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        stubRunnableTask();
+        when(provider.generate(any())).thenReturn(
+                new LlmResponse(null, objectMapper.readTree("{}"), null),
+                new LlmResponse(null, objectMapper.readTree("""
+                        {"schemaVersion":1,"chapterTask":"推进","stateChange":{"from":"起","to":"承"},
+                        "keyPush":"推进","readerProgress":{"payoff":"回报","openQuestion":"问题"},
+                        "writingBoundaries":[],"decisions":[]}
+                        """), null));
+        when(persistenceService.complete(any(), any(), any(ChapterConsensusContentV1.class), any())).thenReturn(41L);
+
+        runner(objectMapper).run(31L);
+
+        verify(provider, times(2)).generate(any());
         verify(eventPublisher).publishEvent(ChapterBriefEvent.draftUpdated(2L, 31L, 41L));
     }
 

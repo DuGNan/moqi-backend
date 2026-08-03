@@ -35,7 +35,10 @@ public class ChapterConsensusResponseParser {
             "required",
             "prompt",
             "candidateSummary",
-            "sourceMessageIds");
+            "sourceMessageIds",
+            "sourceQuotes");
+
+    private static final Set<String> SOURCE_QUOTE_FIELDS = Set.of("messageId", "quote");
 
     private final ObjectMapper objectMapper;
 
@@ -123,6 +126,18 @@ public class ChapterConsensusResponseParser {
                 throw new ChapterConsensusJsonException();
             }
             sourceIds.forEach(this::requireIntegral);
+            requireSourceQuotes(decision.get("sourceQuotes"));
+        }
+    }
+
+    private void requireSourceQuotes(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            throw new ChapterConsensusJsonException();
+        }
+        for (JsonNode sourceQuote : node) {
+            requireObject(sourceQuote, SOURCE_QUOTE_FIELDS);
+            requireIntegral(sourceQuote.get("messageId"));
+            requireText(sourceQuote.get("quote"));
         }
     }
 }

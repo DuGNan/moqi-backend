@@ -13,6 +13,7 @@ import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.BriefView;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ConfirmBriefRequest;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.CreateBriefDraftRequest;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.DecisionSources;
+import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ResolveDecisionRequest;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ConsensusTaskCreated;
 import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.ConsensusTaskRequest;
 import com.dugnan.moqi.chapter.service.ChapterConsensusService;
@@ -110,6 +111,24 @@ public class ChapterConsensusController {
             @PathVariable Long briefId,
             @RequestBody ConfirmBriefRequest request) {
         return ApiResponse.success(consensusService.confirm(chapterId, briefId, request));
+    }
+
+    /**
+     * 以追加草稿的方式处理一个待决候选。
+     *
+     * @param chapterId 章节 ID
+     * @param briefId 当前草稿 ID
+     * @param decisionKey 待决键
+     * @param request 用户动作与版本
+     * @return 新的或幂等返回的 Brief 草稿
+     */
+    @PostMapping("/{chapterId}/briefs/{briefId}/decisions/{decisionKey}/resolve")
+    public ApiResponse<BriefView> resolveDecision(
+            @PathVariable Long chapterId,
+            @PathVariable Long briefId,
+            @PathVariable String decisionKey,
+            @RequestBody ResolveDecisionRequest request) {
+        return ApiResponse.success(consensusService.resolveDecision(chapterId, briefId, decisionKey, request));
     }
 
     /**
