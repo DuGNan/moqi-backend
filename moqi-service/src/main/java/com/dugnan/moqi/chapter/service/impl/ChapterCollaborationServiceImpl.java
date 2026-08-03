@@ -1,6 +1,8 @@
 package com.dugnan.moqi.chapter.service.impl;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -20,6 +22,7 @@ import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageDetail;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageList;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineDetail;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineRequest;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ReplyPolicySnapshot;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.SendMessageRequest;
 import com.dugnan.moqi.chapter.consensus.ChapterConsensusImpactService;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
@@ -229,14 +232,16 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     @Override
     public MessageList listMessages(Long conversationId) {
         ChapterConversationEntity conversation = requireConversation(conversationId);
-        List<MessageDetail> messages = messageMapper.selectList(
+        List<ChapterConversationMessageEntity> entities = messageMapper.selectList(
                         new LambdaQueryWrapper<ChapterConversationMessageEntity>()
                                 .eq(ChapterConversationMessageEntity::getConversationId, conversation.getId())
                                 .eq(ChapterConversationMessageEntity::getDeleted, 0)
                                 .orderByAsc(ChapterConversationMessageEntity::getGmtCreate)
                                 .orderByAsc(ChapterConversationMessageEntity::getId))
-                .stream()
-                .map(this::messageDetail)
+                ;
+        Map<Long, AiTaskEntity> tasks = taskMap(entities);
+        List<MessageDetail> messages = entities.stream()
+                .map(entity -> messageDetail(entity, tasks.get(entity.getAiTaskId())))
                 .toList();
         return new MessageList(messages);
     }
@@ -248,6 +253,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         requireChapter(conversation.getChapterId());
         String role = role(request == null ? null : request.messageRole());
         String content = requiredText(request == null ? null : request.content(), "消息内容不能为空");
+        Long continuationMessageId = requireContinuation(conversation, request, role);
 
         ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
         message.setConversationId(conversationId);
@@ -267,7 +273,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             aiTask.setChapterId(conversation.getChapterId());
             aiTask.setResultMessageId(null);
             aiTask.setTaskInputJson(taskInputJson(ConversationReplyTaskInputV1.from(
-                    message.getId(), conversationId, policy)));
+                    message.getId(), conversationId, policy, continuationMessageId)));
             aiTask.setDeleted(0);
             aiTask.setVersion(0);
             aiTaskMapper.insert(aiTask);
@@ -291,6 +297,35 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         } catch (IllegalArgumentException exception) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, exception.getMessage());
         }
+    }
+
+    /**
+     * 校验继续展开只能引用本会话中已完成的助手回复。
+     */
+    private Long requireContinuation(
+            ChapterConversationEntity conversation,
+            SendMessageRequest request,
+            String role) {
+        Long continuationMessageId = request == null || request.replyControl() == null
+                ? null : request.replyControl().continuationMessageId();
+        if (continuationMessageId == null) {
+            return null;
+        }
+        if (!ROLE_USER.equals(role) || !Boolean.TRUE.equals(request.createAiTask())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "continuationMessageId 只允许用于用户 AI 回复请求");
+        }
+        ChapterConversationMessageEntity target = messageMapper.selectById(continuationMessageId);
+        if (target == null || Integer.valueOf(1).equals(target.getDeleted())
+                || !conversation.getId().equals(target.getConversationId())
+                || !"assistant".equals(target.getMessageRole()) || target.getAiTaskId() == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "continuationMessageId 必须引用当前会话已完成的助手消息");
+        }
+        AiTaskEntity task = aiTaskMapper.selectById(target.getAiTaskId());
+        if (task == null || !"succeeded".equals(task.getTaskStatus())
+                || !continuationMessageId.equals(task.getResultMessageId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "continuationMessageId 必须引用当前会话已完成的助手消息");
+        }
+        return continuationMessageId;
     }
 
     private String taskInputJson(ConversationReplyTaskInputV1 input) {
@@ -603,7 +638,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      * @param entity 消息实体
      * @return 消息详情
      */
-    private MessageDetail messageDetail(ChapterConversationMessageEntity entity) {
+    private MessageDetail messageDetail(ChapterConversationMessageEntity entity, AiTaskEntity task) {
         return new MessageDetail(
                 entity.getId(),
                 entity.getConversationId(),
@@ -613,6 +648,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 entity.getAiTaskId(),
                 entity.getFocusBriefId(),
                 entity.getFocusDecisionKey(),
+                continuationMessageId(task),
+                replyPolicySnapshot(task),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
     }
@@ -624,6 +661,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      * @return 已创建消息
      */
     private MessageCreated messageCreated(ChapterConversationMessageEntity entity) {
+        AiTaskEntity task = entity.getAiTaskId() == null ? null : aiTaskMapper.selectById(entity.getAiTaskId());
         return new MessageCreated(
                 entity.getId(),
                 entity.getConversationId(),
@@ -633,8 +671,61 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 entity.getAiTaskId(),
                 entity.getFocusBriefId(),
                 entity.getFocusDecisionKey(),
+                continuationMessageId(task),
+                replyPolicySnapshot(task),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
+    }
+
+    /**
+     * 从任务快照读取安全的继续展开引用；旧任务和异常 JSON 按无引用兼容。
+     */
+    private Long continuationMessageId(AiTaskEntity task) {
+        ConversationReplyTaskInputV1 input = replyTaskInput(task);
+        if (input == null) {
+            return null;
+        }
+        return input.continuationMessageId();
+    }
+
+    /**
+     * 读取任务的安全策略展示字段，不暴露 Prompt 或上下文正文。
+     */
+    private ReplyPolicySnapshot replyPolicySnapshot(AiTaskEntity task) {
+        ConversationReplyTaskInputV1 input = replyTaskInput(task);
+        if (input == null) {
+            return null;
+        }
+        return new ReplyPolicySnapshot(
+                input.replyMode().name().toLowerCase(),
+                input.replyDepth().name().toLowerCase(),
+                input.replyScope().allowedChanges(),
+                input.convergenceApplied());
+    }
+
+    private ConversationReplyTaskInputV1 replyTaskInput(AiTaskEntity task) {
+        if (task == null || !StringUtils.hasText(task.getTaskInputJson())) {
+            return null;
+        }
+        try {
+            return (objectMapper == null ? new ObjectMapper() : objectMapper)
+                    .readValue(task.getTaskInputJson(), ConversationReplyTaskInputV1.class);
+        } catch (JsonProcessingException exception) {
+            return null;
+        }
+    }
+
+    private Map<Long, AiTaskEntity> taskMap(List<ChapterConversationMessageEntity> entities) {
+        List<Long> taskIds = entities.stream().map(ChapterConversationMessageEntity::getAiTaskId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        Map<Long, AiTaskEntity> result = new HashMap<>();
+        if (taskIds.isEmpty()) {
+            return result;
+        }
+        for (AiTaskEntity task : aiTaskMapper.selectBatchIds(taskIds)) {
+            result.put(task.getId(), task);
+        }
+        return result;
     }
 
     /**

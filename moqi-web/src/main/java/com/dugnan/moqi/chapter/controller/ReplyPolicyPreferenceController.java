@@ -1,5 +1,6 @@
 package com.dugnan.moqi.chapter.controller;
 
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -55,5 +56,17 @@ public class ReplyPolicyPreferenceController {
     @PutMapping
     public ApiResponse<PreferenceDetail> save(@RequestBody PreferenceRequest request) {
         return ApiResponse.success(preferenceService.save(request));
+    }
+
+    /**
+     * 清除会话临时偏好并回落到继承策略。
+     */
+    @DeleteMapping
+    public ApiResponse<Void> clear(
+            @RequestParam String scopeType,
+            @RequestParam(required = false) Long scopeId,
+            @RequestParam Integer baseVersion) {
+        preferenceService.clear(scopeType, scopeId, baseVersion);
+        return ApiResponse.success(null);
     }
 }

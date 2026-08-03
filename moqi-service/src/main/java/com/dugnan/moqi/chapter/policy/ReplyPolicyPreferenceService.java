@@ -31,6 +31,15 @@ public interface ReplyPolicyPreferenceService {
     PreferenceDetail save(PreferenceRequest request);
 
     /**
+     * 清除指定作用域偏好并恢复继承策略。
+     *
+     * @param scopeType 作用域类型
+     * @param scopeId 作用域 ID
+     * @param baseVersion 当前版本
+     */
+    void clear(String scopeType, Long scopeId, Integer baseVersion);
+
+    /**
      * 解析指定会话消息的最终策略。
      *
      * @param conversationId 会话 ID

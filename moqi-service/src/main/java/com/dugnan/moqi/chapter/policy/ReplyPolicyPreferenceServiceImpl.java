@@ -87,6 +87,24 @@ public class ReplyPolicyPreferenceServiceImpl implements ReplyPolicyPreferenceSe
         ReplyDepth depth = requireDepth(request.replyDepth());
         ReplyPolicyPreferenceEntity existing = find(scope.type(), scope.id());
         if (existing == null) {
+            ReplyPolicyPreferenceEntity deleted = findDeleted(scope.type(), scope.id());
+            if (deleted != null) {
+                if (request.baseVersion() == null || !request.baseVersion().equals(deleted.getVersion())) {
+                    throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "回复偏好已变化，请刷新后重试");
+                }
+                int changed = preferenceMapper.update(null, new UpdateWrapper<ReplyPolicyPreferenceEntity>()
+                        .eq("id", deleted.getId()).eq("user_id", LOCAL_USER).eq("deleted", 1)
+                        .eq("version", deleted.getVersion()).set("deleted", 0)
+                        .set("reply_depth", depth.name().toLowerCase(Locale.ROOT))
+                        .set("version", deleted.getVersion() + 1));
+                if (changed != 1) {
+                    throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "回复偏好已变化，请刷新后重试");
+                }
+                deleted.setDeleted(0);
+                deleted.setReplyDepth(depth.name().toLowerCase(Locale.ROOT));
+                deleted.setVersion(deleted.getVersion() + 1);
+                return detail(deleted);
+            }
             if (request.baseVersion() != null && request.baseVersion() != 0) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "新建偏好的 baseVersion 必须为空或为 0");
             }
@@ -117,6 +135,25 @@ public class ReplyPolicyPreferenceServiceImpl implements ReplyPolicyPreferenceSe
         existing.setReplyDepth(depth.name().toLowerCase(Locale.ROOT));
         existing.setVersion(expectedVersion + 1);
         return detail(existing);
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void clear(String scopeType, Long scopeId, Integer baseVersion) {
+        Scope scope = requireScope(scopeType, scopeId);
+        ReplyPolicyPreferenceEntity existing = find(scope.type(), scope.id());
+        if (existing == null) {
+            return;
+        }
+        if (baseVersion == null || baseVersion < 0) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "清除偏好必须提交 baseVersion");
+        }
+        int changed = preferenceMapper.update(null, new UpdateWrapper<ReplyPolicyPreferenceEntity>()
+                .eq("id", existing.getId()).eq("user_id", LOCAL_USER).eq("deleted", 0)
+                .eq("version", baseVersion).set("deleted", 1).set("version", baseVersion + 1));
+        if (changed != 1) {
+            throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "回复偏好已变化，请刷新后重试");
+        }
     }
 
     @Override
@@ -222,6 +259,14 @@ public class ReplyPolicyPreferenceServiceImpl implements ReplyPolicyPreferenceSe
                 .eq(ReplyPolicyPreferenceEntity::getScopeType, scopeType)
                 .eq(ReplyPolicyPreferenceEntity::getScopeId, scopeId)
                 .eq(ReplyPolicyPreferenceEntity::getDeleted, 0));
+    }
+
+    private ReplyPolicyPreferenceEntity findDeleted(String scopeType, Long scopeId) {
+        return preferenceMapper.selectOne(new LambdaQueryWrapper<ReplyPolicyPreferenceEntity>()
+                .eq(ReplyPolicyPreferenceEntity::getUserId, LOCAL_USER)
+                .eq(ReplyPolicyPreferenceEntity::getScopeType, scopeType)
+                .eq(ReplyPolicyPreferenceEntity::getScopeId, scopeId)
+                .eq(ReplyPolicyPreferenceEntity::getDeleted, 1));
     }
 
     private ReplyDepth requireDepth(String value) {

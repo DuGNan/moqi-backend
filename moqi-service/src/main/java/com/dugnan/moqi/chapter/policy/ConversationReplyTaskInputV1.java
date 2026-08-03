@@ -26,7 +26,8 @@ public record ConversationReplyTaskInputV1(
         String controlSource,
         String policyVersion,
         String contextAuthorityVersion,
-        boolean convergenceApplied) {
+        boolean convergenceApplied,
+        Long continuationMessageId) {
 
     public static final int SCHEMA_VERSION = 1;
     public static final String AUTHORITY_VERSION = "story-context-authority-v2";
@@ -53,6 +54,35 @@ public record ConversationReplyTaskInputV1(
                 policy.controlSource(),
                 policy.policyVersion(),
                 AUTHORITY_VERSION,
-                policy.convergenceApplied());
+                policy.convergenceApplied(),
+                null);
+    }
+
+    /**
+     * 从解析结果构造带继续展开锚点的任务输入。
+     *
+     * @param messageId 用户消息 ID
+     * @param conversationId 会话 ID
+     * @param policy 最终回复策略
+     * @param continuationMessageId 被继续展开的助手消息 ID
+     * @return 任务输入快照
+     */
+    public static ConversationReplyTaskInputV1 from(
+            Long messageId,
+            Long conversationId,
+            ResolvedReplyPolicy policy,
+            Long continuationMessageId) {
+        return new ConversationReplyTaskInputV1(
+                SCHEMA_VERSION,
+                messageId,
+                conversationId,
+                policy.mode(),
+                policy.depth(),
+                policy.scope(),
+                policy.controlSource(),
+                policy.policyVersion(),
+                AUTHORITY_VERSION,
+                policy.convergenceApplied(),
+                continuationMessageId);
     }
 }
