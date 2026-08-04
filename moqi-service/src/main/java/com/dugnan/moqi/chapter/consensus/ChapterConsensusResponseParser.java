@@ -22,7 +22,7 @@ public class ChapterConsensusResponseParser {
             "keyPush",
             "readerProgress",
             "writingBoundaries",
-            "decisions");
+            "decisions", "scopeCandidates");
 
     private static final Set<String> STATE_CHANGE_FIELDS = Set.of("from", "to");
 
@@ -58,7 +58,7 @@ public class ChapterConsensusResponseParser {
      * @return 章节共识内容
      */
     public ChapterConsensusContentV1 parse(JsonNode root) {
-        requireObject(root, ROOT_FIELDS);
+        requireRoot(root);
         requireIntegral(root.get("schemaVersion"));
         requireText(root.get("chapterTask"));
         requireTextObject(root.get("stateChange"), STATE_CHANGE_FIELDS);
@@ -66,6 +66,7 @@ public class ChapterConsensusResponseParser {
         requireTextObject(root.get("readerProgress"), READER_PROGRESS_FIELDS);
         requireTextArray(root.get("writingBoundaries"));
         requireDecisions(root.get("decisions"));
+        if (root.has("scopeCandidates")) { requireScopeCandidates(root.get("scopeCandidates")); }
         try {
             return objectMapper.treeToValue(root, ChapterConsensusContentV1.class);
         } catch (JsonProcessingException exception) {
@@ -73,11 +74,24 @@ public class ChapterConsensusResponseParser {
         }
     }
 
+    private void requireRoot(JsonNode node) {
+        Set<String> required = Set.of("schemaVersion", "chapterTask", "stateChange", "keyPush", "readerProgress", "writingBoundaries", "decisions");
+        if (node == null || !node.isObject() || !required.stream().allMatch(node::has)) { throw new ChapterConsensusJsonException(); }
+        node.fieldNames().forEachRemaining(field -> { if (!ROOT_FIELDS.contains(field)) { throw new ChapterConsensusJsonException(); } });
+    }
+
     private void requireObject(JsonNode node, Set<String> fields) {
-        if (node == null || !node.isObject()
-                || node.size() != fields.size()
-                || !fields.stream().allMatch(node::has)) {
+        if (node == null || !node.isObject() || node.size() != fields.size() || !fields.stream().allMatch(node::has)) {
             throw new ChapterConsensusJsonException();
+        }
+    }
+
+    private void requireScopeCandidates(JsonNode node) {
+        if (node == null || !node.isArray()) { throw new ChapterConsensusJsonException(); }
+        for (JsonNode value : node) {
+            if (!value.has("scope") || !value.has("content") || !value.has("sourceMessageIds") || !value.has("confidence")
+                    || !value.get("scope").isTextual() || !value.get("content").isTextual() || !value.get("sourceMessageIds").isArray()
+                    || !value.get("confidence").isNumber()) { throw new ChapterConsensusJsonException(); }
         }
     }
 

@@ -14,7 +14,15 @@ public record ChapterConsensusContentV1(
         String keyPush,
         ReaderProgress readerProgress,
         List<String> writingBoundaries,
-        List<Decision> decisions) {
+        List<Decision> decisions,
+        List<ScopeCandidate> scopeCandidates) {
+
+    public ChapterConsensusContentV1(Integer schemaVersion, String chapterTask, StateChange stateChange, String keyPush,
+            ReaderProgress readerProgress, List<String> writingBoundaries, List<Decision> decisions) {
+        this(schemaVersion, chapterTask, stateChange, keyPush, readerProgress, writingBoundaries, decisions, List.of());
+    }
+
+    public record ScopeCandidate(String scope, String content, List<Long> sourceMessageIds, Double confidence) { }
 
     /**
      * 描述章节开始与结束时的关键状态变化。

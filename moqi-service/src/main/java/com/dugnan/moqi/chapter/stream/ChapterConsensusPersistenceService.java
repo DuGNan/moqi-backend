@@ -22,6 +22,8 @@ import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConsensusScopeCandidateMapper;
+import com.dugnan.moqi.chapter.entity.ChapterConsensusScopeCandidateEntity;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 
@@ -42,6 +44,7 @@ public class ChapterConsensusPersistenceService {
     private final ChapterConsensusValidator validator;
 
     private final ChapterConsensusCodec codec;
+    private final ChapterConsensusScopeCandidateMapper scopeCandidateMapper;
 
     /**
      * 创建共识任务持久化服务。
@@ -58,11 +61,17 @@ public class ChapterConsensusPersistenceService {
             ChapterConversationMessageMapper messageMapper,
             ChapterConsensusValidator validator,
             ChapterConsensusCodec codec) {
+        this(taskMapper, briefMapper, messageMapper, validator, codec, null);
+    }
+    public ChapterConsensusPersistenceService(AiTaskMapper taskMapper, ChapterBriefMapper briefMapper,
+            ChapterConversationMessageMapper messageMapper, ChapterConsensusValidator validator, ChapterConsensusCodec codec,
+            ChapterConsensusScopeCandidateMapper scopeCandidateMapper) {
         this.taskMapper = taskMapper;
         this.briefMapper = briefMapper;
         this.messageMapper = messageMapper;
         this.validator = validator;
         this.codec = codec;
+        this.scopeCandidateMapper = scopeCandidateMapper;
     }
 
     /**
@@ -110,6 +119,7 @@ public class ChapterConsensusPersistenceService {
         brief.setDeleted(0);
         brief.setVersion(0);
         briefMapper.insert(brief);
+        persistScopeCandidates(task, brief, normalized);
 
         int version = task.getVersion() == null ? 0 : task.getVersion();
         int updated = taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
@@ -126,6 +136,19 @@ public class ChapterConsensusPersistenceService {
             throw new ChapterConsensusTaskCompletionException();
         }
         return brief.getId();
+    }
+
+    private void persistScopeCandidates(AiTaskEntity task, ChapterBriefEntity brief, ChapterConsensusContentV1 content) {
+        if (scopeCandidateMapper == null || content.scopeCandidates() == null) { return; }
+        for (ChapterConsensusContentV1.ScopeCandidate candidate : content.scopeCandidates()) {
+            ChapterConsensusScopeCandidateEntity entity = new ChapterConsensusScopeCandidateEntity();
+            entity.setWorkId(task.getWorkId()); entity.setChapterId(task.getChapterId()); entity.setBriefId(brief.getId()); entity.setTaskId(task.getId());
+            entity.setScope(candidate.scope()); entity.setSourceMessageIdsJson(candidate.sourceMessageIds().toString());
+            entity.setCandidateContentJson("{\"content\":\"" + candidate.content().replace("\\", "\\\\").replace("\"", "\\\"") + "\"}");
+            entity.setConfidence(java.math.BigDecimal.valueOf(candidate.confidence())); entity.setCandidateStatus("unknown".equals(candidate.scope()) ? "needs_scope" : "pending");
+            entity.setIdempotencyKey(task.getId() + ":" + candidate.scope() + ":" + entity.getCandidateContentJson().hashCode()); entity.setDeleted(0); entity.setVersion(0);
+            scopeCandidateMapper.insert(entity);
+        }
     }
 
     /**
@@ -164,7 +187,8 @@ public class ChapterConsensusPersistenceService {
                 generated.keyPush(),
                 generated.readerProgress(),
                 generated.writingBoundaries(),
-                merged);
+                merged,
+                generated.scopeCandidates());
     }
 
     private boolean isUserResolved(Decision decision) {

@@ -42,6 +42,8 @@ public class ChapterConsensusValidator {
 
     private static final int DECISION_MAX_COUNT = 20;
 
+    private static final int SCOPE_CANDIDATE_MAX_COUNT = 20;
+
     private static final int SOURCE_MAX_COUNT_PER_DECISION = 50;
 
     private static final int SOURCE_MAX_COUNT_TOTAL = 200;
@@ -84,6 +86,8 @@ public class ChapterConsensusValidator {
 
         List<String> writingBoundaries = normalizeBoundaries(content.writingBoundaries());
         List<Decision> decisions = normalizeDecisions(content.decisions());
+        List<ChapterConsensusContentV1.ScopeCandidate> scopeCandidates =
+                normalizeScopeCandidates(content.scopeCandidates());
         return new ChapterConsensusContentV1(
                 SCHEMA_VERSION,
                 chapterTask,
@@ -91,7 +95,8 @@ public class ChapterConsensusValidator {
                 keyPush,
                 readerProgress,
                 writingBoundaries,
-                decisions);
+                decisions,
+                scopeCandidates);
     }
 
     /**
@@ -197,6 +202,33 @@ public class ChapterConsensusValidator {
                 throw invalid("全部 sourceMessageIds 不能超过 " + SOURCE_MAX_COUNT_TOTAL + " 项");
             }
             normalized.add(normalizedDecision);
+        }
+        return List.copyOf(normalized);
+    }
+
+    private List<ChapterConsensusContentV1.ScopeCandidate> normalizeScopeCandidates(
+            List<ChapterConsensusContentV1.ScopeCandidate> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        if (candidates.size() > SCOPE_CANDIDATE_MAX_COUNT) {
+            throw invalid("scopeCandidates 不能超过 " + SCOPE_CANDIDATE_MAX_COUNT + " 项");
+        }
+        List<ChapterConsensusContentV1.ScopeCandidate> normalized = new ArrayList<>(candidates.size());
+        for (ChapterConsensusContentV1.ScopeCandidate candidate : candidates) {
+            if (candidate == null
+                    || !Set.of("chapter", "character", "setting", "plot", "world", "foreshadowing", "unknown")
+                            .contains(candidate.scope())
+                    || candidate.confidence() == null
+                    || candidate.confidence() < 0D
+                    || candidate.confidence() > 1D) {
+                throw invalid("scopeCandidates 包含无效作用域或置信度");
+            }
+            normalized.add(new ChapterConsensusContentV1.ScopeCandidate(
+                    candidate.scope(),
+                    normalizeText(candidate.content(), MAIN_TEXT_MAX_LENGTH, "scopeCandidates.content"),
+                    normalizeSourceMessageIds(candidate.sourceMessageIds()),
+                    candidate.confidence()));
         }
         return List.copyOf(normalized);
     }
