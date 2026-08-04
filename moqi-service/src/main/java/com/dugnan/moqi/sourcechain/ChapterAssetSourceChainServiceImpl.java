@@ -31,6 +31,12 @@ import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
 public class ChapterAssetSourceChainServiceImpl implements ChapterAssetSourceChainService {
     private static final String CURRENT = "current";
     private static final String NEEDS_REVIEW = "needs_review";
+    private static final String COLUMN_CHAPTER_ID = "chapter_id";
+    private static final String COLUMN_DELETED = "deleted";
+    private static final String COLUMN_CURRENT_MARKER = "current_marker";
+    private static final String COLUMN_VALIDITY_STATUS = "validity_status";
+    private static final String COLUMN_VALIDITY_REASONS = "validity_reason_codes_json";
+    private static final String INCREMENT_VERSION = "version = version + 1";
     private final ChapterOutlineQueryMapper outlineMapper;
     private final ChapterPlanVersionMapper planMapper;
     private final ChapterGenerationMapper generationMapper;
@@ -117,9 +123,9 @@ public class ChapterAssetSourceChainServiceImpl implements ChapterAssetSourceCha
         audit.setDeleted(0);
         audit.setVersion(0);
         auditMapper.insert(audit);
-        if (includeOutline) { outlineMapper.update(null, new UpdateWrapper<ChapterOutlineEntity>().eq("chapter_id", chapterId).eq("deleted", 0).set("validity_status", NEEDS_REVIEW).set("validity_reason_codes_json", reasons).setSql("version = version + 1")); }
-        if (includePlan) { planMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("chapter_id", chapterId).eq("current_marker", 1).eq("deleted", 0).set("validity_status", NEEDS_REVIEW).set("validity_reason_codes_json", reasons).setSql("version = version + 1")); }
-        if (includeGeneration) { generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>().eq("chapter_id", chapterId).eq("deleted", 0).set("validity_status", NEEDS_REVIEW).set("validity_reason_codes_json", reasons).setSql("version = version + 1")); }
+        if (includeOutline) { outlineMapper.update(null, new UpdateWrapper<ChapterOutlineEntity>().eq(COLUMN_CHAPTER_ID, chapterId).eq(COLUMN_DELETED, 0).set(COLUMN_VALIDITY_STATUS, NEEDS_REVIEW).set(COLUMN_VALIDITY_REASONS, reasons).setSql(INCREMENT_VERSION)); }
+        if (includePlan) { planMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq(COLUMN_CHAPTER_ID, chapterId).eq(COLUMN_CURRENT_MARKER, 1).eq(COLUMN_DELETED, 0).set(COLUMN_VALIDITY_STATUS, NEEDS_REVIEW).set(COLUMN_VALIDITY_REASONS, reasons).setSql(INCREMENT_VERSION)); }
+        if (includeGeneration) { generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>().eq(COLUMN_CHAPTER_ID, chapterId).eq(COLUMN_DELETED, 0).set(COLUMN_VALIDITY_STATUS, NEEDS_REVIEW).set(COLUMN_VALIDITY_REASONS, reasons).setSql(INCREMENT_VERSION)); }
     }
 
     private AssetSourceView outlineView(ChapterOutlineEntity entity) {
