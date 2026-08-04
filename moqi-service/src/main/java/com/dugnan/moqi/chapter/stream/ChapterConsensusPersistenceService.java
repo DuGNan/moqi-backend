@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.LinkedHashMap;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -63,6 +64,18 @@ public class ChapterConsensusPersistenceService {
             ChapterConsensusCodec codec) {
         this(taskMapper, briefMapper, messageMapper, validator, codec, null);
     }
+
+    /**
+     * 创建包含全局候选分流依赖的生产装配入口。
+     *
+     * @param taskMapper AI 任务数据访问对象
+     * @param briefMapper Brief 数据访问对象
+     * @param messageMapper 消息数据访问对象
+     * @param validator 共识校验器
+     * @param codec 共识编解码器
+     * @param scopeCandidateMapper 全局候选数据访问对象
+     */
+    @Autowired
     public ChapterConsensusPersistenceService(AiTaskMapper taskMapper, ChapterBriefMapper briefMapper,
             ChapterConversationMessageMapper messageMapper, ChapterConsensusValidator validator, ChapterConsensusCodec codec,
             ChapterConsensusScopeCandidateMapper scopeCandidateMapper) {
