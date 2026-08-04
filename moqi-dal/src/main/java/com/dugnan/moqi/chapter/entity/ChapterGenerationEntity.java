@@ -51,4 +51,10 @@ public class ChapterGenerationEntity extends BaseEntity {
     private Long aiTaskId;
 
     private Long agentRunId;
+
+    private Long sourceSnapshotId;
+
+    private String validityStatus;
+
+    private String validityReasonCodesJson;
 }

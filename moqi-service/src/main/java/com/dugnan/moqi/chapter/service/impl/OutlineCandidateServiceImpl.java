@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -42,6 +43,7 @@ import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
 import com.dugnan.moqi.work.mapper.WorkMapper;
+import com.dugnan.moqi.sourcechain.SourcePropagationService;
 
 /**
  * @author dgn
@@ -76,6 +78,12 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
     private final OutlineCandidateDiffService diffService;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
+
+    @Autowired
+    public void setSourcePropagationService(SourcePropagationService sourcePropagationService) {
+        this.sourcePropagationService = sourcePropagationService;
+    }
 
     /**
      * 创建候选服务。
@@ -311,6 +319,7 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         candidate.setResultOutlineRevision(resultRevision);
         candidate.setVersion(candidateVersion + 1);
         ChapterOutlineEntity confirmedOutline = requireOutline(chapterId);
+        sourcePropagationService.outlineConfirmed(chapterId, confirmedOutline.getId());
         eventPublisher.publishEvent(OutlineCandidateEvent.updated(
                 chapterId, candidate.getAiTaskId(), candidate.getId(), "succeeded", STATUS_CONFIRMED,
                 confirmedOutline.getId(), confirmedOutline.getRevision()));

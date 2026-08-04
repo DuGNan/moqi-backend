@@ -14,6 +14,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -45,6 +46,7 @@ import com.dugnan.moqi.planning.PlanningModels.ScenePlanView;
 import com.dugnan.moqi.planning.PublishedScenePlanQueryPort;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
+import com.dugnan.moqi.sourcechain.SourcePropagationService;
 
 /**
  * @author dgn
@@ -76,6 +78,12 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private final AgentRuntime agentRuntime;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
+
+    @Autowired
+    public void setSourcePropagationService(SourcePropagationService sourcePropagationService) {
+        this.sourcePropagationService = sourcePropagationService;
+    }
 
     public SceneGenerationServiceImpl(
             ChapterMapper chapterMapper,
@@ -123,6 +131,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         AiTaskEntity task = createTask(chapter);
         ChapterGenerationEntity generation = createGeneration(chapter, chapterPlan, request, task, executionConfig);
         generationMapper.insert(generation);
+        sourcePropagationService.generationCreated(chapterId, generation.getId());
 
         ChapterGenerationEntity baseGeneration = requireBaseGeneration(request.baseGenerationId(), chapter, chapterPlan, request);
         Map<Long, ChapterGenerationSceneEntity> baseScenes = baseGeneration == null ? Map.of() : baseScenes(baseGeneration.getId());
@@ -268,6 +277,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         generation.setExecutionConfigJson(json(executionConfig.descriptor()));
         generation.setWordCount(0);
         generation.setAiTaskId(task.getId());
+        generation.setValidityStatus("current");
         generation.setDeleted(0);
         generation.setVersion(0);
         return generation;

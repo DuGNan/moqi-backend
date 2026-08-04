@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -33,6 +34,7 @@ import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 import com.dugnan.moqi.work.mapper.WorkMapper;
+import com.dugnan.moqi.sourcechain.SourcePropagationService;
 
 /**
  * @author dgn
@@ -59,6 +61,12 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
     private final ChapterConsensusCodec codec;
 
     private final ChapterConsensusValidator validator;
+    private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
+
+    @Autowired
+    public void setSourcePropagationService(SourcePropagationService sourcePropagationService) {
+        this.sourcePropagationService = sourcePropagationService;
+    }
 
     /**
      * 创建章节共识服务。
@@ -165,7 +173,9 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
             }
             throw versionConflict();
         }
-        return view(requireBrief(chapterId, briefId));
+        BriefView confirmed = view(requireBrief(chapterId, briefId));
+        sourcePropagationService.consensusConfirmed(chapterId, briefId);
+        return confirmed;
     }
 
     @Override
