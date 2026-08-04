@@ -1,6 +1,7 @@
 package com.dugnan.moqi.planning;
 
 import java.util.List;
+import java.util.Map;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -16,6 +17,11 @@ import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
+import com.dugnan.moqi.context.StoryContextBuildCommand;
+import com.dugnan.moqi.context.StoryContextEngine;
+import com.dugnan.moqi.context.StoryContextProfile;
+import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.planning.PlanningModels.ChapterPlanContent;
 import com.dugnan.moqi.planning.PlanningModels.ChapterPlanView;
 import com.dugnan.moqi.planning.PlanningModels.CreateNarrativePlanRequest;
@@ -26,6 +32,7 @@ import com.dugnan.moqi.planning.PlanningModels.PublishNarrativePlanRequest;
 import com.dugnan.moqi.planning.PlanningModels.PublishScenePlanRequest;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanView;
+import com.dugnan.moqi.planning.PlanningModels.SourceRef;
 import com.dugnan.moqi.planning.PlanningModels.UpdateNarrativePlanRequest;
 import com.dugnan.moqi.planning.PlanningModels.UpdateScenePlanCandidateRequest;
 import com.dugnan.moqi.planning.entity.ChapterPlanVersionEntity;
@@ -57,6 +64,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     private static final String READY = "ready";
     private static final String ABANDONED = "abandoned";
     private static final String TASK_TYPE = "scene_plan_generation";
+    private static final String SOURCE_FINGERPRINT_FIELD = "sourceFingerprint";
 
     private final WorkMapper workMapper;
     private final ChapterMapper chapterMapper;
@@ -66,6 +74,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     private final ScenePlanVersionMapper sceneMapper;
     private final AiTaskMapper taskMapper;
     private final AgentRuntime agentRuntime;
+    private final StoryContextEngine storyContextEngine;
+    private final StoryContextSnapshotQueryPort snapshotQueryPort;
     private final PlanningContentCodec codec;
     private final ObjectMapper objectMapper;
     private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
@@ -78,7 +88,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     public StoryPlanningServiceImpl(WorkMapper workMapper, ChapterMapper chapterMapper,
             ChapterOutlineQueryMapper outlineMapper, WorkNarrativePlanVersionMapper narrativeMapper,
             ChapterPlanVersionMapper chapterPlanMapper, ScenePlanVersionMapper sceneMapper, AiTaskMapper taskMapper,
-            AgentRuntime agentRuntime, PlanningContentCodec codec, ObjectMapper objectMapper) {
+            AgentRuntime agentRuntime, StoryContextEngine storyContextEngine, StoryContextSnapshotQueryPort snapshotQueryPort,
+            PlanningContentCodec codec, ObjectMapper objectMapper) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.outlineMapper = outlineMapper;
@@ -87,6 +98,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         this.sceneMapper = sceneMapper;
         this.taskMapper = taskMapper;
         this.agentRuntime = agentRuntime;
+        this.storyContextEngine = storyContextEngine;
+        this.snapshotQueryPort = snapshotQueryPort;
         this.codec = codec;
         this.objectMapper = objectMapper;
     }
@@ -186,7 +199,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public ChapterPlanView createCandidate(Long chapterId, CreateScenePlanCandidateRequest request) {
-        ChapterEntity chapter = requireChapter(chapterId);
+        ChapterEntity chapter = requireChapterForUpdate(chapterId);
         WorkNarrativePlanVersionEntity narrative = currentNarrative(chapter.getWorkId());
         if (narrative == null) {
             throw new BusinessException(ErrorCode.NARRATIVE_PLAN_REQUIRED, "请先发布作品叙事规划");
@@ -199,14 +212,26 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         if (request.idempotencyKey() == null || request.idempotencyKey().isBlank()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "idempotencyKey 不能为空");
         }
+        StoryContextSnapshot contextSnapshot = storyContextEngine.build(new StoryContextBuildCommand(
+                StoryContextProfile.SCENE_PLANNING, chapter.getWorkId(), chapterId, null, null,
+                "根据已确认的章节共识、作品叙事规划、正式章纲和选入的正式设定生成可编辑场景候选。"
+                        + "不得发布或覆盖已发布场景规划；所有场景必须使用 planned 状态。",
+                null, null, 16384, StoryContextProfile.SCENE_PLANNING.defaultOutputReserveTokens()));
+        var existingRun = agentRuntime.findByIdempotencyKey(
+                LOCAL_USER, ScenePlanWorkflowDefinition.WORKFLOW_TYPE, request.idempotencyKey());
+        if (existingRun.isPresent()) {
+            return reuseExistingCandidate(existingRun.get().aiTaskId(), chapterId, contextSnapshot.contentHash());
+        }
         AiTaskEntity task = new AiTaskEntity();
         task.setTaskType(TASK_TYPE);
         task.setTaskStatus(QUEUED);
         task.setWorkId(chapter.getWorkId());
         task.setChapterId(chapterId);
-        task.setTaskInputJson(json(java.util.Map.of("chapterId", chapterId, "outlineId", outline.getId(),
+        task.setContextSnapshotId(contextSnapshot.id());
+        task.setTaskInputJson(json(Map.of("chapterId", chapterId, "outlineId", outline.getId(),
                 "outlineRevision", outline.getRevision(), "outlineContentSchemaVersion",
-                outline.getContentSchemaVersion() == null ? 1 : outline.getContentSchemaVersion())));
+                outline.getContentSchemaVersion() == null ? 1 : outline.getContentSchemaVersion(),
+                "contextSnapshotId", contextSnapshot.id(), SOURCE_FINGERPRINT_FIELD, contextSnapshot.contentHash())));
         task.setDeleted(0);
         task.setVersion(0);
         taskMapper.insert(task);
@@ -228,12 +253,13 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         candidate.setDeleted(0);
         candidate.setVersion(0);
         chapterPlanMapper.insert(candidate);
-        sourcePropagationService.scenePlanCreated(chapterId, candidate.getId());
+        sourcePropagationService.scenePlanCreated(chapterId, candidate.getId(), contextSnapshot.id());
         task.setResultScenePlanVersionId(candidate.getId());
         taskMapper.updateById(task);
         var run = agentRuntime.start(new StartAgentRunCommand(LOCAL_USER, chapter.getWorkId(), chapterId,
                 ScenePlanWorkflowDefinition.WORKFLOW_TYPE, request.idempotencyKey(), (long) outline.getRevision(),
-                java.util.Map.of("candidateId", candidate.getId()), task.getId()));
+                Map.of("candidateId", candidate.getId(), "contextSnapshotId", contextSnapshot.id(),
+                        "sourceFingerprint", contextSnapshot.contentHash()), task.getId()));
         candidate.setAgentRunId(run.runId());
         chapterPlanMapper.updateById(candidate);
         return chapterPlanView(candidate);
@@ -388,7 +414,61 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
                 entity.getNarrativePlanId(), entity.getNarrativePlanNo(), entity.getOutlineId(), entity.getOutlineRevision(),
                 entity.getAiTaskId(), entity.getAgentRunId(), readOrNull(entity.getContentJson(), ChapterPlanContent.class), scenes,
                 entity.getOutlineContentSchemaVersion(), entity.getOutlineMigrationReviewStatus(),
+                contextSnapshotId(entity), entity.getSourceSnapshotId(), sourceRefs(entity), entity.getValidityStatus(),
+                reasonCodes(entity.getValidityReasonCodesJson()),
                 entity.getVersion(), entity.getGmtCreate(), entity.getGmtModified());
+    }
+
+    private Long contextSnapshotId(ChapterPlanVersionEntity entity) {
+        AiTaskEntity task = entity.getAiTaskId() == null ? null : taskMapper.selectById(entity.getAiTaskId());
+        return task == null ? null : task.getContextSnapshotId();
+    }
+
+    private ChapterPlanView reuseExistingCandidate(Long taskId, Long chapterId, String sourceFingerprint) {
+        AiTaskEntity task = taskId == null ? null : taskMapper.selectById(taskId);
+        if (task == null || !sourceFingerprint.equals(taskInputText(task.getTaskInputJson(), SOURCE_FINGERPRINT_FIELD))
+                || task.getResultScenePlanVersionId() == null) {
+            throw new BusinessException(ErrorCode.AGENT_RUN_IDEMPOTENCY_CONFLICT, "幂等键已绑定不同来源输入");
+        }
+        return chapterPlanView(requireChapterPlan(chapterId, task.getResultScenePlanVersionId()));
+    }
+
+    private String taskInputText(String inputJson, String field) {
+        if (blank(inputJson)) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(inputJson).path(field).asText(null);
+        } catch (JsonProcessingException exception) {
+            return null;
+        }
+    }
+
+    private List<SourceRef> sourceRefs(ChapterPlanVersionEntity entity) {
+        Long snapshotId = contextSnapshotId(entity);
+        if (snapshotId == null) {
+            return List.of();
+        }
+        return snapshotQueryPort.load(snapshotId).items().stream()
+                .filter(item -> item.sourceType().name().equals("CHAPTER_BRIEF")
+                        || item.sourceType().name().equals("NARRATIVE_PLAN")
+                        || item.sourceType().name().equals("CHAPTER_OUTLINE")
+                        || item.sourceType().name().equals("SETTING_ENTRY")
+                        || item.sourceType().name().equals("FORESHADOWING")
+                        || item.sourceType().name().equals("CHAPTER_SUMMARY"))
+                .map(item -> new SourceRef(item.sourceType().name(), item.sourceId(), item.contentVersion()))
+                .toList();
+    }
+
+    private List<String> reasonCodes(String json) {
+        if (blank(json)) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, objectMapper.getTypeFactory().constructCollectionType(List.class, String.class));
+        } catch (JsonProcessingException exception) {
+            return List.of();
+        }
     }
 
     private WorkNarrativePlanVersionEntity currentNarrative(Long workId) {
@@ -423,6 +503,15 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
 
     private ChapterEntity requireChapter(Long chapterId) {
         ChapterEntity entity = chapterId == null ? null : chapterMapper.selectById(chapterId);
+        if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
+            throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
+        }
+        requireWork(entity.getWorkId());
+        return entity;
+    }
+
+    private ChapterEntity requireChapterForUpdate(Long chapterId) {
+        ChapterEntity entity = chapterId == null ? null : chapterMapper.selectByIdForUpdate(chapterId);
         if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
             throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
         }

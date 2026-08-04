@@ -19,6 +19,8 @@ import org.mockito.ArgumentCaptor;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.config.service.UserConfigService;
+import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.llm.LlmCallContext;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
@@ -50,6 +52,7 @@ class ScenePlanWorkflowDefinitionTest {
     private final ChapterOutlineQueryMapper outlineMapper = mock(ChapterOutlineQueryMapper.class);
     private final LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
     private final UserConfigService userConfigService = mock(UserConfigService.class);
+    private final StoryContextSnapshotQueryPort snapshotQueryPort = mock(StoryContextSnapshotQueryPort.class);
     private final LlmProvider provider = mock(LlmProvider.class);
 
     private ScenePlanWorkflowDefinition workflow;
@@ -59,7 +62,7 @@ class ScenePlanWorkflowDefinitionTest {
     @BeforeEach
     void setUp() {
         workflow = new ScenePlanWorkflowDefinition(planMapper, sceneMapper, outlineMapper, providerFactory,
-                userConfigService, new PlanningContentCodec(), objectMapper);
+                userConfigService, snapshotQueryPort, new PlanningContentCodec(), objectMapper);
         candidate = new ChapterPlanVersionEntity();
         candidate.setId(301L);
         candidate.setWorkId(11L);
@@ -80,6 +83,9 @@ class ScenePlanWorkflowDefinitionTest {
                 new LlmExecutionConfigDescriptor("deepseek", "test-model", 1, 1));
         when(userConfigService.requireAvailableExecutionConfig()).thenReturn(executionConfig);
         when(providerFactory.createObserved(eq(executionConfig), any(LlmCallContext.class))).thenReturn(provider);
+        when(snapshotQueryPort.load(701L)).thenReturn(new StoryContextSnapshot(701L, "scene", 11L, 21L, null,
+                com.dugnan.moqi.context.StoryContextProfile.SCENE_PLANNING, 2, 1L, 16384, 4096, 12288, 32,
+                "fingerprint", List.of(), List.of(), null));
     }
 
     @Test
@@ -132,7 +138,7 @@ class ScenePlanWorkflowDefinitionTest {
         verify(provider).generate(requestCaptor.capture());
         assertThat(requestCaptor.getValue().options().responseFormat().name()).isEqualTo("JSON_OBJECT");
         assertThat(requestCaptor.getValue().messages().get(0).content())
-                .contains("顶层只能有 scenes", "禁止虚构设定 ID", "foreshadowingItemId 必须为 null");
+                .contains("仅输出 JSON 对象", "status 必须为 planned", "禁止编造 ID");
     }
 
     @Test
@@ -161,7 +167,8 @@ class ScenePlanWorkflowDefinitionTest {
 
     private AgentStepExecutionContext context() {
         return new AgentStepExecutionContext(501L, 601L, "generate_candidate", 1, "501:generate_candidate",
-                Map.of("candidateId", 301L), Map.of(), Map.of(), mock(com.dugnan.moqi.agent.AgentRunCallRegistry.class));
+                Map.of("candidateId", 301L, "contextSnapshotId", 701L), Map.of(), Map.of(),
+                mock(com.dugnan.moqi.agent.AgentRunCallRegistry.class));
     }
 
     private String validScenesJson() {

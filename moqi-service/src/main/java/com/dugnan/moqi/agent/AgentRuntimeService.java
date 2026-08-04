@@ -9,6 +9,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -121,6 +122,19 @@ public class AgentRuntimeService implements AgentRuntime {
     public AgentRunView start(StartAgentRunCommand command) {
         requireStartCommand(command);
         return transactionTemplate.execute(status -> createOrLoadRun(command));
+    }
+
+    @Override
+    public Optional<AgentRunView> findByIdempotencyKey(String userId, String workflowType, String idempotencyKey) {
+        if (blank(userId) || blank(workflowType) || blank(idempotencyKey)) {
+            return Optional.empty();
+        }
+        AgentRunEntity run = runMapper.selectOne(new LambdaQueryWrapper<AgentRunEntity>()
+                .eq(AgentRunEntity::getUserId, userId)
+                .eq(AgentRunEntity::getWorkflowType, workflowType)
+                .eq(AgentRunEntity::getIdempotencyKey, idempotencyKey)
+                .eq(AgentRunEntity::getDeleted, 0));
+        return Optional.ofNullable(run).map(this::view);
     }
 
     @Override

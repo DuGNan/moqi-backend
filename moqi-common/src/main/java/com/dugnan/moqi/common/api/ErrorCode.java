@@ -95,6 +95,8 @@ public enum ErrorCode {
     SCENE_PLAN_CONFLICT,
     /** 场景规划绑定的大纲已过期。 */
     SCENE_PLAN_OUTLINE_STALE,
+    /** 场景规划固化的来源已发生变化。 */
+    SCENE_PLAN_SOURCE_STALE,
     /** 场景规划内容不符合结构化契约。 */
     SCENE_PLAN_INVALID,
     /** 故事上下文快照不存在。 */

@@ -45,10 +45,15 @@ public final class PlanningModels {
     public record ScenePlanView(Long scenePlanId, String sceneKey, Integer sequence, ScenePlanContent content) {
     }
 
+    public record SourceRef(String sourceType, String sourceId, String contentVersion) {
+    }
+
     public record ChapterPlanView(Long id, Long chapterId, Integer planNo, String status,
             Long narrativePlanId, Integer narrativePlanNo, Long outlineId, Integer outlineRevision,
             Long aiTaskId, Long agentRunId, ChapterPlanContent content, List<ScenePlanView> scenes,
             Integer outlineContentSchemaVersion, String outlineMigrationReviewStatus,
+            Long contextSnapshotId, Long sourceSnapshotId, List<SourceRef> sourceRefs,
+            String validityStatus, List<String> validityReasonCodes,
             Integer version, LocalDateTime gmtCreate, LocalDateTime gmtModified) {
         /** 兼容 V1 场景规划视图构造。 */
         public ChapterPlanView(Long id, Long chapterId, Integer planNo, String status, Long narrativePlanId,
@@ -56,7 +61,8 @@ public final class PlanningModels {
                 ChapterPlanContent content, List<ScenePlanView> scenes, Integer version, LocalDateTime gmtCreate,
                 LocalDateTime gmtModified) {
             this(id, chapterId, planNo, status, narrativePlanId, narrativePlanNo, outlineId, outlineRevision, aiTaskId,
-                    agentRunId, content, scenes, 1, "review_required", version, gmtCreate, gmtModified);
+                    agentRunId, content, scenes, 1, "review_required", null, null, List.of(), null, List.of(),
+                    version, gmtCreate, gmtModified);
         }
     }
 

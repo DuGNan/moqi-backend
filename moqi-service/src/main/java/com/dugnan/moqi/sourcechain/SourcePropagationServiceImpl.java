@@ -64,13 +64,17 @@ public class SourcePropagationServiceImpl implements SourcePropagationService {
     }
 
     @Override public void scenePlanCreated(Long chapterId, Long scenePlanId) {
+        scenePlanCreated(chapterId, scenePlanId, null);
+    }
+
+    @Override public void scenePlanCreated(Long chapterId, Long scenePlanId, Long contextSnapshotId) {
         ChapterPlanVersionEntity plan = planMapper.selectById(scenePlanId);
         if (plan == null) {
             return;
         }
         Long snapshotId = sourceChainService.recordSnapshot(plan.getWorkId(), chapterId, new AssetSourceView("scene_plan",
                 plan.getId(), plan.getPlanNo(), null, "current", List.of(), null, plan.getNarrativePlanId(),
-                plan.getOutlineId(), plan.getOutlineRevision(), plan.getId(), null));
+                plan.getOutlineId(), plan.getOutlineRevision(), plan.getId(), contextSnapshotId));
         plan.setSourceSnapshotId(snapshotId);
         plan.setValidityStatus("current");
         planMapper.updateById(plan);
