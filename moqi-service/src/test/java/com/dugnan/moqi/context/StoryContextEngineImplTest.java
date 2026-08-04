@@ -30,6 +30,7 @@ import com.dugnan.moqi.knowledge.mapper.ChapterKeyEventMapper;
 import com.dugnan.moqi.knowledge.mapper.ChapterSummaryMapper;
 import com.dugnan.moqi.knowledge.mapper.ForeshadowingItemMapper;
 import com.dugnan.moqi.knowledge.mapper.SettingEntryMapper;
+import com.dugnan.moqi.planning.mapper.WorkNarrativePlanVersionMapper;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
@@ -47,6 +48,8 @@ class StoryContextEngineImplTest {
     private ChapterBriefMapper briefMapper;
     @Mock
     private ChapterOutlineQueryMapper outlineMapper;
+    @Mock
+    private WorkNarrativePlanVersionMapper narrativeMapper;
     @Mock
     private SettingEntryMapper settingMapper;
     @Mock
@@ -67,11 +70,12 @@ class StoryContextEngineImplTest {
     @BeforeEach
     void setUp() {
         engine = new StoryContextEngineImpl(
-                workMapper, chapterMapper, briefMapper, outlineMapper, settingMapper,
+                workMapper, chapterMapper, briefMapper, outlineMapper, narrativeMapper, settingMapper,
                 foreshadowingMapper, summaryMapper, eventMapper, conversationMapper,
                 messageMapper, snapshotMapper, new ConservativeTokenEstimator(), new ObjectMapper());
         lenient().when(briefMapper.selectList(any())).thenReturn(List.of());
         lenient().when(outlineMapper.selectList(any())).thenReturn(List.of());
+        lenient().when(narrativeMapper.selectList(any())).thenReturn(List.of());
         lenient().when(settingMapper.selectList(any())).thenReturn(List.of());
         lenient().when(foreshadowingMapper.selectList(any())).thenReturn(List.of());
         lenient().when(summaryMapper.selectList(any())).thenReturn(List.of());

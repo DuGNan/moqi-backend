@@ -1,5 +1,7 @@
 package com.dugnan.moqi.agent;
 
+import java.util.Optional;
+
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentResumeToken;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.ResumeAgentRunCommand;
@@ -22,6 +24,16 @@ public interface AgentRuntime {
      * @return Run 当前视图
      */
     AgentRunView start(StartAgentRunCommand command);
+
+    /**
+     * 按用户、工作流和幂等键读取已创建的 Run。
+     *
+     * @param userId 用户标识
+     * @param workflowType 工作流类型
+     * @param idempotencyKey 幂等键
+     * @return 已存在的 Run；不存在时为空
+     */
+    Optional<AgentRunView> findByIdempotencyKey(String userId, String workflowType, String idempotencyKey);
 
     /**
      * 读取 Run 及其最新步骤、checkpoint 与人工中断引用。

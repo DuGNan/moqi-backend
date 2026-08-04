@@ -1,8 +1,11 @@
 package com.dugnan.moqi.planning;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -13,6 +16,9 @@ import com.dugnan.moqi.agent.AgentWorkflowDefinition;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.config.service.UserConfigService;
+import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
+import com.dugnan.moqi.context.StoryContextSourceType;
 import com.dugnan.moqi.llm.LlmMessage;
 import com.dugnan.moqi.llm.LlmCallContext;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
@@ -25,7 +31,6 @@ import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.llm.LlmResponse;
 import com.dugnan.moqi.llm.LlmResponseMetadata;
 import com.dugnan.moqi.llm.LlmResponseFormat;
-import com.dugnan.moqi.llm.LlmRole;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
 import com.dugnan.moqi.planning.entity.ChapterPlanVersionEntity;
 import com.dugnan.moqi.planning.entity.ScenePlanVersionEntity;
@@ -48,11 +53,10 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
     private static final String STATUS_READY = "ready";
     private static final String TEMPLATE_VERSION = "scene-plan-v1";
     private static final String GENERATION_PROMPT = """
-            只输出 JSON 对象，顶层只能有 scenes。scenes 是 1 至 50 个对象的数组；每项必含 sceneKey、sequence、title、
-            timeAnchor、goal、conflict、emotion、pacing、expectedOutcome、status。sceneKey 在本次输出内唯一，sequence
-            必须从 1 开始连续递增，status 只能为 planned 或 disabled。viewpointCharacter 与 location 必须为 null；
-            participants 与 requiredSettings 必须为空数组，禁止虚构设定 ID。foreshadowingActions 只能为空数组或 seed 动作，
-            seed 的 foreshadowingItemId 必须为 null。不要输出 Markdown、解释或隐藏推理。
+            仅输出 JSON 对象，顶层只能包含 scenes。每个场景必须包含 sceneKey、sequence、title、
+            timeAnchor、goal、conflict、emotion、pacing、expectedOutcome 和 status；sequence 从 1 连续递增。
+            status 必须为 planned。仅能引用上下文中已列出的设定与伏笔 ID，禁止编造 ID。
+            不要输出 Markdown、解释或隐藏推理。
             """;
 
     private final ChapterPlanVersionMapper planMapper;
@@ -60,17 +64,20 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
     private final ChapterOutlineQueryMapper outlineMapper;
     private final LlmProviderFactory providerFactory;
     private final UserConfigService userConfigService;
+    private final StoryContextSnapshotQueryPort snapshotQueryPort;
     private final PlanningContentCodec codec;
     private final ObjectMapper objectMapper;
 
     public ScenePlanWorkflowDefinition(ChapterPlanVersionMapper planMapper, ScenePlanVersionMapper sceneMapper,
             ChapterOutlineQueryMapper outlineMapper, LlmProviderFactory providerFactory,
-            UserConfigService userConfigService, PlanningContentCodec codec, ObjectMapper objectMapper) {
+            UserConfigService userConfigService, StoryContextSnapshotQueryPort snapshotQueryPort,
+            PlanningContentCodec codec, ObjectMapper objectMapper) {
         this.planMapper = planMapper;
         this.sceneMapper = sceneMapper;
         this.outlineMapper = outlineMapper;
         this.providerFactory = providerFactory;
         this.userConfigService = userConfigService;
+        this.snapshotQueryPort = snapshotQueryPort;
         this.codec = codec;
         this.objectMapper = objectMapper;
     }
@@ -104,6 +111,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
                 || !candidate.getOutlineRevision().equals(outline.getRevision())) {
             throw new ScenePlanWorkflowException("SCENE_PLAN_OUTLINE_STALE", "validation", "场景规划候选的章节大纲已过期", null);
         }
+        StoryContextSnapshot snapshot = contextSnapshot(context);
         LlmExecutionConfig executionConfig;
         LlmProvider provider;
         LlmResponse response;
@@ -119,9 +127,9 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
                             .agentStepId(context.stepId())
                             .logicalCallId("agent-step:" + context.stepId() + ":scene-plan")
                             .promptTemplateVersion(TEMPLATE_VERSION)
-                            .sourceFingerprint("outline:" + outline.getId() + ":" + outline.getRevision())
+                            .sourceFingerprint(snapshot.contentHash())
                             .build());
-            response = provider.generate(request(outline));
+            response = provider.generate(request(snapshot));
         } catch (LlmProviderException exception) {
             if (LlmProviderError.INVALID_RESPONSE.equals(exception.getError())) {
                 throw new ScenePlanWorkflowException("SCENE_PLAN_JSON_INVALID", "json", "场景规划模型返回格式无效", exception);
@@ -143,7 +151,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         List<ScenePlanContent> scenes;
         try {
             scenes = codec.scenes(output.scenes());
-            validateGeneratedReferences(scenes);
+            validateGeneratedReferences(scenes, snapshot);
         } catch (Exception exception) {
             throw new ScenePlanWorkflowException("SCENE_PLAN_VALIDATION_FAILED", "validation", "场景规划结构校验失败", exception);
         }
@@ -164,6 +172,11 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         ChapterPlanVersionEntity candidate = planMapper.selectById(candidateId);
         if (candidate == null || !STATUS_QUEUED.equals(candidate.getPlanStatus())) {
             throw new ScenePlanWorkflowException("SCENE_PLAN_PERSISTENCE_FAILED", "persistence", "场景候选状态已变化", null);
+        }
+        ChapterOutlineEntity outline = outlineMapper.findLatest(candidate.getChapterId());
+        if (outline == null || !candidate.getOutlineId().equals(outline.getId())
+                || !candidate.getOutlineRevision().equals(outline.getRevision())) {
+            throw new ScenePlanWorkflowException("SCENE_PLAN_SOURCE_STALE", "validation", "场景规划来源已更新", null);
         }
         List<ScenePlanContent> scenes = persistedScenes(result);
         try {
@@ -207,8 +220,11 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
             return;
         }
         Long candidateId = candidateId(context);
+        String status = exception instanceof ScenePlanWorkflowException workflowException
+                && "SCENE_PLAN_SOURCE_STALE".equals(workflowException.code()) ? "stale" : STATUS_FAILED;
         planMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("id", candidateId)
-                .eq("deleted", 0).eq("plan_status", STATUS_QUEUED).set("plan_status", STATUS_FAILED)
+                .eq("deleted", 0).eq("plan_status", STATUS_QUEUED).set("plan_status", status)
+                .set("validity_status", "stale".equals(status) ? "stale" : "current")
                 .setSql("version = version + 1"));
     }
 
@@ -234,23 +250,56 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         }
     }
 
-    private LlmRequest request(ChapterOutlineEntity outline) {
-        return new LlmRequest(List.of(
-                new LlmMessage(LlmRole.SYSTEM, GENERATION_PROMPT),
-                new LlmMessage(LlmRole.USER, "当前章节正式大纲：\n" + outline.getOutlineContent())),
-                new LlmOptions(4096, null, List.of(), LlmResponseFormat.JSON_OBJECT));
+    private StoryContextSnapshot contextSnapshot(AgentStepExecutionContext context) {
+        Object value = context.input().get("contextSnapshotId");
+        if (!(value instanceof Number number)) {
+            throw new ScenePlanWorkflowException("SCENE_PLAN_SOURCE_STALE", "validation", "场景规划缺少已固化上下文", null);
+        }
+        return snapshotQueryPort.load(number.longValue());
     }
 
-    private void validateGeneratedReferences(List<ScenePlanContent> scenes) {
+    private LlmRequest request(StoryContextSnapshot snapshot) {
+        List<LlmMessage> messages = new ArrayList<>(snapshot.toMessages());
+        messages.add(new LlmMessage(com.dugnan.moqi.llm.LlmRole.SYSTEM, GENERATION_PROMPT));
+        return new LlmRequest(messages, new LlmOptions(4096, null, List.of(), LlmResponseFormat.JSON_OBJECT));
+    }
+
+    private void validateGeneratedReferences(List<ScenePlanContent> scenes, StoryContextSnapshot snapshot) {
+        Set<Long> settingIds = selectedIds(snapshot, StoryContextSourceType.SETTING_ENTRY);
+        Set<Long> foreshadowingIds = selectedIds(snapshot, StoryContextSourceType.FORESHADOWING);
         for (ScenePlanContent scene : scenes) {
-            boolean hasSettingReference = scene.viewpointCharacter() != null || scene.location() != null
-                    || !scene.participants().isEmpty() || !scene.requiredSettings().isEmpty();
-            boolean hasExistingForeshadowing = scene.foreshadowingActions().stream()
-                    .anyMatch(action -> action.foreshadowingItemId() != null);
-            if (hasSettingReference || hasExistingForeshadowing) {
-                throw new IllegalArgumentException("场景规划不能引用未提供的设定或既有伏笔");
+            if (!"planned".equals(scene.status())) {
+                throw new IllegalArgumentException("模型生成的场景必须为 planned");
+            }
+            if (!hasAllowedReferences(scene, settingIds, foreshadowingIds)) {
+                throw new IllegalArgumentException("场景规划引用了未选入上下文的设定或伏笔");
             }
         }
+    }
+
+    private boolean hasAllowedReferences(ScenePlanContent scene, Set<Long> settingIds, Set<Long> foreshadowingIds) {
+        return referencesWithin(scene.viewpointCharacter(), settingIds)
+                && referencesWithin(scene.location(), settingIds)
+                && scene.participants().stream().allMatch(reference -> referencesWithin(reference, settingIds))
+                && scene.requiredSettings().stream().allMatch(reference -> referencesWithin(reference, settingIds))
+                && scene.foreshadowingActions().stream().allMatch(action -> action.foreshadowingItemId() == null
+                        || foreshadowingIds.contains(action.foreshadowingItemId()));
+    }
+
+    private Set<Long> selectedIds(StoryContextSnapshot snapshot, StoryContextSourceType type) {
+        Set<Long> result = new HashSet<>();
+        snapshot.items().stream().filter(item -> item.sourceType() == type).forEach(item -> {
+            try {
+                result.add(Long.valueOf(item.sourceId()));
+            } catch (NumberFormatException exception) {
+                // 仅忽略非实体来源；此处不会放宽任何模型引用校验。
+            }
+        });
+        return result;
+    }
+
+    private boolean referencesWithin(PlanningModels.PlanReference reference, Set<Long> allowedIds) {
+        return reference == null || reference.settingEntryId() != null && allowedIds.contains(reference.settingEntryId());
     }
 
     private void validateOutputShape(JsonNode structuredContent) {

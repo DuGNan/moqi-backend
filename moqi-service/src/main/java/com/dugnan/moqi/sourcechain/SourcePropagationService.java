@@ -36,6 +36,17 @@ public interface SourcePropagationService {
      * @param scenePlanId 场景规划编号
      */
     void scenePlanCreated(Long chapterId, Long scenePlanId);
+
+    /**
+     * 为新场景规划建立来源快照并关联其固化的故事上下文快照。
+     *
+     * @param chapterId 章节编号
+     * @param scenePlanId 场景规划编号
+     * @param contextSnapshotId 故事上下文快照编号
+     */
+    default void scenePlanCreated(Long chapterId, Long scenePlanId, Long contextSnapshotId) {
+        scenePlanCreated(chapterId, scenePlanId);
+    }
     /**
      * 为新正文批次建立来源快照。
      * @param chapterId 章节编号
