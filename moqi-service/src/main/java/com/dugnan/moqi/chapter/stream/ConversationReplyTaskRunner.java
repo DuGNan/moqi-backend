@@ -30,6 +30,7 @@ import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextBuildCommand;
+import com.dugnan.moqi.context.MessageReference;
 import com.dugnan.moqi.context.StoryContextProfile;
 import com.dugnan.moqi.context.StoryContextFocus;
 import com.dugnan.moqi.context.StoryContextFocus.StoryContextFocusSource;
@@ -399,7 +400,32 @@ public class ConversationReplyTaskRunner {
                 null,
                 contextWindow,
                 outputReserve,
-                resolveFocus(task, input)), task);
+                resolveFocus(task, input), null, resolveMessageReference(input)), task);
+    }
+
+    private MessageReference resolveMessageReference(ChapterConversationMessageEntity input) {
+        if (input.getReferencedMessageId() == null) {
+            return null;
+        }
+        ChapterConversationMessageEntity referenced = messageMapper.selectById(input.getReferencedMessageId());
+        if (!isAvailableMessageReference(input, referenced)) {
+            throw new BusinessException(com.dugnan.moqi.common.api.ErrorCode.MESSAGE_REFERENCE_INVALID,
+                    "引用消息不可用");
+        }
+        return new MessageReference(referenced.getId(), referenced.getMessageRole(), referenced.getContent());
+    }
+
+    private boolean isAvailableMessageReference(
+            ChapterConversationMessageEntity input,
+            ChapterConversationMessageEntity referenced) {
+        if (referenced == null || Integer.valueOf(1).equals(referenced.getDeleted())) {
+            return false;
+        }
+        if (!input.getConversationId().equals(referenced.getConversationId())
+                || !input.getChapterId().equals(referenced.getChapterId())) {
+            return false;
+        }
+        return "user".equals(referenced.getMessageRole()) || "assistant".equals(referenced.getMessageRole());
     }
 
     /**

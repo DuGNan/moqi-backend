@@ -15,7 +15,17 @@ public record StoryContextBuildCommand(
         int contextWindowTokens,
         int outputReserveTokens,
         StoryContextFocus discussionFocus,
-        SceneGenerationContextFocus sceneGenerationFocus) {
+        SceneGenerationContextFocus sceneGenerationFocus,
+        MessageReference messageReference) {
+
+    public StoryContextBuildCommand(
+            StoryContextProfile profile, Long workId, Long chapterId, Long conversationId,
+            Long currentMessageId, String taskInstruction, String currentInput, String targetText,
+            int contextWindowTokens, int outputReserveTokens, StoryContextFocus discussionFocus,
+            SceneGenerationContextFocus sceneGenerationFocus) {
+        this(profile, workId, chapterId, conversationId, currentMessageId, taskInstruction, currentInput,
+                targetText, contextWindowTokens, outputReserveTokens, discussionFocus, sceneGenerationFocus, null);
+    }
 
     /**
      * 保留不含讨论对焦的旧构造入口。
@@ -54,6 +64,7 @@ public record StoryContextBuildCommand(
                 contextWindowTokens,
                 outputReserveTokens,
                 null,
+                null,
                 null);
     }
 
@@ -85,7 +96,7 @@ public record StoryContextBuildCommand(
             int outputReserveTokens,
             StoryContextFocus discussionFocus) {
         this(profile, workId, chapterId, conversationId, currentMessageId, taskInstruction, currentInput,
-                targetText, contextWindowTokens, outputReserveTokens, discussionFocus, null);
+                targetText, contextWindowTokens, outputReserveTokens, discussionFocus, null, null);
     }
 
     /**

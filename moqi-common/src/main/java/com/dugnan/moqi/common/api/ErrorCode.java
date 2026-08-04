@@ -54,6 +54,8 @@ public enum ErrorCode {
     DISCUSSION_FOCUS_INVALID,
     /** 讨论对焦引用的 Brief 已失效。 */
     DISCUSSION_FOCUS_STALE,
+    /** 消息引用不符合当前作品、章节或会话的可见范围。 */
+    MESSAGE_REFERENCE_INVALID,
     /** 章节正文版本冲突。 */
     CHAPTER_VERSION_CONFLICT,
     /** 用户配置版本冲突。 */

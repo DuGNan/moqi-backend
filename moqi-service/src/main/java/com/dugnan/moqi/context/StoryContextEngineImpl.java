@@ -238,6 +238,12 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                     command.profile() != StoryContextProfile.CHAPTER_DISCUSSION, 850, 310, null, null, Category.CURRENT);
         }
         addConversationHistory(candidates, command, conversation);
+        if (command.messageReference() != null) {
+            MessageReference reference = command.messageReference();
+            add(candidates, StoryContextSourceType.TARGET_TEXT, "referenced-" + reference.messageId(),
+                    reference.role().toUpperCase(), "[referencedMessageId=" + reference.messageId() + "]\n" + reference.content(),
+                    true, 995, 490, null, null, Category.CURRENT);
+        }
         if (StringUtils.hasText(command.currentInput())) {
             add(candidates, StoryContextSourceType.USER_INPUT, id(command.currentMessageId()), "USER",
                     command.currentInput(), true, 1000, 500, null, null, Category.CURRENT);

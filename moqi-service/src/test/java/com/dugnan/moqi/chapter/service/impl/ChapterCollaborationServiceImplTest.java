@@ -232,6 +232,53 @@ class ChapterCollaborationServiceImplTest {
         verify(focusResolver).resolve(eq(2L), eq(8L), eq(21L), eq("protagonist_choice"));
     }
 
+    @Test
+    void persistsReferenceToVisibleAssistantMessage() {
+        when(conversationMapper.selectById(8L)).thenReturn(conversation(8L, 1L, 2L));
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        ChapterConversationMessageEntity referenced = new ChapterConversationMessageEntity();
+        referenced.setId(31L);
+        referenced.setConversationId(8L);
+        referenced.setChapterId(2L);
+        referenced.setMessageRole("assistant");
+        referenced.setContent("可引用的回复");
+        referenced.setDeleted(0);
+        when(messageMapper.selectById(31L)).thenReturn(referenced);
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(32L);
+            return 1;
+        });
+
+        service.sendMessage(8L, new SendMessageRequest("user", "请展开这一点", false, null, null, 31L));
+
+        ArgumentCaptor<ChapterConversationMessageEntity> captor =
+                ArgumentCaptor.forClass(ChapterConversationMessageEntity.class);
+        verify(messageMapper).insert(captor.capture());
+        assertThat(captor.getValue().getReferencedMessageId()).isEqualTo(31L);
+    }
+
+    @Test
+    void rejectsDeletedOrOutOfScopeMessageReferenceWithoutLeakingContent() {
+        when(conversationMapper.selectById(8L)).thenReturn(conversation(8L, 1L, 2L));
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        ChapterConversationMessageEntity referenced = new ChapterConversationMessageEntity();
+        referenced.setId(31L);
+        referenced.setConversationId(9L);
+        referenced.setChapterId(2L);
+        referenced.setMessageRole("assistant");
+        referenced.setContent("不应泄露的消息正文");
+        referenced.setDeleted(0);
+        when(messageMapper.selectById(31L)).thenReturn(referenced);
+
+        assertThatThrownBy(() -> service.sendMessage(
+                8L, new SendMessageRequest("user", "请展开这一点", false, null, null, 31L)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.MESSAGE_REFERENCE_INVALID);
+        verify(messageMapper, never()).insert(any(ChapterConversationMessageEntity.class));
+    }
+
     /**
      * 验证大纲保存会拒绝过期 revision。
      */
