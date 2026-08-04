@@ -255,7 +255,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     @Transactional(rollbackFor = RuntimeException.class)
     public MessageCreated sendMessage(Long conversationId, SendMessageRequest request) {
         ChapterConversationEntity conversation = requireConversation(conversationId);
-        requireChapter(conversation.getChapterId());
+        ChapterEntity chapter = requireChapter(conversation.getChapterId());
         String role = role(request == null ? null : request.messageRole());
         String content = requiredText(request == null ? null : request.content(), "消息内容不能为空");
         Long continuationMessageId = requireContinuation(conversation, request, role);
@@ -266,7 +266,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         message.setMessageRole(role);
         message.setContent(content);
         applyDiscussionFocus(conversation, request, role, message);
-        applyReferencedMessage(conversation, request, role, message);
+        applyReferencedMessage(conversation, chapter, request, role, message);
         message.setDeleted(0);
         messageMapper.insert(message);
 
@@ -566,6 +566,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      */
     private void applyReferencedMessage(
             ChapterConversationEntity conversation,
+            ChapterEntity chapter,
             SendMessageRequest request,
             String role,
             ChapterConversationMessageEntity message) {
@@ -574,15 +575,34 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             return;
         }
         if (!ROLE_USER.equals(role)) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "referencedMessageId 只允许用于用户消息");
+            throw invalidMessageReference();
         }
         ChapterConversationMessageEntity referenced = messageMapper.selectById(referencedMessageId);
-        if (referenced == null || Integer.valueOf(1).equals(referenced.getDeleted())
-                || !conversation.getId().equals(referenced.getConversationId())
-                || !conversation.getChapterId().equals(referenced.getChapterId())) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "referencedMessageId 必须属于当前会话和章节");
+        if (!isAvailableMessageReference(conversation, chapter, referenced)) {
+            throw invalidMessageReference();
         }
         message.setReferencedMessageId(referencedMessageId);
+    }
+
+    private boolean isAvailableMessageReference(
+            ChapterConversationEntity conversation,
+            ChapterEntity chapter,
+            ChapterConversationMessageEntity referenced) {
+        if (referenced == null || Integer.valueOf(1).equals(referenced.getDeleted())) {
+            return false;
+        }
+        if (!conversation.getId().equals(referenced.getConversationId())
+                || !conversation.getChapterId().equals(referenced.getChapterId())) {
+            return false;
+        }
+        if (!chapter.getWorkId().equals(conversation.getWorkId())) {
+            return false;
+        }
+        return ROLE_USER.equals(referenced.getMessageRole()) || "assistant".equals(referenced.getMessageRole());
+    }
+
+    private BusinessException invalidMessageReference() {
+        return new BusinessException(ErrorCode.MESSAGE_REFERENCE_INVALID, "引用消息不可用");
     }
 
     /**

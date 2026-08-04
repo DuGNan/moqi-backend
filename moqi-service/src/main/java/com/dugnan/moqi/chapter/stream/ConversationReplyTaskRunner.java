@@ -408,12 +408,24 @@ public class ConversationReplyTaskRunner {
             return null;
         }
         ChapterConversationMessageEntity referenced = messageMapper.selectById(input.getReferencedMessageId());
-        if (referenced == null || Integer.valueOf(1).equals(referenced.getDeleted())
-                || !input.getConversationId().equals(referenced.getConversationId())) {
-            throw new BusinessException(com.dugnan.moqi.common.api.ErrorCode.BAD_REQUEST,
-                    "引用消息在生成前已失效");
+        if (!isAvailableMessageReference(input, referenced)) {
+            throw new BusinessException(com.dugnan.moqi.common.api.ErrorCode.MESSAGE_REFERENCE_INVALID,
+                    "引用消息不可用");
         }
         return new MessageReference(referenced.getId(), referenced.getMessageRole(), referenced.getContent());
+    }
+
+    private boolean isAvailableMessageReference(
+            ChapterConversationMessageEntity input,
+            ChapterConversationMessageEntity referenced) {
+        if (referenced == null || Integer.valueOf(1).equals(referenced.getDeleted())) {
+            return false;
+        }
+        if (!input.getConversationId().equals(referenced.getConversationId())
+                || !input.getChapterId().equals(referenced.getChapterId())) {
+            return false;
+        }
+        return "user".equals(referenced.getMessageRole()) || "assistant".equals(referenced.getMessageRole());
     }
 
     /**
