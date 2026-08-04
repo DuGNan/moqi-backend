@@ -22,4 +22,7 @@ public class ChapterOutlineEntity extends BaseEntity {
     private Integer contentSchemaVersion;
     private String migrationReviewStatus;
     private String migrationReasonCodesJson;
+    private Long sourceSnapshotId;
+    private String validityStatus;
+    private String validityReasonCodesJson;
 }

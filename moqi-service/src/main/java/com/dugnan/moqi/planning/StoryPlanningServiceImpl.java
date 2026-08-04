@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.dugnan.moqi.agent.AgentRuntime;
@@ -39,6 +40,7 @@ import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
 import com.dugnan.moqi.work.mapper.WorkMapper;
+import com.dugnan.moqi.sourcechain.SourcePropagationService;
 
 /**
  * @author dgn
@@ -66,6 +68,12 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     private final AgentRuntime agentRuntime;
     private final PlanningContentCodec codec;
     private final ObjectMapper objectMapper;
+    private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
+
+    @Autowired
+    public void setSourcePropagationService(SourcePropagationService sourcePropagationService) {
+        this.sourcePropagationService = sourcePropagationService;
+    }
 
     public StoryPlanningServiceImpl(WorkMapper workMapper, ChapterMapper chapterMapper,
             ChapterOutlineQueryMapper outlineMapper, WorkNarrativePlanVersionMapper narrativeMapper,
@@ -104,7 +112,9 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     @Override
     public NarrativePlanView getNarrativePlan(Long workId, Long planId) {
         requireWork(workId);
-        return narrativeView(requireNarrative(workId, planId));
+        NarrativePlanView published = narrativeView(requireNarrative(workId, planId));
+        sourcePropagationService.narrativePublished(workId, planId);
+        return published;
     }
 
     @Override
@@ -214,9 +224,11 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         candidate.setPlanStatus(QUEUED);
         candidate.setSourceType("model");
         candidate.setCreatedBy(LOCAL_USER);
+        candidate.setValidityStatus("current");
         candidate.setDeleted(0);
         candidate.setVersion(0);
         chapterPlanMapper.insert(candidate);
+        sourcePropagationService.scenePlanCreated(chapterId, candidate.getId());
         task.setResultScenePlanVersionId(candidate.getId());
         taskMapper.updateById(task);
         var run = agentRuntime.start(new StartAgentRunCommand(LOCAL_USER, chapter.getWorkId(), chapterId,
@@ -230,7 +242,9 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     @Override
     public ChapterPlanView getCandidate(Long chapterId, Long planId) {
         requireChapter(chapterId);
-        return chapterPlanView(requireChapterPlan(chapterId, planId));
+        ChapterPlanView published = chapterPlanView(requireChapterPlan(chapterId, planId));
+        sourcePropagationService.scenePlanPublished(chapterId, planId);
+        return published;
     }
 
     @Override
@@ -298,10 +312,12 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         assertSourcesCurrent(entity);
         chapterPlanMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("chapter_id", chapterId)
                 .eq("current_marker", 1).eq("deleted", 0).set("plan_status", SUPERSEDED).set("current_marker", null)
+                .set("validity_status", SUPERSEDED)
                 .setSql("version = version + 1"));
         int changed = chapterPlanMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("id", planId)
                 .eq("version", entity.getVersion()).eq("plan_status", READY).set("plan_status", PUBLISHED)
-                .set("published_by", LOCAL_USER).set("current_marker", 1).setSql("version = version + 1"));
+                .set("published_by", LOCAL_USER).set("current_marker", 1).set("validity_status", "current")
+                .setSql("version = version + 1"));
         if (changed != 1) {
             throw sceneConflict("场景规划发布冲突");
         }

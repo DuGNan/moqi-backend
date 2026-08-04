@@ -30,4 +30,7 @@ public class ChapterPlanVersionEntity extends BaseEntity {
     private String createdBy;
     private String publishedBy;
     private Integer currentMarker;
+    private Long sourceSnapshotId;
+    private String validityStatus;
+    private String validityReasonCodesJson;
 }
