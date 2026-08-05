@@ -111,8 +111,20 @@ public final class ChapterConsensusModels {
             String contentFormat,
             ChapterConsensusContentV1 consensus,
             String legacyText,
+            String triggerSource,
+            Long baseBriefId,
+            String sourceAssetType,
+            Long sourceAssetId,
+            Long sourceReportId,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
+        /** 兼容尚未携带来源链字段的调用方。 */
+        public BriefView(Long id, Long workId, Long chapterId, String briefStatus, Integer version,
+                String contentFormat, ChapterConsensusContentV1 consensus, String legacyText,
+                LocalDateTime gmtCreate, LocalDateTime gmtModified) {
+            this(id, workId, chapterId, briefStatus, version, contentFormat, consensus, legacyText, "manual", null,
+                    null, null, null, gmtCreate, gmtModified);
+        }
     }
 
     /**

@@ -18,6 +18,13 @@ import com.dugnan.moqi.planning.PlanningModels.PublishScenePlanRequest;
 import com.dugnan.moqi.planning.PlanningModels.UpdateNarrativePlanRequest;
 import com.dugnan.moqi.planning.PlanningModels.UpdateScenePlanCandidateRequest;
 import com.dugnan.moqi.planning.StoryPlanningService;
+import com.dugnan.moqi.planning.ScenePlanConsistencyService;
+import com.dugnan.moqi.planning.ScenePlanConsistencyModels.CheckRequest;
+import com.dugnan.moqi.planning.ScenePlanConsistencyModels.ConsistencyReportView;
+import com.dugnan.moqi.planning.ScenePlanConsistencyModels.DiscussionProposalRequest;
+import com.dugnan.moqi.planning.ScenePlanConsistencyModels.RetryRequest;
+import com.dugnan.moqi.chapter.dto.ChapterConsensusModels.BriefView;
+import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 
 /**
  * @author dgn
@@ -28,9 +35,11 @@ import com.dugnan.moqi.planning.StoryPlanningService;
 @RequestMapping("/api")
 public class StoryPlanningController {
     private final StoryPlanningService planningService;
+    private final ScenePlanConsistencyService consistencyService;
 
-    public StoryPlanningController(StoryPlanningService planningService) {
+    public StoryPlanningController(StoryPlanningService planningService, ScenePlanConsistencyService consistencyService) {
         this.planningService = planningService;
+        this.consistencyService = consistencyService;
     }
 
     @PostMapping("/works/{workId}/narrative-plans")
@@ -107,5 +116,38 @@ public class StoryPlanningController {
     @GetMapping("/chapters/{chapterId}/scene-plans/{planNo}")
     public ApiResponse<ChapterPlanView> scenePlan(@PathVariable Long chapterId, @PathVariable Integer planNo) {
         return ApiResponse.success(planningService.loadPublished(chapterId, planNo));
+    }
+
+    @PostMapping("/chapters/{chapterId}/scene-plans/{planId}/consistency-reports")
+    public ApiResponse<ConsistencyReportView> createConsistencyReport(@PathVariable Long chapterId, @PathVariable Long planId,
+            @RequestBody CheckRequest request) {
+        return ApiResponse.success(consistencyService.create(chapterId, planId, request));
+    }
+
+    @GetMapping("/chapters/{chapterId}/scene-plans/{planId}/consistency-reports/latest")
+    public ApiResponse<ConsistencyReportView> latestConsistencyReport(@PathVariable Long chapterId, @PathVariable Long planId) {
+        return ApiResponse.success(consistencyService.latest(chapterId, planId));
+    }
+
+    @GetMapping("/chapters/{chapterId}/scene-plan-consistency-reports/{reportId}")
+    public ApiResponse<ConsistencyReportView> consistencyReport(@PathVariable Long chapterId, @PathVariable Long reportId) {
+        return ApiResponse.success(consistencyService.get(chapterId, reportId));
+    }
+
+    @PostMapping("/chapters/{chapterId}/scene-plan-consistency-reports/{reportId}/retry")
+    public ApiResponse<AgentRunView> retryConsistencyReport(@PathVariable Long chapterId, @PathVariable Long reportId,
+            @RequestBody RetryRequest request) {
+        return ApiResponse.success(consistencyService.retry(chapterId, reportId, request));
+    }
+
+    @PostMapping("/chapters/{chapterId}/scene-plan-consistency-reports/{reportId}/cancel")
+    public ApiResponse<AgentRunView> cancelConsistencyReport(@PathVariable Long chapterId, @PathVariable Long reportId) {
+        return ApiResponse.success(consistencyService.cancel(chapterId, reportId));
+    }
+
+    @PostMapping("/chapters/{chapterId}/scene-plan-consistency-reports/{reportId}/discussion-proposals")
+    public ApiResponse<BriefView> createDiscussionProposal(@PathVariable Long chapterId, @PathVariable Long reportId,
+            @RequestBody DiscussionProposalRequest request) {
+        return ApiResponse.success(consistencyService.createDiscussionProposal(chapterId, reportId, request));
     }
 }

@@ -434,6 +434,11 @@ public class ChapterConsensusServiceImpl implements ChapterConsensusService {
                 document.contentFormat(),
                 document.consensus(),
                 document.legacyText(),
+                brief.getTriggerSource(),
+                brief.getBaseBriefId(),
+                brief.getSourceAssetType(),
+                brief.getSourceAssetId(),
+                brief.getSourceReportId(),
                 brief.getGmtCreate(),
                 brief.getGmtModified());
     }

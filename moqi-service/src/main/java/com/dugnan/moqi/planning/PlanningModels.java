@@ -28,7 +28,15 @@ public final class PlanningModels {
             String timeAnchor, PlanReference location, String goal, String conflict,
             String emotion, String pacing, List<PlanReference> participants,
             List<PlanReference> requiredSettings, List<ForeshadowingAction> foreshadowingActions,
-            String expectedOutcome, String status) {
+            String expectedOutcome, String status, List<String> outlineBeatKeys) {
+        /** 兼容尚未写入节拍映射的旧场景规划。 */
+        public ScenePlanContent(String sceneKey, Integer sequence, String title, PlanReference viewpointCharacter,
+                String timeAnchor, PlanReference location, String goal, String conflict, String emotion, String pacing,
+                List<PlanReference> participants, List<PlanReference> requiredSettings,
+                List<ForeshadowingAction> foreshadowingActions, String expectedOutcome, String status) {
+            this(sceneKey, sequence, title, viewpointCharacter, timeAnchor, location, goal, conflict, emotion, pacing,
+                    participants, requiredSettings, foreshadowingActions, expectedOutcome, status, List.of());
+        }
     }
 
     /**
@@ -82,6 +90,10 @@ public final class PlanningModels {
             Integer baseVersion, ChapterPlanContent content, List<ScenePlanContent> scenes) {
     }
 
-    public record PublishScenePlanRequest(Integer baseVersion) {
+    public record PublishScenePlanRequest(Integer baseVersion, Long consistencyReportId, Boolean acknowledgeUnknown) {
+        /** 兼容尚未启用一致性门禁的旧客户端请求。 */
+        public PublishScenePlanRequest(Integer baseVersion) {
+            this(baseVersion, null, Boolean.FALSE);
+        }
     }
 }

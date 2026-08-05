@@ -47,6 +47,7 @@ import com.dugnan.moqi.planning.PublishedScenePlanQueryPort;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 import com.dugnan.moqi.sourcechain.SourcePropagationService;
+import com.dugnan.moqi.planning.ScenePlanConsistencyService;
 
 /**
  * @author dgn
@@ -79,10 +80,16 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
     private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
+    private ScenePlanConsistencyService consistencyService = ScenePlanConsistencyService.noop();
 
     @Autowired
     public void setSourcePropagationService(SourcePropagationService sourcePropagationService) {
         this.sourcePropagationService = sourcePropagationService;
+    }
+
+    @Autowired
+    public void setConsistencyService(ScenePlanConsistencyService consistencyService) {
+        this.consistencyService = consistencyService;
     }
 
     public SceneGenerationServiceImpl(
@@ -120,6 +127,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         ChapterPlanView chapterPlan = request.scenePlanNo() == null
                 ? scenePlanQueryPort.loadCurrent(chapterId)
                 : scenePlanQueryPort.loadPublished(chapterId, request.scenePlanNo());
+        consistencyService.requireGenerationAllowed(chapterId, chapterPlan.id());
         List<ScenePlanView> plannedScenes = chapterPlan.scenes().stream()
                 .filter(scene -> "planned".equals(scene.content().status()))
                 .sorted(Comparator.comparing(ScenePlanView::sequence))

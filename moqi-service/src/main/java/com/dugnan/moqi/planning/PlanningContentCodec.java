@@ -57,7 +57,8 @@ public class PlanningContentCodec {
                     required(scene.timeAnchor(), "timeAnchor", 500), scene.location(), required(scene.goal(), "goal", 2000),
                     required(scene.conflict(), "conflict", 2000), required(scene.emotion(), "emotion", 500),
                     required(scene.pacing(), "pacing", 500), references(scene.participants()), references(scene.requiredSettings()),
-                    actions(scene.foreshadowingActions()), required(scene.expectedOutcome(), "expectedOutcome", 2000), status));
+                    actions(scene.foreshadowingActions()), required(scene.expectedOutcome(), "expectedOutcome", 2000), status,
+                    beatKeys(scene.outlineBeatKeys())));
         }
         for (int sequence = 1; sequence <= normalized.size(); sequence++) {
             if (!sequences.contains(sequence)) {
@@ -87,6 +88,23 @@ public class PlanningContentCodec {
 
     private List<PlanningModels.PlanReference> references(List<PlanningModels.PlanReference> values) {
         return values == null ? List.of() : List.copyOf(values);
+    }
+
+    private List<String> beatKeys(List<String> values) {
+        if (values == null) {
+            return List.of();
+        }
+        if (values.size() > 50) {
+            throw invalid("outlineBeatKeys 数量超出限制");
+        }
+        Set<String> keys = new HashSet<>();
+        for (String value : values) {
+            String normalized = required(value, "outlineBeatKeys", 128);
+            if (!keys.add(normalized)) {
+                throw invalid("outlineBeatKeys 不能重复");
+            }
+        }
+        return List.copyOf(keys);
     }
 
     private List<String> strings(List<String> values, String field, int maxCount, int maxLength) {

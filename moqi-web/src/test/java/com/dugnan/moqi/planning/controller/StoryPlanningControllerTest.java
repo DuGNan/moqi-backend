@@ -12,6 +12,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import com.dugnan.moqi.planning.StoryPlanningService;
+import com.dugnan.moqi.planning.ScenePlanConsistencyService;
 import com.dugnan.moqi.web.exception.GlobalExceptionHandler;
 
 /**
@@ -27,7 +28,8 @@ class StoryPlanningControllerTest {
     @BeforeEach
     void setUp() {
         planningService = Mockito.mock(StoryPlanningService.class);
-        mvc = MockMvcBuilders.standaloneSetup(new StoryPlanningController(planningService))
+        mvc = MockMvcBuilders.standaloneSetup(new StoryPlanningController(planningService,
+                Mockito.mock(ScenePlanConsistencyService.class)))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
