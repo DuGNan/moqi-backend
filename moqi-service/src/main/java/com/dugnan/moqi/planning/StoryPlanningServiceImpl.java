@@ -79,10 +79,16 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     private final PlanningContentCodec codec;
     private final ObjectMapper objectMapper;
     private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
+    private ScenePlanConsistencyService consistencyService = ScenePlanConsistencyService.noop();
 
     @Autowired
     public void setSourcePropagationService(SourcePropagationService sourcePropagationService) {
         this.sourcePropagationService = sourcePropagationService;
+    }
+
+    @Autowired
+    public void setConsistencyService(ScenePlanConsistencyService consistencyService) {
+        this.consistencyService = consistencyService;
     }
 
     public StoryPlanningServiceImpl(WorkMapper workMapper, ChapterMapper chapterMapper,
@@ -335,6 +341,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
                 || !request.baseVersion().equals(entity.getVersion())) {
             throw sceneConflict("候选状态或版本已变化");
         }
+        consistencyService.requirePublishable(chapterId, planId, entity.getVersion(), request.consistencyReportId(),
+                request.acknowledgeUnknown());
         assertSourcesCurrent(entity);
         chapterPlanMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("chapter_id", chapterId)
                 .eq("current_marker", 1).eq("deleted", 0).set("plan_status", SUPERSEDED).set("current_marker", null)
@@ -343,6 +351,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         int changed = chapterPlanMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("id", planId)
                 .eq("version", entity.getVersion()).eq("plan_status", READY).set("plan_status", PUBLISHED)
                 .set("published_by", LOCAL_USER).set("current_marker", 1).set("validity_status", "current")
+                .set("published_consistency_report_id", request.consistencyReportId())
                 .setSql("version = version + 1"));
         if (changed != 1) {
             throw sceneConflict("场景规划发布冲突");

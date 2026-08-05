@@ -33,4 +33,5 @@ public class ChapterPlanVersionEntity extends BaseEntity {
     private Long sourceSnapshotId;
     private String validityStatus;
     private String validityReasonCodesJson;
+    private Long publishedConsistencyReportId;
 }

@@ -20,5 +20,17 @@ public class ChapterBriefEntity extends BaseEntity {
 
     private String briefStatus;
 
+    private String triggerSource;
+
+    private Long baseBriefId;
+
+    private String sourceAssetType;
+
+    private Long sourceAssetId;
+
+    private Long sourceReportId;
+
+    private String idempotencyKey;
+
     private String briefContent;
 }

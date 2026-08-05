@@ -99,6 +99,10 @@ public enum ErrorCode {
     SCENE_PLAN_SOURCE_STALE,
     /** 场景规划内容不符合结构化契约。 */
     SCENE_PLAN_INVALID,
+    /** 场景规划尚未完成可发布的一致性检查。 */
+    SCENE_PLAN_CONSISTENCY_REQUIRED,
+    /** 场景规划一致性报告状态或版本不匹配。 */
+    SCENE_PLAN_CONSISTENCY_CONFLICT,
     /** 故事上下文快照不存在。 */
     STORY_CONTEXT_SNAPSHOT_NOT_FOUND,
     /** 章节生成场景候选不存在。 */
