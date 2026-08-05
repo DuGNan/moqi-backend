@@ -111,6 +111,14 @@ public enum ErrorCode {
     GENERATION_SELECTION_INVALID,
     /** 章节生成绑定的模型配置或凭据已变化。 */
     GENERATION_CONFIG_STALE,
+    /** 故事知识提取批次或候选不存在。 */
+    KNOWLEDGE_EXTRACTION_NOT_FOUND,
+    /** 故事知识提取输入、状态或候选确认版本冲突。 */
+    KNOWLEDGE_EXTRACTION_CONFLICT,
+    /** 故事知识提取模型输出不符合安全结构化契约。 */
+    KNOWLEDGE_EXTRACTION_INVALID,
+    /** 故事知识提取绑定的已采纳正文来源已经变化。 */
+    KNOWLEDGE_EXTRACTION_STALE,
     /** 通用业务错误。 */
     BUSINESS_ERROR,
     /** 服务内部错误。 */
