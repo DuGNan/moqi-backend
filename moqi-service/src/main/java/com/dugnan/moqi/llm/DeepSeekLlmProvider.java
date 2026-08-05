@@ -14,9 +14,9 @@ import java.util.function.Consumer;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletion;
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionChunk;
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionFinishReason;
@@ -25,7 +25,9 @@ import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionMessage.Rol
 import org.springframework.ai.deepseek.api.DeepSeekApi.ChatCompletionRequest;
 import org.springframework.ai.deepseek.api.DeepSeekApi.Usage;
 import org.springframework.ai.deepseek.api.ResponseFormat;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.converter.HttpMessageConversionException;
@@ -33,9 +35,11 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 
 /**
  * @author dgn
@@ -52,13 +56,16 @@ public class DeepSeekLlmProvider implements LlmProvider {
     private static final int INVALID_RESPONSE_PREVIEW_PART_COUNT = 2;
     private static final int MAX_CONTEXT_TOKENS = 1_000_000;
     private static final int MAX_OUTPUT_TOKENS = 384_000;
+    private static final String SSE_DONE = "[DONE]";
+    private static final String CHAT_COMPLETIONS_PATH = "/chat/completions";
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration READ_TIMEOUT = Duration.ofSeconds(60);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final LlmProviderCapabilities CAPABILITIES =
             new LlmProviderCapabilities(true, true, false, MAX_CONTEXT_TOKENS, MAX_OUTPUT_TOKENS);
 
-    private final DeepSeekApi deepSeekApi;
+    private final RestClient restClient;
+    private final WebClient webClient;
     private final String model;
 
     /**
@@ -77,12 +84,17 @@ public class DeepSeekLlmProvider implements LlmProvider {
         HttpClient httpClient = HttpClient.newBuilder().connectTimeout(connectTimeout).build();
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
         requestFactory.setReadTimeout(readTimeout);
-        RestClient.Builder restClientBuilder = RestClient.builder().requestFactory(requestFactory);
-        this.deepSeekApi = DeepSeekApi.builder()
+        this.restClient = RestClient.builder()
                 .baseUrl(config.baseUrl())
-                .apiKey(config.apiKey())
-                .restClientBuilder(restClientBuilder)
-                .responseErrorHandler(new DeepSeekResponseErrorHandler())
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + config.apiKey())
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .requestFactory(requestFactory)
+                .defaultStatusHandler(new DeepSeekResponseErrorHandler())
+                .build();
+        this.webClient = WebClient.builder()
+                .baseUrl(config.baseUrl())
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + config.apiKey())
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .build();
         this.model = config.model();
     }
@@ -91,7 +103,11 @@ public class DeepSeekLlmProvider implements LlmProvider {
     public LlmResponse generate(LlmRequest request) {
         try {
             ResponseEntity<ChatCompletion> response =
-                    deepSeekApi.chatCompletionEntity(apiRequest(request, false));
+                    restClient.post()
+                            .uri(CHAT_COMPLETIONS_PATH)
+                            .body(apiRequestBody(request, false))
+                            .retrieve()
+                            .toEntity(ChatCompletion.class);
             ChatCompletion body = response.getBody();
             if (body == null || body.choices() == null || body.choices().isEmpty()) {
                 logInvalidStructuredResponse("empty_choices", null);
@@ -121,7 +137,7 @@ public class DeepSeekLlmProvider implements LlmProvider {
         }
         try {
             DeepSeekStreamCall call = new DeepSeekStreamCall(consumer);
-            Disposable disposable = deepSeekApi.chatCompletionStream(apiRequest(request, true))
+            Disposable disposable = streamChunks(request)
                     .subscribe(call::onChunk, call::onError, call::onComplete);
             call.bind(disposable);
             return call;
@@ -142,7 +158,11 @@ public class DeepSeekLlmProvider implements LlmProvider {
                 new LlmOptions(CONNECTION_TEST_MAX_TOKENS, null, List.of(), LlmResponseFormat.TEXT));
         try {
             ResponseEntity<ChatCompletion> response =
-                    deepSeekApi.chatCompletionEntity(apiRequest(request, false));
+                    restClient.post()
+                            .uri(CHAT_COMPLETIONS_PATH)
+                            .body(apiRequestBody(request, false))
+                            .retrieve()
+                            .toEntity(ChatCompletion.class);
             ChatCompletion body = response.getBody();
             if (body == null || body.choices() == null || body.choices().isEmpty()) {
                 throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
@@ -191,6 +211,31 @@ public class DeepSeekLlmProvider implements LlmProvider {
                 null,
                 null,
                 null);
+    }
+
+    private ObjectNode apiRequestBody(LlmRequest request, boolean isStream) {
+        ObjectNode body = OBJECT_MAPPER.valueToTree(apiRequest(request, isStream));
+        body.putObject("thinking").put("type", "disabled");
+        return body;
+    }
+
+    private Flux<ChatCompletionChunk> streamChunks(LlmRequest request) {
+        return webClient.post()
+                .uri(CHAT_COMPLETIONS_PATH)
+                .bodyValue(apiRequestBody(request, true))
+                .retrieve()
+                .bodyToFlux(String.class)
+                .takeUntil(SSE_DONE::equals)
+                .filter(content -> !SSE_DONE.equals(content))
+                .map(this::parseStreamChunk);
+    }
+
+    private ChatCompletionChunk parseStreamChunk(String content) {
+        try {
+            return OBJECT_MAPPER.readValue(content, ChatCompletionChunk.class);
+        } catch (JsonProcessingException exception) {
+            throw new LlmProviderException(LlmProviderError.INVALID_RESPONSE);
+        }
     }
 
     private Role role(LlmRole role) {

@@ -79,4 +79,43 @@ class OutlineCandidateContentCodecTest {
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.OUTLINE_CANDIDATE_INVALID);
     }
+
+    /**
+     * 模型偶尔会遗漏 schemaVersion，但只要返回了明确的 V2 字段，就应按 V2 读取，
+     * 避免错误降级到 V1 后报告 chapterGoal 为空。
+     */
+    @Test
+    void readsVersionTwoModelOutputWithoutSchemaVersion() {
+        OutlineCandidateContent result = codec.read("""
+                {
+                  "chapterPurpose":"建立主角与机甲的关系",
+                  "chapterGoal":"顾临被迫驾驶熟悉型号的机甲逃生",
+                  "coreConflict":"机械师的维修经验与零驾驶经验发生冲突",
+                  "beats":[{"beatKey":"beat-1","summary":"顾临维护玄武并遭遇突袭"}],
+                  "constraints":["顾临不是驾驶员"]
+                }
+                """);
+
+        assertThat(result.schemaVersion()).isEqualTo(2);
+        assertThat(result.chapterGoal()).isEqualTo("顾临被迫驾驶熟悉型号的机甲逃生");
+        assertThat(result.beats()).containsExactly(new Beat("beat-1", "顾临维护玄武并遭遇突袭"));
+    }
+
+    /**
+     * 模型返回的旧格式字段类型错误属于候选内容无效，不应泄漏为内部错误。
+     */
+    @Test
+    void classifiesMalformedLegacyCollectionsAsInvalidCandidate() {
+        assertThatThrownBy(() -> codec.read("""
+                {
+                  "goal":"目标",
+                  "coreConflict":"冲突",
+                  "scenes":[{"id":"beat-1","title":"开端","content":"发生变化","tags":[]}],
+                  "constraints":{"value":"错误类型"}
+                }
+                """))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.OUTLINE_CANDIDATE_INVALID);
+    }
 }

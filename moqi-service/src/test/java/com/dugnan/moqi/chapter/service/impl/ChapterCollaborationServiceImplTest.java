@@ -108,6 +108,30 @@ class ChapterCollaborationServiceImplTest {
     }
 
     /**
+     * 验证没有消息引用时仍能读取旧会话消息。
+     */
+    @Test
+    void listsLegacyMessagesWithoutReferences() {
+        when(conversationMapper.selectById(8L)).thenReturn(conversation(8L, 1L, 2L));
+        ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
+        message.setId(11L);
+        message.setConversationId(8L);
+        message.setChapterId(2L);
+        message.setMessageRole("user");
+        message.setContent("旧会话消息");
+        message.setDeleted(0);
+        when(messageMapper.selectList(any())).thenReturn(List.of(message));
+
+        var result = service.listMessages(8L);
+
+        assertThat(result.messages()).singleElement().satisfies(detail -> {
+            assertThat(detail.id()).isEqualTo(11L);
+            assertThat(detail.referencedMessageId()).isNull();
+            assertThat(detail.referencedMessage()).isNull();
+        });
+    }
+
+    /**
      * 验证发送消息时可创建 AI 任务并回填消息任务 ID。
      */
     @Test

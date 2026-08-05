@@ -172,6 +172,8 @@ class DeepSeekLlmProviderTest {
         assertThat(requestBody.get().get("stream").asBoolean()).isTrue();
         assertThat(requestBody.get().get("model").asText()).isEqualTo(MODEL);
         assertThat(requestBody.get().get("max_tokens").asInt()).isEqualTo(128);
+        assertThat(requestBody.get().path("thinking").path("type").asText())
+                .isEqualTo("disabled");
         assertThat(result.status()).isEqualTo(LlmStreamStatus.COMPLETED);
         assertThat(events.stream()
                 .filter(LlmStreamEvent.TextDelta.class::isInstance)
@@ -243,6 +245,8 @@ class DeepSeekLlmProviderTest {
         assertThat(requestBody.get().get("stop").get(0).asText()).isEqualTo("停止");
         assertThat(requestBody.get().get("response_format").get("type").asText())
                 .isEqualTo("json_object");
+        assertThat(requestBody.get().path("thinking").path("type").asText())
+                .isEqualTo("disabled");
         assertThat(response.structuredContent().get("answer").asText()).isEqualTo("OK");
         assertThat(response.metadata().provider()).isEqualTo("deepseek");
         assertThat(response.metadata().model()).isEqualTo(MODEL);

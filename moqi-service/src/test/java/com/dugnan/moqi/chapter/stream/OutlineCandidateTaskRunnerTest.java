@@ -100,6 +100,13 @@ class OutlineCandidateTaskRunnerTest {
         ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
         verify(provider).generate(requestCaptor.capture());
         assertThat(requestCaptor.getValue().options().responseFormat()).isEqualTo(LlmResponseFormat.JSON_OBJECT);
+        ArgumentCaptor<StoryContextBuildCommand> contextCaptor =
+                ArgumentCaptor.forClass(StoryContextBuildCommand.class);
+        verify(contextBindingService).buildAndAttach(contextCaptor.capture(), any(AiTaskEntity.class));
+        assertThat(contextCaptor.getValue().taskInstruction())
+                .contains("\"schemaVersion\":2")
+                .contains("beats 必须是 JSON 数组")
+                .contains("constraints 必须是 JSON 字符串数组");
         verify(persistenceService).complete(any(), any(), any(), any());
     }
 
