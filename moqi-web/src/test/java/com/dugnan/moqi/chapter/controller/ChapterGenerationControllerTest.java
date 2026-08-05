@@ -26,6 +26,7 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationRejected;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
+import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -40,6 +41,7 @@ class ChapterGenerationControllerTest {
 
     private ChapterGenerationService chapterGenerationService;
     private SceneGenerationService sceneGenerationService;
+    private GenerationEvaluationService evaluationService;
     private MockMvc mvc;
 
     /**
@@ -49,9 +51,10 @@ class ChapterGenerationControllerTest {
     void setUp() {
         chapterGenerationService = Mockito.mock(ChapterGenerationService.class);
         sceneGenerationService = Mockito.mock(SceneGenerationService.class);
+        evaluationService = Mockito.mock(GenerationEvaluationService.class);
         mvc = MockMvcBuilders
                 .standaloneSetup(
-                        new ChapterGenerationController(chapterGenerationService, sceneGenerationService),
+                        new ChapterGenerationController(chapterGenerationService, sceneGenerationService, evaluationService),
                         new GenerationController(chapterGenerationService, sceneGenerationService))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

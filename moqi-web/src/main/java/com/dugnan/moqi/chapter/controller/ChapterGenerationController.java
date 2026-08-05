@@ -14,8 +14,14 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
+import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.CreateEvaluationRequest;
+import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationReportView;
+import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.RetryEvaluationRequest;
+import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.RevisionCandidateView;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
+import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
+import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.common.api.ApiResponse;
 
 /**
@@ -29,6 +35,7 @@ public class ChapterGenerationController {
 
     private final ChapterGenerationService chapterGenerationService;
     private final SceneGenerationService sceneGenerationService;
+    private final GenerationEvaluationService evaluationService;
 
     /**
      * 创建章节生成控制器。
@@ -38,9 +45,11 @@ public class ChapterGenerationController {
      */
     public ChapterGenerationController(
             ChapterGenerationService chapterGenerationService,
-            SceneGenerationService sceneGenerationService) {
+            SceneGenerationService sceneGenerationService,
+            GenerationEvaluationService evaluationService) {
         this.chapterGenerationService = chapterGenerationService;
         this.sceneGenerationService = sceneGenerationService;
+        this.evaluationService = evaluationService;
     }
 
     /**
@@ -55,6 +64,42 @@ public class ChapterGenerationController {
             @PathVariable Long chapterId,
             @RequestBody CreateSceneGenerationRequest request) {
         return ApiResponse.success(sceneGenerationService.create(chapterId, request));
+    }
+
+    @PostMapping("/{chapterId}/generations/{generationId}/evaluation-reports")
+    public ApiResponse<EvaluationReportView> createEvaluation(@PathVariable Long chapterId, @PathVariable Long generationId,
+            @RequestBody CreateEvaluationRequest request) {
+        return ApiResponse.success(evaluationService.create(chapterId, generationId, request));
+    }
+
+    @GetMapping("/{chapterId}/generations/{generationId}/evaluation-reports/latest")
+    public ApiResponse<EvaluationReportView> latestEvaluation(@PathVariable Long chapterId, @PathVariable Long generationId,
+            Long generationSceneId) {
+        return ApiResponse.success(evaluationService.latest(chapterId, generationId, generationSceneId));
+    }
+
+    @GetMapping("/{chapterId}/generations/{generationId}/evaluation-reports/{reportId}")
+    public ApiResponse<EvaluationReportView> evaluation(@PathVariable Long chapterId, @PathVariable Long generationId,
+            @PathVariable Long reportId) {
+        return ApiResponse.success(evaluationService.get(chapterId, generationId, reportId));
+    }
+
+    @PostMapping("/{chapterId}/generations/{generationId}/evaluation-reports/{reportId}/retry")
+    public ApiResponse<AgentRunView> retryEvaluation(@PathVariable Long chapterId, @PathVariable Long generationId,
+            @PathVariable Long reportId, @RequestBody RetryEvaluationRequest request) {
+        return ApiResponse.success(evaluationService.retry(chapterId, generationId, reportId, request));
+    }
+
+    @PostMapping("/{chapterId}/generations/{generationId}/evaluation-reports/{reportId}/cancel")
+    public ApiResponse<AgentRunView> cancelEvaluation(@PathVariable Long chapterId, @PathVariable Long generationId,
+            @PathVariable Long reportId) {
+        return ApiResponse.success(evaluationService.cancel(chapterId, generationId, reportId));
+    }
+
+    @GetMapping("/{chapterId}/generations/{generationId}/evaluation-reports/{reportId}/revision-candidate")
+    public ApiResponse<RevisionCandidateView> revisionCandidate(@PathVariable Long chapterId, @PathVariable Long generationId,
+            @PathVariable Long reportId) {
+        return ApiResponse.success(evaluationService.revisionCandidate(chapterId, generationId, reportId));
     }
 
     /**
