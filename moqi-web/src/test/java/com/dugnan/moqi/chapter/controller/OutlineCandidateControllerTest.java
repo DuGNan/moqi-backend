@@ -68,6 +68,26 @@ class OutlineCandidateControllerTest {
     }
 
     /**
+     * 验证首版候选尚无正式大纲时仍显式返回 nullable outlineId。
+     *
+     * @throws Exception MockMvc 请求执行失败
+     */
+    @Test
+    void includesNullOutlineIdForInitialCandidate() throws Exception {
+        when(candidateService.create(eq(2L), Mockito.any(CreateOutlineCandidateRequest.class)))
+                .thenReturn(new OutlineCandidateCreated(
+                        2L, null, 0, 7L, 8L, "queued", "initial", "initial-key"));
+
+        mvc.perform(post("/api/chapters/2/outline/candidates")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"conversationId":3,"confirmedBriefId":4,"idempotencyKey":"initial-key"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.outlineId").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    /**
      * 验证旧刷新入口映射至同一候选创建服务，不再调用正式大纲写入路径。
      *
      * @throws Exception MockMvc 请求执行失败

@@ -246,7 +246,9 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 .map(entity -> messageDetail(
                         entity,
                         tasks.get(entity.getAiTaskId()),
-                        referenceSummary(referencedMessages.get(entity.getReferencedMessageId()))))
+                        referenceSummary(entity.getReferencedMessageId() == null
+                                ? null
+                                : referencedMessages.get(entity.getReferencedMessageId()))))
                 .toList();
         return new MessageList(messages);
     }

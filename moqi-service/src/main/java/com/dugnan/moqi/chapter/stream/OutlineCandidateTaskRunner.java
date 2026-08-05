@@ -54,12 +54,16 @@ public class OutlineCandidateTaskRunner {
     private static final String ADJUSTMENT_TASK_INSTRUCTION = """
             请根据已确认的章节共识、当前正式大纲和用户调整要求，输出一个完整的 OutlineCandidateContent JSON 对象。
             只能输出 schemaVersion、chapterPurpose、openingState、chapterGoal、coreConflict、beats、turningPoint、endingState、endingHook、constraints 字段。
+            schemaVersion 必须固定为数字 2，即 "schemaVersion":2；beats 必须是 JSON 数组，数组项只能包含字符串 beatKey 和 summary；
+            constraints 必须是 JSON 字符串数组。可选文本没有内容时使用 null，不得改变字段类型。
             每个 beat 必须包含唯一的 beatKey 和 summary；不得写入视角、地点、人物、时间或标签。不得输出解释、Markdown 或其他字段。
             输出是待用户确认的候选，绝不能声称已保存或修改正式大纲。
             """;
     private static final String INITIAL_TASK_INSTRUCTION = """
             请只根据指定的已确认章节共识生成完整的首版 OutlineCandidateContent JSON 对象。
             只能输出 schemaVersion、chapterPurpose、openingState、chapterGoal、coreConflict、beats、turningPoint、endingState、endingHook、constraints 字段。
+            schemaVersion 必须固定为数字 2，即 "schemaVersion":2；beats 必须是 JSON 数组，数组项只能包含字符串 beatKey 和 summary；
+            constraints 必须是 JSON 字符串数组。可选文本没有内容时使用 null，不得改变字段类型。
             每个 beat 必须包含唯一稳定的 beatKey 和 summary；讨论历史只能作为证据，不能把未确认、待定或已否定内容写成权威事实。
             不得输出解释、Markdown 或其他字段。输出仅是待用户编辑和确认的候选，
             绝不能声称已保存、已确认或已成为正式章纲。

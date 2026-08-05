@@ -53,6 +53,7 @@ public final class OutlineCandidateModels {
             String instruction) {
     }
 
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     public record OutlineCandidateCreated(
             Long chapterId,
             Long outlineId,

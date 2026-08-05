@@ -42,10 +42,12 @@ public class OutlineCandidateContentCodec {
         }
         try {
             JsonNode node = objectMapper.readTree(json);
-            return node.path("schemaVersion").asInt(1) >= OutlineCandidateContent.SCHEMA_VERSION
+            return isVersionTwo(node)
                     ? normalize(objectMapper.treeToValue(node, OutlineCandidateContent.class)) : projectV1(node);
         } catch (JsonProcessingException exception) {
             throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_INVALID, "候选大纲 JSON 无法读取", exception);
+        } catch (IllegalArgumentException exception) {
+            throw new BusinessException(ErrorCode.OUTLINE_CANDIDATE_INVALID, "候选大纲 JSON 字段类型无效", exception);
         }
     }
 
@@ -87,6 +89,16 @@ public class OutlineCandidateContentCodec {
                         .constructCollectionType(List.class, String.class)) : List.of();
         return normalize(new OutlineCandidateContent(OutlineCandidateContent.SCHEMA_VERSION, null, null, goal, conflict,
                 beats, null, null, null, constraints));
+    }
+
+    private boolean isVersionTwo(JsonNode node) {
+        JsonNode schemaVersion = node.get("schemaVersion");
+        if (schemaVersion != null) {
+            return schemaVersion.asInt(1) >= OutlineCandidateContent.SCHEMA_VERSION;
+        }
+        return node.has("chapterGoal") || node.has("beats")
+                || node.has("chapterPurpose") || node.has("openingState")
+                || node.has("turningPoint") || node.has("endingState") || node.has("endingHook");
     }
 
     private List<Beat> beats(List<Beat> values) {
