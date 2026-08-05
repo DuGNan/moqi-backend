@@ -17,6 +17,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.json.JsonParseException;
+import org.springframework.context.ApplicationEventPublisher;
 
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -64,6 +65,8 @@ class ChapterGenerationServiceImplTest {
     private AiTaskMapper aiTaskMapper;
     @Mock
     private ChapterContentGenerator contentGenerator;
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
 
     private ChapterGenerationServiceImpl service;
 
@@ -79,7 +82,8 @@ class ChapterGenerationServiceImplTest {
                 briefMapper,
                 generationMapper,
                 aiTaskMapper,
-                contentGenerator);
+                contentGenerator,
+                eventPublisher);
     }
 
     /**
@@ -408,6 +412,8 @@ class ChapterGenerationServiceImplTest {
         assertThat(result.generationStatus()).isEqualTo("accepted");
         assertThat(result.version()).isEqualTo(4);
         verify(chapterMapper).updateContentIfVersion(12L, "预览正文", 3);
+        verify(eventPublisher).publishEvent(
+                new com.dugnan.moqi.chapter.event.ChapterGenerationAcceptedEvent(12L, 7001L));
     }
 
     /**

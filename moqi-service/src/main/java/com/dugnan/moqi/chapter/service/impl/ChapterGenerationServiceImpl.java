@@ -7,6 +7,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.json.JsonParserFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -26,6 +27,7 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
+import com.dugnan.moqi.chapter.event.ChapterGenerationAcceptedEvent;
 import com.dugnan.moqi.chapter.generator.ChapterContentGenerator;
 import com.dugnan.moqi.chapter.generator.ChapterContentGenerator.GenerationInput;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
@@ -83,6 +85,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     private final ChapterGenerationMapper generationMapper;
     private final AiTaskMapper aiTaskMapper;
     private final ChapterContentGenerator contentGenerator;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 创建章节生成服务。
@@ -94,6 +97,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
      * @param generationMapper 生成记录数据访问对象
      * @param aiTaskMapper AI 任务数据访问对象
      * @param contentGenerator 正文生成器
+     * @param eventPublisher 事务提交后的领域事件发布器
      */
     public ChapterGenerationServiceImpl(
             WorkMapper workMapper,
@@ -102,7 +106,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             ChapterBriefMapper briefMapper,
             ChapterGenerationMapper generationMapper,
             AiTaskMapper aiTaskMapper,
-            ChapterContentGenerator contentGenerator) {
+            ChapterContentGenerator contentGenerator,
+            ApplicationEventPublisher eventPublisher) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.outlineMapper = outlineMapper;
@@ -110,6 +115,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         this.generationMapper = generationMapper;
         this.aiTaskMapper = aiTaskMapper;
         this.contentGenerator = contentGenerator;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -190,6 +196,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     public GenerationAccepted acceptGeneration(Long generationId, AcceptGenerationRequest request) {
         ChapterGenerationEntity generation = requireGeneration(generationId);
         if (STATUS_ACCEPTED.equals(generation.getGenerationStatus())) {
+            eventPublisher.publishEvent(
+                    new ChapterGenerationAcceptedEvent(generation.getChapterId(), generation.getId()));
             return accepted(generation, requireChapter(generation.getChapterId()));
         }
         requirePreview(generation);
@@ -210,6 +218,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             throw versionConflict(requireChapter(chapter.getId()));
         }
         generation.setGenerationStatus(STATUS_ACCEPTED);
+        eventPublisher.publishEvent(new ChapterGenerationAcceptedEvent(chapter.getId(), generation.getId()));
         return accepted(generation, requireChapter(chapter.getId()));
     }
 
