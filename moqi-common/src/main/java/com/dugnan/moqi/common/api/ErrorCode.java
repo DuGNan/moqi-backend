@@ -58,6 +58,7 @@ public enum ErrorCode {
     MESSAGE_REFERENCE_INVALID,
     /** 章节正文版本冲突。 */
     CHAPTER_VERSION_CONFLICT,
+    WORK_VERSION_CONFLICT,
     /** 用户配置版本冲突。 */
     CONFIG_VERSION_CONFLICT,
     MODEL_UNAVAILABLE,

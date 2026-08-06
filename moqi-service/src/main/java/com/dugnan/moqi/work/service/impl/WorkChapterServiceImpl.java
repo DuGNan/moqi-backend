@@ -6,6 +6,9 @@ import java.util.Objects;
 import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.dugnan.moqi.agent.entity.AgentRunEntity;
+import com.dugnan.moqi.agent.mapper.AgentRunMapper;
+import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -14,6 +17,7 @@ import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
+import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.entity.BaseEntity;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -25,6 +29,8 @@ import com.dugnan.moqi.knowledge.mapper.SettingCandidateMapper;
 import com.dugnan.moqi.knowledge.mapper.SettingEntryMapper;
 import com.dugnan.moqi.work.dto.CreateChapterCommand;
 import com.dugnan.moqi.work.dto.CreateWorkCommand;
+import com.dugnan.moqi.work.dto.UpdateChapterCommand;
+import com.dugnan.moqi.work.dto.UpdateWorkCommand;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterCreated;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterDetail;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterList;
@@ -57,6 +63,8 @@ public class WorkChapterServiceImpl implements WorkChapterService {
     private static final Set<String> CHAPTER_TYPES =
             Set.of("dedication", "prologue", "chapter", "epilogue", "other");
     private static final Set<String> WORKFLOW_STATUSES = Set.of("co_creation", "done");
+    private static final Set<String> ACTIVE_TASK_STATUSES = Set.of("queued", "running");
+    private static final Set<String> ACTIVE_RUN_STATUSES = Set.of("queued", "running", "waiting");
 
     private final WorkMapper workMapper;
     private final ChapterMapper chapterMapper;
@@ -66,6 +74,8 @@ public class WorkChapterServiceImpl implements WorkChapterService {
     private final SettingCandidateMapper settingCandidateMapper;
     private final SettingEntryMapper settingEntryMapper;
     private final ForeshadowingItemMapper foreshadowingMapper;
+    private final AiTaskMapper aiTaskMapper;
+    private final AgentRunMapper agentRunMapper;
 
     /**
      * 创建作品章节服务。
@@ -87,7 +97,9 @@ public class WorkChapterServiceImpl implements WorkChapterService {
             ChapterOutlineQueryMapper outlineMapper,
             SettingCandidateMapper settingCandidateMapper,
             SettingEntryMapper settingEntryMapper,
-            ForeshadowingItemMapper foreshadowingMapper) {
+            ForeshadowingItemMapper foreshadowingMapper,
+            AiTaskMapper aiTaskMapper,
+            AgentRunMapper agentRunMapper) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.conversationMapper = conversationMapper;
@@ -96,6 +108,8 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         this.settingCandidateMapper = settingCandidateMapper;
         this.settingEntryMapper = settingEntryMapper;
         this.foreshadowingMapper = foreshadowingMapper;
+        this.aiTaskMapper = aiTaskMapper;
+        this.agentRunMapper = agentRunMapper;
     }
 
     /**
@@ -166,12 +180,52 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 work.getId(),
                 work.getTitle(),
                 work.getStatus(),
+                work.getVersion(),
                 chapterCount(workId),
                 settingCount,
                 foreshadowingCount,
                 pendingSettings(workId, null),
                 work.getGmtCreate(),
                 work.getGmtModified());
+    }
+
+    /**
+     * 按客户端版本修改作品标题。
+     *
+     * @param workId 作品 ID
+     * @param command 标题和基础版本
+     * @return 更新后的作品详情
+     */
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public WorkDetail updateWork(Long workId, UpdateWorkCommand command) {
+        String title = validTitle(command == null ? null : command.title());
+        Integer baseVersion = requiredBaseVersion(command == null ? null : command.baseVersion());
+        requireWork(workId);
+        if (workMapper.updateTitleIfVersion(workId, title, baseVersion) != 1) {
+            throw workVersionConflict(workId);
+        }
+        return getWork(workId);
+    }
+
+    /**
+     * 逻辑删除作品及其未删除章节。
+     *
+     * @param workId 作品 ID
+     * @param baseVersion 客户端基础版本
+     */
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void deleteWork(Long workId, Integer baseVersion) {
+        Integer expectedVersion = requiredBaseVersion(baseVersion);
+        WorkEntity work = requireLockedWork(workId);
+        requireMatchingWorkVersion(work, expectedVersion);
+        lockActiveChapters(workId);
+        requireNoActiveTasks(workId, null);
+        if (workMapper.softDeleteIfVersion(workId, expectedVersion) != 1) {
+            throw workVersionConflict(workId);
+        }
+        chapterMapper.softDeleteActiveByWorkId(workId);
     }
 
     /**
@@ -219,7 +273,7 @@ public class WorkChapterServiceImpl implements WorkChapterService {
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public ChapterCreated createChapter(Long workId, CreateChapterCommand command) {
-        requireWork(workId);
+        requireLockedWork(workId);
         String title = validTitle(command == null ? null : command.title());
         String type = command == null || !StringUtils.hasText(command.chapterType())
                 ? "chapter"
@@ -227,8 +281,7 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         validateOptional(type, CHAPTER_TYPES, "chapterType");
 
         LambdaQueryWrapper<ChapterEntity> query = new LambdaQueryWrapper<ChapterEntity>()
-                .eq(ChapterEntity::getWorkId, workId)
-                .eq(ChapterEntity::getDeleted, 0);
+                .eq(ChapterEntity::getWorkId, workId);
         List<ChapterEntity> chapters = chapterMapper.selectList(query);
         int nextChapterNumber = chapters.stream()
                 .map(ChapterEntity::getChapterNo)
@@ -285,6 +338,46 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 chapter.getVersion(),
                 chapter.getGmtCreate(),
                 chapter.getGmtModified());
+    }
+
+    /**
+     * 按客户端版本修改章节标题。
+     *
+     * @param chapterId 章节 ID
+     * @param command 标题和基础版本
+     * @return 更新后的章节详情
+     */
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public ChapterDetail updateChapter(Long chapterId, UpdateChapterCommand command) {
+        String title = validTitle(command == null ? null : command.title());
+        Integer baseVersion = requiredBaseVersion(command == null ? null : command.baseVersion());
+        ChapterEntity chapter = requireChapter(chapterId);
+        requireWork(chapter.getWorkId());
+        if (chapterMapper.updateTitleIfVersion(chapterId, title, baseVersion) != 1) {
+            throw chapterVersionConflict(chapterId);
+        }
+        return getChapter(chapterId);
+    }
+
+    /**
+     * 逻辑删除单个章节。
+     *
+     * @param chapterId 章节 ID
+     * @param baseVersion 客户端基础版本
+     */
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void deleteChapter(Long chapterId, Integer baseVersion) {
+        Integer expectedVersion = requiredBaseVersion(baseVersion);
+        ChapterEntity existing = requireChapter(chapterId);
+        requireLockedWork(existing.getWorkId());
+        ChapterEntity chapter = requireLockedChapter(chapterId);
+        requireMatchingChapterVersion(chapter, expectedVersion);
+        requireNoActiveTasks(chapter.getWorkId(), chapterId);
+        if (chapterMapper.softDeleteIfVersion(chapterId, expectedVersion) != 1) {
+            throw chapterVersionConflict(chapterId);
+        }
     }
 
     /**
@@ -386,6 +479,7 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 work.getId(),
                 work.getTitle(),
                 work.getStatus(),
+                work.getVersion(),
                 chapters.size(),
                 id(latest),
                 latest == null ? null : latest.getTitle(),
@@ -474,6 +568,14 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         return entity;
     }
 
+    private WorkEntity requireLockedWork(Long workId) {
+        WorkEntity entity = workId == null ? null : workMapper.selectByIdForUpdate(workId);
+        if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
+            throw new BusinessException(ErrorCode.WORK_NOT_FOUND, "作品不存在");
+        }
+        return entity;
+    }
+
     /**
      * 获取未删除章节，不存在时抛出业务异常。
      *
@@ -486,6 +588,73 @@ public class WorkChapterServiceImpl implements WorkChapterService {
             throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
         }
         return entity;
+    }
+
+    private ChapterEntity requireLockedChapter(Long chapterId) {
+        ChapterEntity entity = chapterId == null ? null : chapterMapper.selectByIdForUpdate(chapterId);
+        if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
+            throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
+        }
+        return entity;
+    }
+
+    private void lockActiveChapters(Long workId) {
+        chapterMapper.selectList(new LambdaQueryWrapper<ChapterEntity>()
+                .eq(ChapterEntity::getWorkId, workId)
+                .eq(ChapterEntity::getDeleted, 0)
+                .orderByAsc(ChapterEntity::getId)
+                .last("FOR UPDATE"));
+    }
+
+    private void requireNoActiveTasks(Long workId, Long chapterId) {
+        long activeTasks = aiTaskMapper.selectCount(new LambdaQueryWrapper<AiTaskEntity>()
+                .eq(AiTaskEntity::getWorkId, workId)
+                .eq(chapterId != null, AiTaskEntity::getChapterId, chapterId)
+                .eq(AiTaskEntity::getDeleted, 0)
+                .in(AiTaskEntity::getTaskStatus, ACTIVE_TASK_STATUSES));
+        long activeRuns = agentRunMapper.selectCount(new LambdaQueryWrapper<AgentRunEntity>()
+                .eq(AgentRunEntity::getWorkId, workId)
+                .eq(chapterId != null, AgentRunEntity::getChapterId, chapterId)
+                .eq(AgentRunEntity::getDeleted, 0)
+                .in(AgentRunEntity::getRunStatus, ACTIVE_RUN_STATUSES));
+        if (activeTasks > 0 || activeRuns > 0) {
+            throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "存在未结束的 AI 任务，请先取消或等待任务完成");
+        }
+    }
+
+    private Integer requiredBaseVersion(Integer baseVersion) {
+        if (baseVersion == null || baseVersion < 0) {
+            throw badRequest("baseVersion 必须为非负整数");
+        }
+        return baseVersion;
+    }
+
+    private void requireMatchingWorkVersion(WorkEntity work, Integer baseVersion) {
+        if (!baseVersion.equals(work.getVersion())) {
+            throw workVersionConflict(work.getId());
+        }
+    }
+
+    private void requireMatchingChapterVersion(ChapterEntity chapter, Integer baseVersion) {
+        if (!baseVersion.equals(chapter.getVersion())) {
+            throw chapterVersionConflict(chapter.getId());
+        }
+    }
+
+    private BusinessException workVersionConflict(Long workId) {
+        WorkEntity current = requireWork(workId);
+        return new BusinessException(
+                ErrorCode.WORK_VERSION_CONFLICT,
+                "作品已被更新，请刷新后重试",
+                java.util.Map.of("version", current.getVersion(), "title", current.getTitle()));
+    }
+
+    private BusinessException chapterVersionConflict(Long chapterId) {
+        ChapterEntity current = requireChapter(chapterId);
+        return new BusinessException(
+                ErrorCode.CHAPTER_VERSION_CONFLICT,
+                "章节已被更新，请刷新后重试",
+                java.util.Map.of("version", current.getVersion(), "title", current.getTitle()));
     }
 
     /**

@@ -1,11 +1,15 @@
 package com.dugnan.moqi.work.controller;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -14,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.dugnan.moqi.common.api.ApiResponse;
 import com.dugnan.moqi.work.dto.CreateChapterCommand;
 import com.dugnan.moqi.work.dto.CreateWorkCommand;
+import com.dugnan.moqi.work.dto.UpdateWorkCommand;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterCreated;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterList;
 import com.dugnan.moqi.work.dto.WorkChapterModels.WorkDetail;
@@ -76,6 +81,24 @@ public class WorkController {
         return ApiResponse.success(workChapterService.getWork(workId));
     }
 
+    /** 修改作品标题。 */
+    @PutMapping("/{workId}")
+    public ApiResponse<WorkDetail> update(
+            @PathVariable Long workId,
+            @Valid @RequestBody UpdateWorkRequest request) {
+        return ApiResponse.success(
+                workChapterService.updateWork(workId, new UpdateWorkCommand(request.title(), request.baseVersion())));
+    }
+
+    /** 逻辑删除作品及其未删除章节。 */
+    @DeleteMapping("/{workId}")
+    public ApiResponse<Void> delete(
+            @PathVariable Long workId,
+            @RequestParam Integer baseVersion) {
+        workChapterService.deleteWork(workId, baseVersion);
+        return ApiResponse.success(null);
+    }
+
     /**
      * 查询作品下的章节列表。
      *
@@ -118,5 +141,13 @@ public class WorkController {
             @Size(max = 200, message = "标题不能超过 200 个字符")
             String title,
             String chapterType) {
+    }
+
+    public record UpdateWorkRequest(
+            @NotBlank(message = "标题不能为空")
+            String title,
+            @NotNull(message = "baseVersion 不能为空")
+            @PositiveOrZero(message = "baseVersion 必须为非负整数")
+            Integer baseVersion) {
     }
 }

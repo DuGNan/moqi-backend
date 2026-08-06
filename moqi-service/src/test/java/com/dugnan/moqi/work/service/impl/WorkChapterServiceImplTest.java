@@ -3,6 +3,7 @@ package com.dugnan.moqi.work.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.LocalDateTime;
@@ -16,8 +17,10 @@ import org.mockito.Mock;
 
 import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
+import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
+import com.dugnan.moqi.agent.mapper.AgentRunMapper;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.knowledge.mapper.ForeshadowingItemMapper;
@@ -25,6 +28,8 @@ import com.dugnan.moqi.knowledge.mapper.SettingCandidateMapper;
 import com.dugnan.moqi.knowledge.mapper.SettingEntryMapper;
 import com.dugnan.moqi.work.dto.CreateChapterCommand;
 import com.dugnan.moqi.work.dto.CreateWorkCommand;
+import com.dugnan.moqi.work.dto.UpdateChapterCommand;
+import com.dugnan.moqi.work.dto.UpdateWorkCommand;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
@@ -55,6 +60,10 @@ class WorkChapterServiceImplTest {
     private SettingEntryMapper settingEntryMapper;
     @Mock
     private ForeshadowingItemMapper foreshadowingMapper;
+    @Mock
+    private AiTaskMapper aiTaskMapper;
+    @Mock
+    private AgentRunMapper agentRunMapper;
 
     private WorkChapterServiceImpl service;
 
@@ -65,7 +74,7 @@ class WorkChapterServiceImplTest {
     void setUp() {
         service = new WorkChapterServiceImpl(workMapper, chapterMapper, conversationMapper,
                 generationMapper, outlineMapper, settingCandidateMapper, settingEntryMapper,
-                foreshadowingMapper);
+                foreshadowingMapper, aiTaskMapper, agentRunMapper);
     }
 
     /**
@@ -104,7 +113,7 @@ class WorkChapterServiceImplTest {
     @Test
     void createsNextChapterInCoCreation() {
         WorkEntity work = work(1L);
-        when(workMapper.selectById(1L)).thenReturn(work);
+        when(workMapper.selectByIdForUpdate(1L)).thenReturn(work);
         when(chapterMapper.selectList(any())).thenReturn(List.of(chapter(3L, 1L, 2, null)));
         when(chapterMapper.insert(any(ChapterEntity.class))).thenAnswer(invocation -> {
             ChapterEntity entity = invocation.getArgument(0);
@@ -166,10 +175,90 @@ class WorkChapterServiceImplTest {
         assertThatThrownBy(() -> service.listWorks(null, null, 101))
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode").isEqualTo(ErrorCode.BAD_REQUEST);
-        when(workMapper.selectById(1L)).thenReturn(work(1L));
+        when(workMapper.selectByIdForUpdate(1L)).thenReturn(work(1L));
         assertThatThrownBy(() -> service.createChapter(1L, new CreateChapterCommand("章节", "invalid")))
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode").isEqualTo(ErrorCode.BAD_REQUEST);
+    }
+
+    @Test
+    void updatesWorkTitleWithCurrentVersion() {
+        WorkEntity work = work(1L);
+        work.setVersion(2);
+        when(workMapper.selectById(1L)).thenReturn(work);
+        when(workMapper.updateTitleIfVersion(1L, "新书名", 2)).thenAnswer(invocation -> {
+            work.setTitle(invocation.getArgument(1));
+            work.setVersion(3);
+            return 1;
+        });
+
+        var result = service.updateWork(1L, new UpdateWorkCommand(" 新书名 ", 2));
+
+        assertThat(result.title()).isEqualTo("新书名");
+        assertThat(result.version()).isEqualTo(3);
+    }
+
+    @Test
+    void rejectsTitleLongerThanTwoHundredUnicodeCodePoints() {
+        String title = "甲".repeat(201);
+
+        assertThatThrownBy(() -> service.updateWork(1L, new UpdateWorkCommand(title, 0)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.BAD_REQUEST);
+    }
+
+    @Test
+    void rejectsStaleChapterTitleUpdate() {
+        ChapterEntity chapter = chapter(2L, 1L, 1, null);
+        chapter.setVersion(3);
+        when(chapterMapper.selectById(2L)).thenReturn(chapter);
+        when(workMapper.selectById(1L)).thenReturn(work(1L));
+        when(chapterMapper.updateTitleIfVersion(2L, "新章节", 2)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.updateChapter(2L, new UpdateChapterCommand("新章节", 2)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.CHAPTER_VERSION_CONFLICT);
+    }
+
+    @Test
+    void rejectsDeletingWorkWithActiveAiTask() {
+        WorkEntity work = work(1L);
+        work.setVersion(0);
+        when(workMapper.selectByIdForUpdate(1L)).thenReturn(work);
+        when(chapterMapper.selectList(any())).thenReturn(List.of());
+        when(aiTaskMapper.selectCount(any())).thenReturn(1L);
+
+        assertThatThrownBy(() -> service.deleteWork(1L, 0))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.AI_TASK_STATE_CONFLICT);
+    }
+
+    @Test
+    void rejectsDeletingChapterWithWaitingAgentRun() {
+        WorkEntity work = work(1L);
+        ChapterEntity chapter = chapter(2L, 1L, 1, null);
+        when(chapterMapper.selectById(2L)).thenReturn(chapter);
+        when(workMapper.selectByIdForUpdate(1L)).thenReturn(work);
+        when(chapterMapper.selectByIdForUpdate(2L)).thenReturn(chapter);
+        when(agentRunMapper.selectCount(any())).thenReturn(1L);
+
+        assertThatThrownBy(() -> service.deleteChapter(2L, 0))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.AI_TASK_STATE_CONFLICT);
+    }
+
+    @Test
+    void softDeletesWorkAndLiveChapters() {
+        WorkEntity work = work(1L);
+        work.setVersion(0);
+        when(workMapper.selectByIdForUpdate(1L)).thenReturn(work);
+        when(chapterMapper.selectList(any())).thenReturn(List.of(chapter(2L, 1L, 1, null)));
+        when(workMapper.softDeleteIfVersion(1L, 0)).thenReturn(1);
+
+        service.deleteWork(1L, 0);
+
+        verify(workMapper).softDeleteIfVersion(1L, 0);
+        verify(chapterMapper).softDeleteActiveByWorkId(1L);
     }
 
     /**
