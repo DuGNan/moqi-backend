@@ -50,4 +50,33 @@ public interface ChapterMapper extends BaseMapper<ChapterEntity> {
             @Param("chapterId") Long chapterId,
             @Param("content") String content,
             @Param("baseVersion") Integer baseVersion);
+
+    /** 按版本条件更新章节标题。 */
+    @Update("""
+            UPDATE chapters
+            SET title = #{title}, version = version + 1, gmt_modified = CURRENT_TIMESTAMP
+            WHERE id = #{chapterId} AND version = #{baseVersion} AND deleted = 0
+            """)
+    int updateTitleIfVersion(
+            @Param("chapterId") Long chapterId,
+            @Param("title") String title,
+            @Param("baseVersion") Integer baseVersion);
+
+    /** 按版本条件逻辑删除章节。 */
+    @Update("""
+            UPDATE chapters
+            SET deleted = 1, version = version + 1, gmt_modified = CURRENT_TIMESTAMP
+            WHERE id = #{chapterId} AND version = #{baseVersion} AND deleted = 0
+            """)
+    int softDeleteIfVersion(
+            @Param("chapterId") Long chapterId,
+            @Param("baseVersion") Integer baseVersion);
+
+    /** 逻辑删除作品下全部未删除章节。 */
+    @Update("""
+            UPDATE chapters
+            SET deleted = 1, version = version + 1, gmt_modified = CURRENT_TIMESTAMP
+            WHERE work_id = #{workId} AND deleted = 0
+            """)
+    int softDeleteActiveByWorkId(@Param("workId") Long workId);
 }

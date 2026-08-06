@@ -2,6 +2,8 @@ package com.dugnan.moqi.work.service;
 
 import com.dugnan.moqi.work.dto.CreateChapterCommand;
 import com.dugnan.moqi.work.dto.CreateWorkCommand;
+import com.dugnan.moqi.work.dto.UpdateChapterCommand;
+import com.dugnan.moqi.work.dto.UpdateWorkCommand;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterCreated;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterDetail;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterList;
@@ -42,6 +44,12 @@ public interface WorkChapterService {
      */
     WorkDetail getWork(Long workId);
 
+    /** 修改作品标题。 */
+    WorkDetail updateWork(Long workId, UpdateWorkCommand command);
+
+    /** 逻辑删除作品及其未删除章节。 */
+    void deleteWork(Long workId, Integer baseVersion);
+
     /**
      * 查询作品下的章节列表。
      *
@@ -69,6 +77,12 @@ public interface WorkChapterService {
      * @return 章节详情
      */
     ChapterDetail getChapter(Long chapterId);
+
+    /** 修改章节标题。 */
+    ChapterDetail updateChapter(Long chapterId, UpdateChapterCommand command);
+
+    /** 逻辑删除章节。 */
+    void deleteChapter(Long chapterId, Integer baseVersion);
 
     /**
      * 获取章节打开时的默认工作区建议。

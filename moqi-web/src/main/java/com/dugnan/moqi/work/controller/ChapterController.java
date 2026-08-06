@@ -1,15 +1,23 @@
 package com.dugnan.moqi.work.controller;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.PositiveOrZero;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.dugnan.moqi.common.api.ApiResponse;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterDetail;
 import com.dugnan.moqi.work.dto.WorkChapterModels.ChapterOpen;
+import com.dugnan.moqi.work.dto.UpdateChapterCommand;
 import com.dugnan.moqi.work.service.WorkChapterService;
 
 /**
@@ -42,6 +50,25 @@ public class ChapterController {
         return ApiResponse.success(workChapterService.getChapter(chapterId));
     }
 
+    /** 修改章节标题。 */
+    @PutMapping("/{chapterId}")
+    public ApiResponse<ChapterDetail> update(
+            @PathVariable Long chapterId,
+            @Valid @RequestBody UpdateChapterRequest request) {
+        return ApiResponse.success(workChapterService.updateChapter(
+                chapterId,
+                new UpdateChapterCommand(request.title(), request.baseVersion())));
+    }
+
+    /** 逻辑删除章节。 */
+    @DeleteMapping("/{chapterId}")
+    public ApiResponse<Void> delete(
+            @PathVariable Long chapterId,
+            @RequestParam Integer baseVersion) {
+        workChapterService.deleteChapter(chapterId, baseVersion);
+        return ApiResponse.success(null);
+    }
+
     /**
      * 获取章节打开时的默认工作区建议。
      *
@@ -56,5 +83,13 @@ public class ChapterController {
     }
 
     public record OpenChapterRequest(String source) {
+    }
+
+    public record UpdateChapterRequest(
+            @NotBlank(message = "标题不能为空")
+            String title,
+            @NotNull(message = "baseVersion 不能为空")
+            @PositiveOrZero(message = "baseVersion 必须为非负整数")
+            Integer baseVersion) {
     }
 }
