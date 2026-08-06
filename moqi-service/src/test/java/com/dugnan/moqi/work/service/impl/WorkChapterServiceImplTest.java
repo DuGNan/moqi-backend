@@ -137,7 +137,7 @@ class WorkChapterServiceImplTest {
      * 验证打开章节时按预览、编辑器、共创顺序选择工作区。
      */
     @Test
-    void openPrefersPreviewThenEditorThenCoCreation() {
+    void openPrefersEditorThenPreviewThenCoCreation() {
         WorkEntity work = work(1L);
         ChapterEntity chapter = chapter(2L, 1L, 1, "正文");
         when(chapterMapper.selectById(2L)).thenReturn(chapter);
@@ -149,12 +149,12 @@ class WorkChapterServiceImplTest {
         when(conversationMapper.selectList(any())).thenReturn(List.of());
         when(outlineMapper.findLatest(2L)).thenReturn(null);
         when(settingCandidateMapper.selectCount(any())).thenReturn(0L);
-        assertThat(service.openChapter(2L).defaultWorkspace()).isEqualTo("generation_preview");
+        assertThat(service.openChapter(2L).defaultWorkspace()).isEqualTo("editor");
         assertThat(service.openChapter(2L).latestPreviewGenerationId()).isEqualTo(9L);
 
-        when(generationMapper.selectList(any())).thenReturn(List.of());
-        assertThat(service.openChapter(2L).defaultWorkspace()).isEqualTo("editor");
         chapter.setContent("  \n");
+        assertThat(service.openChapter(2L).defaultWorkspace()).isEqualTo("generation_preview");
+        when(generationMapper.selectList(any())).thenReturn(List.of());
         assertThat(service.openChapter(2L).defaultWorkspace()).isEqualTo("co_creation");
     }
 

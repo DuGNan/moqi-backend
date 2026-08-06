@@ -10,7 +10,6 @@ import java.util.List;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
-import com.dugnan.moqi.agent.AgentRuntime;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationFinding;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEvaluationReportEntity;
@@ -109,7 +108,7 @@ class GenerationEvaluationServiceImplTest {
         private final ChapterGenerationRevisionCandidateMapper revisionMapper = mock(ChapterGenerationRevisionCandidateMapper.class);
         private final ScenePlanVersionMapper planMapper = mock(ScenePlanVersionMapper.class);
         private final GenerationEvaluationServiceImpl service = new GenerationEvaluationServiceImpl(generationMapper, sceneMapper,
-                reportMapper, revisionMapper, mock(AiTaskMapper.class), mock(AgentRuntime.class), new ObjectMapper(),
+                reportMapper, revisionMapper, mock(AiTaskMapper.class), new ObjectMapper(),
                 mock(StoryContextSnapshotMapper.class), planMapper);
 
         private ChapterGenerationEvaluationReportEntity report() {

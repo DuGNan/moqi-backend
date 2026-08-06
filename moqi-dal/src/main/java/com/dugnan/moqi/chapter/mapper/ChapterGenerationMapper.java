@@ -57,4 +57,27 @@ public interface ChapterGenerationMapper extends BaseMapper<ChapterGenerationEnt
             @Param("generationId") Long generationId,
             @Param("currentStatus") String currentStatus,
             @Param("nextStatus") String nextStatus);
+
+    /**
+     * 将已采纳批次之前遗留的候选预览标记为已替代，避免其继续抢占正文入口。
+     *
+     * @param chapterId 章节 ID
+     * @param acceptedGenerationId 已采纳批次 ID
+     * @return 更新行数
+     */
+    @Update("""
+            UPDATE chapter_generations preview
+            JOIN chapter_generations accepted ON accepted.id = #{acceptedGenerationId}
+            SET preview.generation_status = 'superseded',
+                preview.version = preview.version + 1,
+                preview.gmt_modified = CURRENT_TIMESTAMP
+            WHERE preview.chapter_id = #{chapterId}
+              AND preview.generation_status = 'preview'
+              AND preview.deleted = 0
+              AND (preview.gmt_create < accepted.gmt_create
+                   OR (preview.gmt_create = accepted.gmt_create AND preview.id < accepted.id))
+            """)
+    int supersedeOlderPreviews(
+            @Param("chapterId") Long chapterId,
+            @Param("acceptedGenerationId") Long acceptedGenerationId);
 }

@@ -65,6 +65,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     private static final String ABANDONED = "abandoned";
     private static final String TASK_TYPE = "scene_plan_generation";
     private static final String SOURCE_FINGERPRINT_FIELD = "sourceFingerprint";
+    private static final String SCENE_PLANNING_INPUT = "根据当前正式章纲生成场景规划候选";
 
     private final WorkMapper workMapper;
     private final ChapterMapper chapterMapper;
@@ -222,7 +223,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
                 StoryContextProfile.SCENE_PLANNING, chapter.getWorkId(), chapterId, null, null,
                 "根据已确认的章节共识、作品叙事规划、正式章纲和选入的正式设定生成可编辑场景候选。"
                         + "不得发布或覆盖已发布场景规划；所有场景必须使用 planned 状态。",
-                null, null, 16384, StoryContextProfile.SCENE_PLANNING.defaultOutputReserveTokens()));
+                SCENE_PLANNING_INPUT, null, 16384,
+                StoryContextProfile.SCENE_PLANNING.defaultOutputReserveTokens()));
         var existingRun = agentRuntime.findByIdempotencyKey(
                 LOCAL_USER, ScenePlanWorkflowDefinition.WORKFLOW_TYPE, request.idempotencyKey());
         if (existingRun.isPresent()) {

@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import com.dugnan.moqi.common.api.ApiResponse;
@@ -107,6 +108,16 @@ public class GlobalExceptionHandler {
                 ErrorCode.BAD_REQUEST,
                 "请求参数类型错误",
                 Map.of("parameter", exception.getName()));
+    }
+
+    /**
+     * 客户端断开 SSE 等异步响应后不再尝试写入统一 JSON 错误体。
+     *
+     * @param exception 已无法继续使用的异步请求
+     */
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleAsyncRequestNotUsable(AsyncRequestNotUsableException exception) {
+        LOGGER.debug("客户端已断开异步请求: {}", exception.getMessage());
     }
 
     /**

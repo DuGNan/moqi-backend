@@ -16,6 +16,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -111,7 +113,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     private final ForeshadowingItemMapper foreshadowingMapper;
     private final ChapterSummaryMapper summaryMapper;
     private final ChapterKeyEventMapper eventMapper;
-    private final AgentRuntime agentRuntime;
+    private AgentRuntime agentRuntime;
     private final ObjectMapper objectMapper;
     private final KnowledgeExtractionStaleMarker staleMarker;
 
@@ -125,7 +127,6 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
             ForeshadowingItemMapper foreshadowingMapper,
             ChapterSummaryMapper summaryMapper,
             ChapterKeyEventMapper eventMapper,
-            AgentRuntime agentRuntime,
             ObjectMapper objectMapper,
             KnowledgeExtractionStaleMarker staleMarker) {
         this.batchMapper = batchMapper;
@@ -137,9 +138,13 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         this.foreshadowingMapper = foreshadowingMapper;
         this.summaryMapper = summaryMapper;
         this.eventMapper = eventMapper;
-        this.agentRuntime = agentRuntime;
         this.objectMapper = objectMapper;
         this.staleMarker = staleMarker;
+    }
+
+    @Autowired
+    public void setAgentRuntime(@Lazy AgentRuntime agentRuntime) {
+        this.agentRuntime = agentRuntime;
     }
 
     @Override

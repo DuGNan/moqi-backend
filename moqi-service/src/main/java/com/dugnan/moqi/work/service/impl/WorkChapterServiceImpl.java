@@ -358,11 +358,11 @@ public class WorkChapterServiceImpl implements WorkChapterService {
     private String defaultWorkspace(
             ChapterEntity chapter,
             ChapterGenerationEntity preview) {
-        if (preview != null) {
-            return "generation_preview";
-        }
         if (StringUtils.hasText(chapter.getContent())) {
             return "editor";
+        }
+        if (preview != null) {
+            return "generation_preview";
         }
         return "co_creation";
     }

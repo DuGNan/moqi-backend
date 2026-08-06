@@ -3,6 +3,7 @@ package com.dugnan.moqi.planning;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -15,6 +16,8 @@ import org.springframework.stereotype.Component;
 import com.dugnan.moqi.agent.AgentWorkflowDefinition;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
+import com.dugnan.moqi.chapter.outline.OutlineCandidateContent;
+import com.dugnan.moqi.chapter.outline.OutlineCandidateContentCodec;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
@@ -66,12 +69,13 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
     private final UserConfigService userConfigService;
     private final StoryContextSnapshotQueryPort snapshotQueryPort;
     private final PlanningContentCodec codec;
+    private final OutlineCandidateContentCodec outlineCodec;
     private final ObjectMapper objectMapper;
 
     public ScenePlanWorkflowDefinition(ChapterPlanVersionMapper planMapper, ScenePlanVersionMapper sceneMapper,
             ChapterOutlineQueryMapper outlineMapper, LlmProviderFactory providerFactory,
             UserConfigService userConfigService, StoryContextSnapshotQueryPort snapshotQueryPort,
-            PlanningContentCodec codec, ObjectMapper objectMapper) {
+            PlanningContentCodec codec, OutlineCandidateContentCodec outlineCodec, ObjectMapper objectMapper) {
         this.planMapper = planMapper;
         this.sceneMapper = sceneMapper;
         this.outlineMapper = outlineMapper;
@@ -79,6 +83,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         this.userConfigService = userConfigService;
         this.snapshotQueryPort = snapshotQueryPort;
         this.codec = codec;
+        this.outlineCodec = outlineCodec;
         this.objectMapper = objectMapper;
     }
 
@@ -112,6 +117,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
             throw new ScenePlanWorkflowException("SCENE_PLAN_OUTLINE_STALE", "validation", "场景规划候选的章节大纲已过期", null);
         }
         StoryContextSnapshot snapshot = contextSnapshot(context);
+        List<String> outlineBeatKeys = outlineBeatKeys(outline);
         LlmExecutionConfig executionConfig;
         LlmProvider provider;
         LlmResponse response;
@@ -129,7 +135,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
                             .promptTemplateVersion(TEMPLATE_VERSION)
                             .sourceFingerprint(snapshot.contentHash())
                             .build());
-            response = provider.generate(request(snapshot));
+            response = provider.generate(request(snapshot, outlineBeatKeys));
         } catch (LlmProviderException exception) {
             if (LlmProviderError.INVALID_RESPONSE.equals(exception.getError())) {
                 throw new ScenePlanWorkflowException("SCENE_PLAN_JSON_INVALID", "json", "场景规划模型返回格式无效", exception);
@@ -151,7 +157,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         List<ScenePlanContent> scenes;
         try {
             scenes = codec.scenes(output.scenes());
-            validateGeneratedReferences(scenes, snapshot);
+            validateGeneratedReferences(scenes, snapshot, outlineBeatKeys);
         } catch (Exception exception) {
             throw new ScenePlanWorkflowException("SCENE_PLAN_VALIDATION_FAILED", "validation", "场景规划结构校验失败", exception);
         }
@@ -258,15 +264,21 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
         return snapshotQueryPort.load(number.longValue());
     }
 
-    private LlmRequest request(StoryContextSnapshot snapshot) {
+    private LlmRequest request(StoryContextSnapshot snapshot, List<String> outlineBeatKeys) throws Exception {
         List<LlmMessage> messages = new ArrayList<>(snapshot.toMessages());
         messages.add(new LlmMessage(com.dugnan.moqi.llm.LlmRole.SYSTEM, GENERATION_PROMPT));
+        messages.add(new LlmMessage(com.dugnan.moqi.llm.LlmRole.SYSTEM,
+                "每个场景必须包含非空 outlineBeatKeys 数组；只能使用以下正式章纲节拍键，必须全部覆盖且首次出现顺序不得倒置："
+                        + objectMapper.writeValueAsString(outlineBeatKeys)));
         return new LlmRequest(messages, new LlmOptions(4096, null, List.of(), LlmResponseFormat.JSON_OBJECT));
     }
 
-    private void validateGeneratedReferences(List<ScenePlanContent> scenes, StoryContextSnapshot snapshot) {
+    private void validateGeneratedReferences(List<ScenePlanContent> scenes, StoryContextSnapshot snapshot,
+            List<String> outlineBeatKeys) {
         Set<Long> settingIds = selectedIds(snapshot, StoryContextSourceType.SETTING_ENTRY);
         Set<Long> foreshadowingIds = selectedIds(snapshot, StoryContextSourceType.FORESHADOWING);
+        Set<String> allowedBeatKeys = Set.copyOf(outlineBeatKeys);
+        Map<String, Integer> firstSequence = new LinkedHashMap<>();
         for (ScenePlanContent scene : scenes) {
             if (!"planned".equals(scene.status())) {
                 throw new IllegalArgumentException("模型生成的场景必须为 planned");
@@ -274,7 +286,32 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
             if (!hasAllowedReferences(scene, settingIds, foreshadowingIds)) {
                 throw new IllegalArgumentException("场景规划引用了未选入上下文的设定或伏笔");
             }
+            if (scene.outlineBeatKeys().isEmpty()) {
+                throw new IllegalArgumentException("每个场景必须关联至少一个正式章纲节拍");
+            }
+            for (String beatKey : scene.outlineBeatKeys()) {
+                if (!allowedBeatKeys.contains(beatKey)) {
+                    throw new IllegalArgumentException("场景引用了不存在的正式章纲节拍");
+                }
+                firstSequence.merge(beatKey, scene.sequence(), Math::min);
+            }
         }
+        int previousSequence = -1;
+        for (String beatKey : outlineBeatKeys) {
+            Integer sequence = firstSequence.get(beatKey);
+            if (sequence == null) {
+                throw new IllegalArgumentException("场景规划未覆盖全部正式章纲节拍");
+            }
+            if (sequence < previousSequence) {
+                throw new IllegalArgumentException("场景规划的章纲节拍顺序发生倒置");
+            }
+            previousSequence = sequence;
+        }
+    }
+
+    private List<String> outlineBeatKeys(ChapterOutlineEntity outline) {
+        OutlineCandidateContent content = outlineCodec.read(outline.getOutlineContent());
+        return content.beats().stream().map(OutlineCandidateContent.Beat::beatKey).toList();
     }
 
     private boolean hasAllowedReferences(ScenePlanContent scene, Set<Long> settingIds, Set<Long> foreshadowingIds) {

@@ -16,6 +16,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -297,7 +298,7 @@ public class AgentRuntimeService implements AgentRuntime {
             throw conflict(ErrorCode.AGENT_RESUME_TOKEN_INVALID, "恢复令牌无效");
         }
         if (INTERRUPTION_RESUMED.equals(interruption.getInterruptionStatus())) {
-            if (sha256(confirmationJson).equals(interruption.getResponseHash())) {
+            if (matchesJsonHash(confirmationJson, interruption.getResponseHash())) {
                 return view(run);
             }
             throw conflict(ErrorCode.AGENT_RESUME_TOKEN_INVALID, "恢复令牌已用于不同确认内容");
@@ -315,7 +316,7 @@ public class AgentRuntimeService implements AgentRuntime {
                 .eq("id", interruption.getId()).eq("deleted", 0).eq("version", interruption.getVersion())
                 .eq("interruption_status", INTERRUPTION_WAITING)
                 .set("interruption_status", INTERRUPTION_RESUMED)
-                .set("response_json", confirmationJson).set("response_hash", sha256(confirmationJson))
+                .set("response_json", confirmationJson).set("response_hash", jsonHash(confirmationJson))
                 .set("resumed_at", LocalDateTime.now()).set("version", interruption.getVersion() + 1));
         int changedRun = runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
                 .eq("id", run.getId()).eq("deleted", 0).eq("version", run.getVersion())
@@ -590,7 +591,7 @@ public class AgentRuntimeService implements AgentRuntime {
         checkpoint.setNextStepKey(result.nextStepKey());
         checkpoint.setCheckpointStatus(result.interruption() == null ? STATUS_RUNNING : STATUS_WAITING);
         checkpoint.setStateJson(stateJson);
-        checkpoint.setStateHash(sha256(stateJson));
+        checkpoint.setStateHash(jsonHash(stateJson));
         checkpoint.setDeleted(0);
         checkpoint.setVersion(0);
         checkpointMapper.insert(checkpoint);
@@ -778,7 +779,7 @@ public class AgentRuntimeService implements AgentRuntime {
 
     private Map<String, Object> state(AgentCheckpointEntity checkpoint) {
         if (checkpoint.getSchemaVersion() == null || checkpoint.getSchemaVersion() != CHECKPOINT_SCHEMA_VERSION
-                || !sha256(checkpoint.getStateJson()).equals(checkpoint.getStateHash())) {
+                || !matchesJsonHash(checkpoint.getStateJson(), checkpoint.getStateHash())) {
             throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "checkpoint 格式或校验失败");
         }
         return map(checkpoint.getStateJson());
@@ -794,7 +795,7 @@ public class AgentRuntimeService implements AgentRuntime {
             return Map.of();
         }
         if (blank(interruption.getResponseJson()) || blank(interruption.getResponseHash())
-                || !sha256(interruption.getResponseJson()).equals(interruption.getResponseHash())) {
+                || !matchesJsonHash(interruption.getResponseJson(), interruption.getResponseHash())) {
             throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "人工恢复响应格式或校验失败");
         }
         return map(interruption.getResponseJson());
@@ -823,6 +824,25 @@ public class AgentRuntimeService implements AgentRuntime {
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("当前 JDK 不支持 SHA-256", exception);
         }
+    }
+
+    private String jsonHash(String value) {
+        try {
+            Object parsed = objectMapper.readValue(value, Object.class);
+            String canonical = objectMapper.writer()
+                    .with(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+                    .writeValueAsString(parsed);
+            return sha256(canonical);
+        } catch (Exception exception) {
+            throw new BusinessException(
+                    ErrorCode.AGENT_CHECKPOINT_INVALID,
+                    "Agent JSON 无法规范化校验",
+                    exception);
+        }
+    }
+
+    private boolean matchesJsonHash(String value, String expectedHash) {
+        return sha256(value).equals(expectedHash) || jsonHash(value).equals(expectedHash);
     }
 
     private String safeMessage(Exception exception) {
