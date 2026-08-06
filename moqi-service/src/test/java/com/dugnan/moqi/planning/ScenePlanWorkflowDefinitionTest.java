@@ -19,6 +19,7 @@ import org.mockito.ArgumentCaptor;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.config.service.UserConfigService;
+import com.dugnan.moqi.chapter.outline.OutlineCandidateContentCodec;
 import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.llm.LlmCallContext;
@@ -62,7 +63,8 @@ class ScenePlanWorkflowDefinitionTest {
     @BeforeEach
     void setUp() {
         workflow = new ScenePlanWorkflowDefinition(planMapper, sceneMapper, outlineMapper, providerFactory,
-                userConfigService, snapshotQueryPort, new PlanningContentCodec(), objectMapper);
+                userConfigService, snapshotQueryPort, new PlanningContentCodec(),
+                new OutlineCandidateContentCodec(objectMapper), objectMapper);
         candidate = new ChapterPlanVersionEntity();
         candidate.setId(301L);
         candidate.setWorkId(11L);
@@ -75,7 +77,10 @@ class ScenePlanWorkflowDefinitionTest {
         outline = new ChapterOutlineEntity();
         outline.setId(101L);
         outline.setRevision(2);
-        outline.setOutlineContent("主角必须在雨夜完成交易并保住同伴。");
+        outline.setOutlineContent("""
+                {"schemaVersion":2,"chapterGoal":"完成交易","coreConflict":"身份暴露",
+                "beats":[{"beatKey":"beat-001","summary":"主角在雨夜完成交易并保住同伴"}],"constraints":[]}
+                """);
         when(planMapper.selectById(301L)).thenReturn(candidate);
         when(outlineMapper.findLatest(21L)).thenReturn(outline);
         LlmExecutionConfig executionConfig = new LlmExecutionConfig(
@@ -152,6 +157,24 @@ class ScenePlanWorkflowDefinitionTest {
     }
 
     @Test
+    void rejectsScenesThatDoNotCoverTheFormalOutlineAndIncludesBeatContractInPrompt() throws Exception {
+        when(provider.generate(any(LlmRequest.class))).thenReturn(new LlmResponse(
+                null,
+                objectMapper.readTree(validScenesJson().replace(",\"outlineBeatKeys\":[\"beat-001\"]", "")),
+                null));
+
+        assertThatThrownBy(() -> workflow.execute("generate_candidate", context()))
+                .satisfies(exception -> assertThat(workflow.errorCode((Exception) exception))
+                        .isEqualTo("SCENE_PLAN_VALIDATION_FAILED"));
+
+        ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).generate(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().messages())
+                .anySatisfy(message -> assertThat(message.content())
+                        .contains("outlineBeatKeys", "beat-001", "全部覆盖"));
+    }
+
+    @Test
     void mapsSceneInsertFailureToPersistenceError() throws Exception {
         when(planMapper.update(eq(null), any())).thenReturn(1);
         when(sceneMapper.insert(any(ScenePlanVersionEntity.class))).thenThrow(new IllegalStateException("database unavailable"));
@@ -176,7 +199,7 @@ class ScenePlanWorkflowDefinitionTest {
                 {"scenes":[{"sceneKey":"rainy-deal","sequence":1,"title":"雨夜交易","viewpointCharacter":null,
                 "timeAnchor":"雨夜","location":null,"goal":"完成交易","conflict":"身份暴露","emotion":"紧张",
                 "pacing":"中速","participants":[],"requiredSettings":[],"foreshadowingActions":[],
-                "expectedOutcome":"保住同伴","status":"planned"}]}
+                "expectedOutcome":"保住同伴","status":"planned","outlineBeatKeys":["beat-001"]}]}
                 """;
     }
 }

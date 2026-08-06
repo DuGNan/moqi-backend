@@ -20,7 +20,8 @@ public final class SceneGenerationModels {
             List<String> sceneKeys,
             Long baseGenerationId,
             String idempotencyKey,
-            Integer maxOutputTokens,
+            String lengthPreset,
+            Integer customWordCount,
             Double temperature) {
 
         public CreateSceneGenerationRequest {

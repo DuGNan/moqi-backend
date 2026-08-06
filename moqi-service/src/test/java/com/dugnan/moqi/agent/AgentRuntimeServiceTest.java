@@ -141,7 +141,7 @@ class AgentRuntimeServiceTest {
     }
 
     @Test
-    void resumedStepReceivesVerifiedHumanResponse() throws Exception {
+    void resumedStepAcceptsDatabaseNormalizedCheckpointAndVerifiedHumanResponse() throws Exception {
         TransactionStatus transactionStatus = mock(TransactionStatus.class);
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
             TransactionCallback<?> callback = invocation.getArgument(0);
@@ -166,8 +166,8 @@ class AgentRuntimeServiceTest {
         checkpoint.setId(51L);
         checkpoint.setRunId(41L);
         checkpoint.setSchemaVersion(1);
-        checkpoint.setStateJson("{}");
-        checkpoint.setStateHash(sha256("{}"));
+        checkpoint.setStateJson("{\"reportId\": 1}");
+        checkpoint.setStateHash(sha256("{\"reportId\":1}"));
         checkpoint.setNextStepKey("review");
         when(checkpointMapper.findLatestByRunId(41L)).thenReturn(checkpoint);
 
@@ -195,6 +195,8 @@ class AgentRuntimeServiceTest {
         ArgumentCaptor<AgentStepExecutionContext> contextCaptor =
                 ArgumentCaptor.forClass(AgentStepExecutionContext.class);
         verify(graphInvoker).invoke(any(), any(), contextCaptor.capture());
+        assertThat(contextCaptor.getValue().state())
+                .containsEntry("reportId", 1);
         assertThat(contextCaptor.getValue().humanResponse())
                 .containsEntry("approved", true);
     }

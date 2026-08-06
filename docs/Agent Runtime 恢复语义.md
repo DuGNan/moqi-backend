@@ -16,7 +16,7 @@
 
 `agent_runs` 是一次工作流执行的事实源，状态为 `queued`、`running`、`waiting_for_human`、`succeeded`、`failed`、`canceled` 或 `timed_out`。步骤尝试独立记录在 `agent_run_steps`；成功步骤不会在恢复后再次执行。
 
-每次成功步骤均在短事务内写入 `agent_checkpoints`。checkpoint 只保存带 schema version、SHA-256 校验和及 Run 内单调 sequence 的 JSON 状态，不保存 Java 对象图或模型隐藏推理。远程 Provider 调用始终位于数据库事务外。
+每次成功步骤均在短事务内写入 `agent_checkpoints`。checkpoint 只保存带 schema version、SHA-256 校验和及 Run 内单调 sequence 的 JSON 状态，不保存 Java 对象图或模型隐藏推理；哈希基于键排序后的规范 JSON 计算，不依赖数据库对 JSON 空白的归一化表现。远程 Provider 调用始终位于数据库事务外。
 
 启动幂等键在同一用户和工作流范围内唯一，并绑定作品、章节、可选 AI Task、输入快照版本与输入哈希。完全相同的请求返回既有 Run；任一绑定项不同均返回幂等冲突，不会跨业务对象复用旧 Run。
 

@@ -16,6 +16,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -104,7 +105,7 @@ public class ScenePlanConsistencyServiceImpl implements ScenePlanConsistencyServ
     }
 
     @Autowired
-    public void setAgentRuntime(AgentRuntime agentRuntime) {
+    public void setAgentRuntime(@Lazy AgentRuntime agentRuntime) {
         this.agentRuntime = agentRuntime;
     }
 

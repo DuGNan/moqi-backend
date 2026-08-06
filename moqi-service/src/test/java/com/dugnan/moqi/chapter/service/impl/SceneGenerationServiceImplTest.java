@@ -21,6 +21,7 @@ import com.dugnan.moqi.agent.AgentRuntime;
 import com.dugnan.moqi.agent.mapper.AgentRunStepMapper;
 import com.dugnan.moqi.agent.entity.AgentRunStepEntity;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
+import com.dugnan.moqi.agent.dto.AgentRuntimeModels.StartAgentRunCommand;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
@@ -118,12 +119,22 @@ class SceneGenerationServiceImplTest {
         });
 
         var result = service.create(12L, new CreateSceneGenerationRequest(
-                null, "all", null, List.of(), null, "scene-all-1", 1200, 0.7D));
+                null, "all", null, List.of(), null, "scene-all-1", "about_3000", null, 0.7D));
 
         ArgumentCaptor<ChapterGenerationSceneEntity> scenes = ArgumentCaptor.forClass(ChapterGenerationSceneEntity.class);
+        ArgumentCaptor<ChapterGenerationEntity> generation = ArgumentCaptor.forClass(ChapterGenerationEntity.class);
+        ArgumentCaptor<StartAgentRunCommand> run = ArgumentCaptor.forClass(StartAgentRunCommand.class);
         verify(sceneMapper, org.mockito.Mockito.times(2)).insert(scenes.capture());
+        verify(generationMapper).insert(generation.capture());
+        verify(agentRuntime).start(run.capture());
         assertThat(result.generationId()).isEqualTo(51L);
         assertThat(result.agentRunId()).isEqualTo(61L);
+        assertThat(generation.getValue().getLengthPreset()).isEqualTo("about_3000");
+        assertThat(generation.getValue().getCustomWordCount()).isNull();
+        assertThat(run.getValue().input())
+                .containsEntry("targetChapterWordCount", 3000)
+                .containsEntry("plannedSceneCount", 2)
+                .doesNotContainKey("maxOutputTokens");
         assertThat(scenes.getAllValues()).extracting(ChapterGenerationSceneEntity::getSceneStatus)
                 .containsOnly("pending");
         assertThat(scenes.getAllValues()).extracting(ChapterGenerationSceneEntity::getSceneKey)
@@ -147,10 +158,22 @@ class SceneGenerationServiceImplTest {
         });
 
         assertThatThrownBy(() -> service.create(12L, new CreateSceneGenerationRequest(
-                null, "rewrite_selected", null, List.of("scene-1"), null, "rewrite-1", null, null)))
+                null, "rewrite_selected", null, List.of("scene-1"), null, "rewrite-1",
+                "about_3000", null, null)))
                 .isInstanceOf(BusinessException.class)
                 .extracting(exception -> ((BusinessException) exception).getErrorCode())
                 .isEqualTo(ErrorCode.GENERATION_NOT_FOUND);
+    }
+
+    @Test
+    void rejectsCustomTargetOutsideTheSupportedChapterRange() {
+        when(chapterMapper.selectById(12L)).thenReturn(chapter());
+
+        assertThatThrownBy(() -> service.create(12L, new CreateSceneGenerationRequest(
+                null, "all", null, List.of(), null, "custom-too-short",
+                "custom", 300, 0.7D)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("customWordCount");
     }
 
     @Test

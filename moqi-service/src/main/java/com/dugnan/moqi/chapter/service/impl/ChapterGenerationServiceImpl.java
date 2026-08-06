@@ -217,6 +217,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         if (chapterMapper.updateContentIfVersion(chapter.getId(), content, baseVersion) != 1) {
             throw versionConflict(requireChapter(chapter.getId()));
         }
+        generationMapper.supersedeOlderPreviews(chapter.getId(), generationId);
         generation.setGenerationStatus(STATUS_ACCEPTED);
         eventPublisher.publishEvent(new ChapterGenerationAcceptedEvent(chapter.getId(), generation.getId()));
         return accepted(generation, requireChapter(chapter.getId()));

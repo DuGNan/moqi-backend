@@ -5,6 +5,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,6 +28,7 @@ import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
+import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy.SceneWordRange;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
@@ -39,12 +41,14 @@ import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
 import com.dugnan.moqi.llm.LlmCallContext;
+import com.dugnan.moqi.llm.LlmMessage;
 import com.dugnan.moqi.llm.LlmOptions;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmResponseFormat;
 import com.dugnan.moqi.llm.LlmResponseMetadata;
+import com.dugnan.moqi.llm.LlmRole;
 import com.dugnan.moqi.llm.LlmStreamCall;
 import com.dugnan.moqi.llm.LlmStreamEvent;
 import com.dugnan.moqi.llm.LlmStreamResult;
@@ -72,7 +76,7 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
     private static final String SCENE_RUNNING = "running";
     private static final String SCENE_COMPLETED = "completed";
     private static final String SCENE_COPIED = "copied";
-    private static final String TEMPLATE_VERSION = "scene-novel-v1";
+    private static final String TEMPLATE_VERSION = "scene-novel-v2";
     private static final int MAX_ATTEMPTS = 3;
 
     private final ChapterGenerationMapper generationMapper;
@@ -171,7 +175,8 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         }
         LlmExecutionConfig executionConfig = verifyExecutionConfig(generation, context);
         LlmProvider provider = providerFactory.create(executionConfig.runtimeConfig());
-        StoryContextSnapshot snapshot = contextSnapshot(generation, scene, provider);
+        SceneWordRange wordRange = wordRange(context.input(), generationId, scene.getSequenceNo());
+        StoryContextSnapshot snapshot = contextSnapshot(generation, scene, provider, wordRange);
         provider = providerFactory.createObserved(
                 executionConfig,
                 LlmCallContext.builder(WORKFLOW_TYPE, "generate_scene")
@@ -192,15 +197,28 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
                     generationId, scene.getId(), scene.getSceneKey(), SCENE_RUNNING));
             call = provider.stream(
                     new com.dugnan.moqi.llm.LlmRequest(snapshot.toMessages(), new LlmOptions(
-                            maxOutputTokens(context.input()), temperature(context.input()), List.of(), LlmResponseFormat.TEXT)),
+                            SceneGenerationLengthPolicy.maxOutputTokens(
+                                    wordRange.maximum(), provider.capabilities().maxOutputTokens()),
+                            temperature(context.input()), List.of(), LlmResponseFormat.TEXT)),
                     event -> consumeDelta(event, context, generation, scene, content));
             context.callRegistry().register(context.runId(), call);
-            LlmStreamResult streamResult = call.await();
-            if (streamResult.status() == LlmStreamStatus.CANCELED) {
-                throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "场景生成已取消");
-            }
-            if (streamResult.status() == LlmStreamStatus.FAILED) {
-                throw new LlmProviderException(streamResult.error());
+            LlmStreamResult streamResult = requireCompleted(call.await());
+            context.callRegistry().unregister(context.runId(), call);
+            call = null;
+            if (!wordRange.contains(wordCount(content.toString()))) {
+                List<LlmMessage> correctionMessages = new ArrayList<>(snapshot.toMessages());
+                correctionMessages.add(new LlmMessage(LlmRole.ASSISTANT, content.toString()));
+                correctionMessages.add(new LlmMessage(LlmRole.USER, correctionInstruction(
+                        wordRange, wordCount(content.toString()))));
+                content.setLength(0);
+                call = provider.stream(
+                        new com.dugnan.moqi.llm.LlmRequest(correctionMessages, new LlmOptions(
+                                SceneGenerationLengthPolicy.maxOutputTokens(
+                                        wordRange.maximum(), provider.capabilities().maxOutputTokens()),
+                                temperature(context.input()), List.of(), LlmResponseFormat.TEXT)),
+                        event -> consumeCorrectionDelta(event, context, content));
+                context.callRegistry().register(context.runId(), call);
+                streamResult = requireCompleted(call.await());
             }
             if (!StringUtils.hasText(content)) {
                 throw new BusinessException(ErrorCode.BUSINESS_ERROR, "模型未返回场景正文");
@@ -211,6 +229,9 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
             Long modelCallId = streamResult.metadata() == null ? null : streamResult.metadata().modelCallId();
             output.put("modelCallId", modelCallId);
             output.put("content", content.toString());
+            output.put("targetWordCount", wordRange.target());
+            output.put("minimumWordCount", wordRange.minimum());
+            output.put("maximumWordCount", wordRange.maximum());
             output.put("elapsedMillis", Duration.ofNanos(System.nanoTime() - started).toMillis());
             putMetadata(output, streamResult.metadata());
             return new AgentStepResult(output, Map.of("lastSceneId", scene.getId()),
@@ -225,7 +246,8 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
     private StoryContextSnapshot contextSnapshot(
             ChapterGenerationEntity generation,
             ChapterGenerationSceneEntity scene,
-            LlmProvider provider) {
+            LlmProvider provider,
+            SceneWordRange wordRange) {
         if (scene.getContextSnapshotId() != null) {
             return snapshotQueryPort.load(scene.getContextSnapshotId());
         }
@@ -247,25 +269,19 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         int contextWindow = provider.capabilities().maxContextTokens() == null
                 ? 16384 : provider.capabilities().maxContextTokens();
         int reserve = Math.min(StoryContextProfile.SCENE_GENERATION.defaultOutputReserveTokens(), contextWindow / 2);
-        StoryContextSnapshot snapshot = contextEngine.build(new StoryContextBuildCommand(
-                StoryContextProfile.SCENE_GENERATION,
+        StoryContextSnapshot snapshot = contextEngine.build(contextBuildCommand(
                 generation.getWorkId(),
                 generation.getChapterId(),
-                null,
-                null,
-                "请根据已发布场景计划创作本场候选正文。不得改写已确认设定，不得输出分析、标题或隐藏推理。",
-                null,
-                null,
                 contextWindow,
                 reserve,
-                null,
                 new SceneGenerationContextFocus(
                         generation.getChapterPlanVersionId(),
                         plan.getVersion(),
                         plan.getId(),
                         scene.getSceneKey(),
                         json(planContent),
-                        previous)));
+                        previous),
+                wordRange));
         int changed = generationSceneMapper.update(null, new UpdateWrapper<ChapterGenerationSceneEntity>()
                 .eq("id", scene.getId()).eq("version", scene.getVersion())
                 .in("scene_status", List.of(SCENE_PENDING, "failed"))
@@ -409,8 +425,79 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         output.put("totalTokens", metadata.totalTokens());
     }
 
-    private Integer maxOutputTokens(Map<String, Object> input) {
-        return integerValue(input.get("maxOutputTokens"));
+    static String generationInstruction(SceneWordRange wordRange) {
+        return "请根据已发布场景计划创作本场候选正文。正文长度必须严格控制在 "
+                + wordRange.minimum() + " 至 " + wordRange.maximum()
+                + " 个中文字符（含标点）之间，建议约 " + wordRange.target()
+                + " 个中文字符。若尚未达到 " + wordRange.minimum()
+                + " 个中文字符，不得提前收束；完成前自行核对长度，且不得超过 "
+                + wordRange.maximum() + " 个中文字符。"
+                + "不得改写已确认设定，不得输出分析、标题或隐藏推理。";
+    }
+
+    static String correctionInstruction(SceneWordRange wordRange, int actualWordCount) {
+        String action = actualWordCount < wordRange.minimum() ? "扩写" : "压缩";
+        return "上一稿共 " + actualWordCount + " 个中文字符，不符合篇幅要求。请在不改变事件、设定和结局的前提下"
+                + action + "为完整正文，严格控制在 " + wordRange.minimum() + " 至 "
+                + wordRange.maximum() + " 个中文字符（含标点）之间。只输出修订后的完整正文。";
+    }
+
+    static StoryContextBuildCommand contextBuildCommand(
+            Long workId,
+            Long chapterId,
+            int contextWindow,
+            int outputReserve,
+            SceneGenerationContextFocus focus,
+            SceneWordRange wordRange) {
+        return new StoryContextBuildCommand(
+                StoryContextProfile.SCENE_GENERATION,
+                workId,
+                chapterId,
+                null,
+                null,
+                "创作场景候选正文",
+                generationInstruction(wordRange),
+                null,
+                contextWindow,
+                outputReserve,
+                null,
+                focus);
+    }
+
+    private SceneWordRange wordRange(Map<String, Object> input, Long generationId, int sequenceNo) {
+        Integer targetWordCount = integerValue(input.get("targetChapterWordCount"));
+        if (targetWordCount == null || targetWordCount <= 0) {
+            targetWordCount = SceneGenerationLengthPolicy.resolveTargetWordCount(
+                    SceneGenerationLengthPolicy.DEFAULT_PRESET, null);
+        }
+        Integer sceneCount = integerValue(input.get("plannedSceneCount"));
+        if (sceneCount == null || sceneCount <= 0) {
+            sceneCount = Math.toIntExact(generationSceneMapper.selectCount(
+                    new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
+                            .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
+                            .eq(ChapterGenerationSceneEntity::getDeleted, 0)));
+        }
+        return SceneGenerationLengthPolicy.sceneWordRange(targetWordCount, sceneCount, sequenceNo);
+    }
+
+    private LlmStreamResult requireCompleted(LlmStreamResult streamResult) {
+        if (streamResult.status() == LlmStreamStatus.CANCELED) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "场景生成已取消");
+        }
+        if (streamResult.status() == LlmStreamStatus.FAILED) {
+            throw new LlmProviderException(streamResult.error());
+        }
+        return streamResult;
+    }
+
+    private void consumeCorrectionDelta(
+            LlmStreamEvent event,
+            AgentStepExecutionContext context,
+            StringBuilder content) {
+        if (event instanceof LlmStreamEvent.TextDelta delta && StringUtils.hasText(delta.text())
+                && !context.callRegistry().isCancellationRequested(context.runId())) {
+            content.append(delta.text());
+        }
     }
 
     private Double temperature(Map<String, Object> input) {

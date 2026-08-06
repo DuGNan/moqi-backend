@@ -37,6 +37,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
+import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
@@ -67,6 +68,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private static final String STATUS_CANCELED = "canceled";
     private static final String SCENE_PENDING = "pending";
     private static final String SCENE_COPIED = "copied";
+    private static final String PROMPT_TEMPLATE_VERSION = "scene-novel-v2";
     private static final Set<String> SELECTION_MODES = Set.of("all", "continue_from", "rewrite_selected");
 
     private final ChapterMapper chapterMapper;
@@ -153,7 +155,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
                 WORKFLOW_TYPE,
                 request.idempotencyKey(),
                 chapterPlan.planNo().longValue(),
-                runInput(generation.getId(), request),
+                runInput(generation.getId(), request, plannedScenes.size()),
                 task.getId()));
         int generationUpdated = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
                 .eq("id", generation.getId()).eq("version", generation.getVersion())
@@ -189,7 +191,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         }
         return create(source.getChapterId(), new CreateSceneGenerationRequest(
                 request.scenePlanNo(), request.selectionMode(), request.fromSceneKey(), request.sceneKeys(),
-                generationId, request.idempotencyKey(), request.maxOutputTokens(), request.temperature()));
+                generationId, request.idempotencyKey(), request.lengthPreset(), request.customWordCount(),
+                request.temperature()));
     }
 
     @Override
@@ -277,11 +280,20 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         generation.setGenerationMode("scene_novel_generation");
         generation.setSelectionMode(normalizedMode(request.selectionMode()));
         generation.setIdempotencyKey(request.idempotencyKey());
-        generation.setLengthPreset(null);
-        generation.setCustomWordCount(null);
-        generation.setBasisSnapshotJson(json(Map.of(
-                "chapterPlanVersionId", plan.id(), "chapterPlanNo", plan.planNo(), "outlineId", plan.outlineId(),
-                "outlineRevision", plan.outlineRevision())));
+        String lengthPreset = SceneGenerationLengthPolicy.normalizePreset(request.lengthPreset());
+        int targetWordCount = SceneGenerationLengthPolicy.resolveTargetWordCount(
+                lengthPreset, request.customWordCount());
+        generation.setLengthPreset(lengthPreset);
+        generation.setCustomWordCount("custom".equals(lengthPreset) ? request.customWordCount() : null);
+        Map<String, Object> basisSnapshot = new LinkedHashMap<>();
+        basisSnapshot.put("chapterPlanVersionId", plan.id());
+        basisSnapshot.put("chapterPlanNo", plan.planNo());
+        basisSnapshot.put("outlineId", plan.outlineId());
+        basisSnapshot.put("outlineRevision", plan.outlineRevision());
+        basisSnapshot.put("lengthPreset", lengthPreset);
+        basisSnapshot.put("targetChapterWordCount", targetWordCount);
+        basisSnapshot.put("temperature", request.temperature());
+        generation.setBasisSnapshotJson(json(basisSnapshot));
         generation.setExecutionConfigJson(json(executionConfig.descriptor()));
         generation.setWordCount(0);
         generation.setAiTaskId(task.getId());
@@ -302,7 +314,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             scene.setScenePlanVersionId(planScene.scenePlanId());
             scene.setSceneKey(planScene.sceneKey());
             scene.setSequenceNo(planScene.sequence());
-            scene.setPromptTemplateVersion("scene-novel-v1");
+            scene.setPromptTemplateVersion(PROMPT_TEMPLATE_VERSION);
             scene.setDeleted(0);
             scene.setVersion(0);
             if (selectedSceneIds.contains(planScene.scenePlanId())) {
@@ -460,8 +472,11 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         if (!SELECTION_MODES.contains(normalizedMode(request.selectionMode()))) {
             throw invalidSelection("selectionMode 不合法");
         }
-        if (request.maxOutputTokens() != null && request.maxOutputTokens() <= 0) {
-            throw invalidSelection("maxOutputTokens 必须为正整数");
+        try {
+            SceneGenerationLengthPolicy.resolveTargetWordCount(
+                    request.lengthPreset(), request.customWordCount());
+        } catch (IllegalArgumentException exception) {
+            throw invalidSelection(exception.getMessage());
         }
     }
 
@@ -481,12 +496,15 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         }
     }
 
-    private Map<String, Object> runInput(Long generationId, CreateSceneGenerationRequest request) {
+    private Map<String, Object> runInput(
+            Long generationId,
+            CreateSceneGenerationRequest request,
+            int plannedSceneCount) {
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("generationId", generationId);
-        if (request.maxOutputTokens() != null) {
-            input.put("maxOutputTokens", request.maxOutputTokens());
-        }
+        input.put("targetChapterWordCount", SceneGenerationLengthPolicy.resolveTargetWordCount(
+                request.lengthPreset(), request.customWordCount()));
+        input.put("plannedSceneCount", plannedSceneCount);
         if (request.temperature() != null) {
             input.put("temperature", request.temperature());
         }

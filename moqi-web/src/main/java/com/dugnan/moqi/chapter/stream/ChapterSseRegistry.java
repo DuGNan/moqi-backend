@@ -118,7 +118,6 @@ public class ChapterSseRegistry {
             emitter.send(SseEmitter.event().name(eventName).data(data));
         } catch (IOException exception) {
             removeEmitter(emitter);
-            emitter.completeWithError(exception);
         }
     }
 

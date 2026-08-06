@@ -2,6 +2,8 @@ package com.dugnan.moqi.agent;
 
 import java.util.concurrent.RejectedExecutionException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
@@ -20,6 +22,8 @@ import com.dugnan.moqi.agent.event.AgentRunSubmittedEvent;
 @Component
 public class AgentRunDispatcher {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(AgentRunDispatcher.class);
+
     private final ThreadPoolTaskExecutor executor;
     private final AgentRuntimeService runtime;
 
@@ -33,7 +37,13 @@ public class AgentRunDispatcher {
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void dispatch(AgentRunSubmittedEvent event) {
         try {
-            executor.execute(() -> runtime.executeQueuedRun(event.runId()));
+            executor.execute(() -> {
+                try {
+                    runtime.executeQueuedRun(event.runId());
+                } catch (RuntimeException exception) {
+                    LOGGER.error("Agent Run 派发执行失败，runId={}", event.runId(), exception);
+                }
+            });
         } catch (RejectedExecutionException exception) {
             runtime.rejectExecution(event.runId());
         }

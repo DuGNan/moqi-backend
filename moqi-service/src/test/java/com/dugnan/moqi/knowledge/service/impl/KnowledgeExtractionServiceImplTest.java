@@ -13,7 +13,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import com.dugnan.moqi.agent.AgentRuntime;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
@@ -62,7 +61,6 @@ class KnowledgeExtractionServiceImplTest {
                 mock(ForeshadowingItemMapper.class),
                 mock(ChapterSummaryMapper.class),
                 mock(ChapterKeyEventMapper.class),
-                mock(AgentRuntime.class),
                 new ObjectMapper(),
                 staleMarker);
     }
