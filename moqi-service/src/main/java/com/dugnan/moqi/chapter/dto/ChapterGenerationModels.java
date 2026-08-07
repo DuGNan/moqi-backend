@@ -68,6 +68,10 @@ public final class ChapterGenerationModels {
             String generatedContent,
             Integer wordCount,
             Long aiTaskId,
+            String contentAssemblyMode,
+            String cohesionStatus,
+            Long cohesionModelCallId,
+            String cohesionTemplateVersion,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
     }

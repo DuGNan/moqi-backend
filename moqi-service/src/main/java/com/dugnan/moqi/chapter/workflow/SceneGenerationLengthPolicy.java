@@ -62,7 +62,24 @@ public final class SceneGenerationLengthPolicy {
         return providerMaximum == null ? calculated : Math.min(calculated, providerMaximum);
     }
 
+    public static ChapterWordRange chapterWordRange(int targetWordCount) {
+        if (targetWordCount <= 0) {
+            throw new IllegalArgumentException("章节目标字数必须为有效正数");
+        }
+        return new ChapterWordRange(
+                (int) Math.floor(targetWordCount * LOWER_BOUND_RATIO),
+                targetWordCount,
+                (int) Math.ceil(targetWordCount * UPPER_BOUND_RATIO));
+    }
+
     public record SceneWordRange(int minimum, int target, int maximum) {
+
+        public boolean contains(int wordCount) {
+            return wordCount >= minimum && wordCount <= maximum;
+        }
+    }
+
+    public record ChapterWordRange(int minimum, int target, int maximum) {
 
         public boolean contains(int wordCount) {
             return wordCount >= minimum && wordCount <= maximum;

@@ -29,6 +29,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
 import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy.SceneWordRange;
+import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy.ChapterWordRange;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
@@ -46,6 +47,7 @@ import com.dugnan.moqi.llm.LlmOptions;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderFactory;
+import com.dugnan.moqi.llm.LlmResponse;
 import com.dugnan.moqi.llm.LlmResponseFormat;
 import com.dugnan.moqi.llm.LlmResponseMetadata;
 import com.dugnan.moqi.llm.LlmRole;
@@ -68,15 +70,19 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
     public static final String WORKFLOW_TYPE = "scene_novel_generation";
     private static final String LOAD = "load_generation";
     private static final String GENERATE_PREFIX = "generate_scene:";
+    private static final String COHERE = "cohere_chapter";
     private static final String FINALIZE = "finalize_generation";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_RUNNING = "running";
     private static final String STATUS_PREVIEW = "preview";
+    private static final String ASSEMBLY_COHESIVE_CHAPTER = "cohesive_chapter";
+    private static final String COHESION_COMPLETED = "completed";
     private static final String SCENE_PENDING = "pending";
     private static final String SCENE_RUNNING = "running";
     private static final String SCENE_COMPLETED = "completed";
     private static final String SCENE_COPIED = "copied";
-    private static final String TEMPLATE_VERSION = "scene-novel-v2";
+    private static final String TEMPLATE_VERSION = "scene-novel-v3";
+    private static final String COHESION_TEMPLATE_VERSION = "chapter-cohesion-v1";
     private static final int MAX_ATTEMPTS = 3;
 
     private final ChapterGenerationMapper generationMapper;
@@ -140,6 +146,9 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         if (FINALIZE.equals(stepKey)) {
             return AgentStepResult.completed(Map.of("generationId", generationId), Map.of(), null);
         }
+        if (COHERE.equals(stepKey)) {
+            return cohereChapter(context, generationId);
+        }
         if (!stepKey.startsWith(GENERATE_PREFIX)) {
             throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "场景生成步骤键不合法");
         }
@@ -163,7 +172,35 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
             finalizeGeneration(generationId);
             return;
         }
+        if (COHERE.equals(stepKey)) {
+            applyCohesionResult(result, generationId);
+            return;
+        }
         applySceneResult(context, result, generationId);
+    }
+
+    @Override
+    public void applyFailure(String stepKey, AgentStepExecutionContext context, Exception exception) {
+        Long generationId = generationId(context);
+        ChapterGenerationEntity generation = requireGeneration(generationId);
+        UpdateWrapper<ChapterGenerationEntity> update = new UpdateWrapper<ChapterGenerationEntity>()
+                .eq("id", generationId).eq("generation_status", STATUS_RUNNING)
+                .set("generation_status", "failed").setSql("version = version + 1")
+                .set("gmt_modified", LocalDateTime.now());
+        if (COHERE.equals(stepKey)) {
+            update.set("cohesion_status", "failed");
+        }
+        generationMapper.update(null, update);
+        if (stepKey.startsWith(GENERATE_PREFIX)) {
+            generationSceneMapper.update(null, new UpdateWrapper<ChapterGenerationSceneEntity>()
+                    .eq("generation_id", generationId)
+                    .eq("scene_key", stepKey.substring(GENERATE_PREFIX.length()))
+                    .in("scene_status", List.of(SCENE_PENDING, SCENE_RUNNING))
+                    .set("scene_status", "failed").setSql("version = version + 1")
+                    .set("gmt_modified", LocalDateTime.now()));
+        }
+        eventPublisher.publishEvent(SceneGenerationEvent.generation(
+                "generation.failed", generation.getChapterId(), generationId, "failed"));
     }
 
     private AgentStepResult generate(String sceneKey, AgentStepExecutionContext context, Long generationId) {
@@ -256,7 +293,7 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
             throw new BusinessException(ErrorCode.SCENE_PLAN_NOT_FOUND, "场景规划叶子节点不存在");
         }
         ScenePlanContent planContent = read(plan.getContentJson(), ScenePlanContent.class);
-        List<SceneGenerationContextFocus.PreviousSceneDraft> previous = generationSceneMapper.selectList(
+        List<SceneGenerationContextFocus.PreviousSceneDraft> allPrevious = generationSceneMapper.selectList(
                 new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
                         .eq(ChapterGenerationSceneEntity::getGenerationId, generation.getId())
                         .lt(ChapterGenerationSceneEntity::getSequenceNo, scene.getSequenceNo())
@@ -266,6 +303,12 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
                 .map(item -> new SceneGenerationContextFocus.PreviousSceneDraft(
                         item.getId(), item.getSceneKey(), item.getGeneratedContent()))
                 .toList();
+        SceneGenerationContextFocus.PreviousSceneDraft immediatePrevious = allPrevious.isEmpty()
+                ? null : allPrevious.get(allPrevious.size() - 1);
+        List<SceneGenerationContextFocus.PreviousSceneDraft> previous = allPrevious.isEmpty()
+                ? List.of() : allPrevious.subList(0, allPrevious.size() - 1);
+        ChapterGenerationSceneEntity nextScene = nextScene(generation.getId(), scene.getSequenceNo());
+        String nextSceneContent = nextScene == null ? null : scenePlanContent(nextScene.getScenePlanVersionId());
         int contextWindow = provider.capabilities().maxContextTokens() == null
                 ? 16384 : provider.capabilities().maxContextTokens();
         int reserve = Math.min(StoryContextProfile.SCENE_GENERATION.defaultOutputReserveTokens(), contextWindow / 2);
@@ -279,7 +322,10 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
                         plan.getVersion(),
                         plan.getId(),
                         scene.getSceneKey(),
+                        chapterSceneRoute(generation.getId()),
                         json(planContent),
+                        nextSceneContent,
+                        immediatePrevious,
                         previous),
                 wordRange));
         int changed = generationSceneMapper.update(null, new UpdateWrapper<ChapterGenerationSceneEntity>()
@@ -326,6 +372,130 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
                 generationId, sceneId, scene.getSceneKey(), SCENE_COMPLETED));
     }
 
+    private AgentStepResult cohereChapter(AgentStepExecutionContext context, Long generationId) {
+        ChapterGenerationEntity generation = requireGeneration(generationId);
+        List<ChapterGenerationSceneEntity> scenes = completedScenes(generationId);
+        if (scenes.isEmpty()) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "没有可供整章收束的场景正文");
+        }
+        generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
+                .eq("id", generationId).eq("generation_status", STATUS_RUNNING)
+                .in("cohesion_status", List.of("pending", "failed"))
+                .set("cohesion_status", "running").setSql("version = version + 1")
+                .set("gmt_modified", LocalDateTime.now()));
+        LlmExecutionConfig executionConfig = verifyExecutionConfig(generation, context);
+        LlmProvider provider = providerFactory.createObserved(
+                executionConfig,
+                LlmCallContext.builder(WORKFLOW_TYPE, "cohere_chapter")
+                        .workId(generation.getWorkId())
+                        .chapterId(generation.getChapterId())
+                        .agentRunId(context.runId())
+                        .agentStepId(context.stepId())
+                        .logicalCallId("agent-step:" + context.stepId() + ":cohere")
+                        .promptTemplateVersion(COHESION_TEMPLATE_VERSION)
+                        .sourceFingerprint(sha256(joinScenes(scenes)))
+                        .build());
+        int target = targetChapterWordCount(context.input(), generationId);
+        ChapterWordRange wordRange = SceneGenerationLengthPolicy.chapterWordRange(target);
+        String joined = joinScenes(scenes);
+        LlmResponse response = provider.generate(new com.dugnan.moqi.llm.LlmRequest(
+                List.of(
+                        new LlmMessage(LlmRole.SYSTEM, cohesionInstruction(target)),
+                        new LlmMessage(LlmRole.USER, joined)),
+                new LlmOptions(
+                        SceneGenerationLengthPolicy.maxOutputTokens(
+                                Math.max(target + target / 5, target),
+                                provider.capabilities().maxOutputTokens()),
+                        temperature(context.input()), List.of(), LlmResponseFormat.TEXT)));
+        String content = response.content();
+        if (!StringUtils.hasText(content)) {
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "整章收束未返回正文");
+        }
+        if (!wordRange.contains(wordCount(content))) {
+            response = provider.generate(new com.dugnan.moqi.llm.LlmRequest(
+                    List.of(
+                            new LlmMessage(LlmRole.SYSTEM, cohesionInstruction(target)),
+                            new LlmMessage(LlmRole.ASSISTANT, content),
+                            new LlmMessage(LlmRole.USER, cohesionCorrectionInstruction(wordRange, wordCount(content)))),
+                    new LlmOptions(
+                            SceneGenerationLengthPolicy.maxOutputTokens(
+                                    wordRange.maximum(), provider.capabilities().maxOutputTokens()),
+                            temperature(context.input()), List.of(), LlmResponseFormat.TEXT)));
+            content = response.content();
+        }
+        if (!StringUtils.hasText(content) || !wordRange.contains(wordCount(content))) {
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "整章收束字数未满足目标范围");
+        }
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("content", content);
+        output.put("modelCallId", response.metadata() == null ? null : response.metadata().modelCallId());
+        return new AgentStepResult(output, Map.of(), FINALIZE,
+                response.metadata() == null || response.metadata().modelCallId() == null
+                        ? null : String.valueOf(response.metadata().modelCallId()), null);
+    }
+
+    private void applyCohesionResult(AgentStepResult result, Long generationId) {
+        ChapterGenerationEntity generation = requireGeneration(generationId);
+        String content = stringValue(result.outputSummary().get("content"));
+        if (!StringUtils.hasText(content)) {
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "整章收束正文为空");
+        }
+        int changed = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
+                .eq("id", generationId).eq("version", generation.getVersion())
+                .eq("generation_status", STATUS_RUNNING)
+                .set("generated_content", content)
+                .set("word_count", wordCount(content))
+                .set("cohesion_status", COHESION_COMPLETED)
+                .set("cohesion_model_call_id", longValue(result.outputSummary().get("modelCallId")))
+                .set("cohesion_template_version", COHESION_TEMPLATE_VERSION)
+                .set("version", generation.getVersion() + 1)
+                .set("gmt_modified", LocalDateTime.now()));
+        if (changed != 1) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "整章收束结果已被并发修改");
+        }
+    }
+
+    private List<ChapterGenerationSceneEntity> completedScenes(Long generationId) {
+        List<ChapterGenerationSceneEntity> scenes = generationSceneMapper.selectList(
+                new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
+                        .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
+                        .eq(ChapterGenerationSceneEntity::getDeleted, 0)
+                        .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo));
+        if (scenes.stream().anyMatch(scene -> !(SCENE_COMPLETED.equals(scene.getSceneStatus())
+                || SCENE_COPIED.equals(scene.getSceneStatus())))) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "仍有场景候选未完成");
+        }
+        return scenes;
+    }
+
+    private String joinScenes(List<ChapterGenerationSceneEntity> scenes) {
+        return scenes.stream().map(ChapterGenerationSceneEntity::getGeneratedContent)
+                .filter(StringUtils::hasText).collect(Collectors.joining("\n\n"));
+    }
+
+    private String cohesionInstruction(int targetWordCount) {
+        return "你是整章小说编辑。以下是按场景生成的原始正文。请只输出一篇完整的整章正文，"
+                + "仅允许补足场景间过渡、消除重复、统一节奏并修复时间、地点、人物位置、伤势、道具和未完成目标的连续性。"
+                + "不得删除、改写或新增场景规划中的关键事件，也不得改变任何权威事实。"
+                + "不要输出分析、标题或分场景标记；目标篇幅约 " + targetWordCount + " 字。";
+    }
+
+    static String cohesionCorrectionInstruction(ChapterWordRange wordRange, int actualWordCount) {
+        String action = actualWordCount < wordRange.minimum() ? "扩写" : "压缩";
+        return "上一稿共 " + actualWordCount + " 个中文字符。请在不改变场景规划、关键事件和权威事实的前提下"
+                + action + "，严格控制在 " + wordRange.minimum() + " 至 " + wordRange.maximum()
+                + " 个中文字符之间；只输出修订后的完整整章正文。";
+    }
+
+    private int targetChapterWordCount(Map<String, Object> input, Long generationId) {
+        Integer target = integerValue(input.get("targetChapterWordCount"));
+        if (target != null && target > 0) {
+            return target;
+        }
+        return SceneGenerationLengthPolicy.resolveTargetWordCount(
+                SceneGenerationLengthPolicy.DEFAULT_PRESET, null);
+    }
+
     private void finalizeGeneration(Long generationId) {
         ChapterGenerationEntity generation = requireGeneration(generationId);
         List<ChapterGenerationSceneEntity> scenes = generationSceneMapper.selectList(
@@ -337,8 +507,15 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
                 || SCENE_COPIED.equals(scene.getSceneStatus())))) {
             throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "仍有场景候选未完成");
         }
-        String content = scenes.stream().map(ChapterGenerationSceneEntity::getGeneratedContent)
-                .filter(StringUtils::hasText).collect(Collectors.joining("\n\n"));
+        boolean cohesive = ASSEMBLY_COHESIVE_CHAPTER.equals(generation.getContentAssemblyMode());
+        if (cohesive && !COHESION_COMPLETED.equals(generation.getCohesionStatus())) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "整章收束尚未完成");
+        }
+        String content = generation.getGeneratedContent();
+        if (!cohesive) {
+            content = scenes.stream().map(ChapterGenerationSceneEntity::getGeneratedContent)
+                    .filter(StringUtils::hasText).collect(Collectors.joining("\n\n"));
+        }
         int changed = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
                 .eq("id", generationId).eq("version", generation.getVersion()).eq("generation_status", STATUS_RUNNING)
                 .set("generated_content", content).set("word_count", wordCount(content))
@@ -377,13 +554,39 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
     }
 
     private String nextStep(Long generationId, int sequenceNo) {
-        ChapterGenerationSceneEntity next = generationSceneMapper.selectList(
+        ChapterGenerationSceneEntity next = nextScene(generationId, sequenceNo);
+        return next == null ? COHERE : GENERATE_PREFIX + next.getSceneKey();
+    }
+
+    private ChapterGenerationSceneEntity nextScene(Long generationId, int sequenceNo) {
+        return generationSceneMapper.selectList(
                 new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
                         .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
                         .gt(ChapterGenerationSceneEntity::getSequenceNo, sequenceNo)
                         .eq(ChapterGenerationSceneEntity::getDeleted, 0)
                         .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo)).stream().findFirst().orElse(null);
-        return next == null ? FINALIZE : GENERATE_PREFIX + next.getSceneKey();
+    }
+
+    private String chapterSceneRoute(Long generationId) {
+        return completedOrPlannedScenes(generationId).stream()
+                .map(scene -> scene.getSequenceNo() + ". " + scene.getSceneKey() + "\n"
+                        + scenePlanContent(scene.getScenePlanVersionId()))
+                .collect(Collectors.joining("\n\n"));
+    }
+
+    private List<ChapterGenerationSceneEntity> completedOrPlannedScenes(Long generationId) {
+        return generationSceneMapper.selectList(new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
+                .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
+                .eq(ChapterGenerationSceneEntity::getDeleted, 0)
+                .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo));
+    }
+
+    private String scenePlanContent(Long scenePlanVersionId) {
+        ScenePlanVersionEntity plan = scenePlanMapper.selectById(scenePlanVersionId);
+        if (plan == null || Integer.valueOf(1).equals(plan.getDeleted())) {
+            throw new BusinessException(ErrorCode.SCENE_PLAN_NOT_FOUND, "场景规划叶子节点不存在");
+        }
+        return json(read(plan.getContentJson(), ScenePlanContent.class));
     }
 
     private Long generationId(AgentStepExecutionContext context) {
@@ -426,7 +629,9 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
     }
 
     static String generationInstruction(SceneWordRange wordRange) {
-        return "请根据已发布场景计划创作本场候选正文。正文长度必须严格控制在 "
+        return "请根据已发布的整章场景路线、当前场景、下一场目标和 Story Context 创作本场候选正文。"
+                + "若提供上一场完整正文，必须从其最后一个动作和未完成目标自然续写；禁止复述已经发生的事件或台词。"
+                + "持续维护时间、地点、人物位置、伤势、道具和未完成目标的连续性，不得新增或改变权威事实。正文长度必须严格控制在 "
                 + wordRange.minimum() + " 至 " + wordRange.maximum()
                 + " 个中文字符（含标点）之间，建议约 " + wordRange.target()
                 + " 个中文字符。若尚未达到 " + wordRange.minimum()

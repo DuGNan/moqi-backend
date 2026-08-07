@@ -124,4 +124,10 @@ public class GenerationController {
             @RequestBody RetrySceneRequest request) {
         return ApiResponse.success(sceneGenerationService.retryScene(generationId, sceneId, request));
     }
+
+    /** 重试失败的整章收束，不重新调用已完成的逐场景生成。 */
+    @PostMapping("/{generationId}/cohere/retry")
+    public ApiResponse<AgentRunView> retryCohesion(@PathVariable Long generationId) {
+        return ApiResponse.success(sceneGenerationService.retryCohesion(generationId));
+    }
 }
