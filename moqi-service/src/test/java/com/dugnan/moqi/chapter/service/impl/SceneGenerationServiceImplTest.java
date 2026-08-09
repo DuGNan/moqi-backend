@@ -85,7 +85,8 @@ class SceneGenerationServiceImplTest {
                 userConfigService,
                 agentRuntime,
                 new ObjectMapper(),
-                eventPublisher);
+                eventPublisher,
+                new com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy());
     }
 
     @Test

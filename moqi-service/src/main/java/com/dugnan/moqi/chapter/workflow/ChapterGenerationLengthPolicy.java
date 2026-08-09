@@ -2,12 +2,15 @@ package com.dugnan.moqi.chapter.workflow;
 
 import java.util.Map;
 
+import org.springframework.stereotype.Component;
+
 /**
  * @author dgn
- * @date 2026-08-06
- * @description 将作者选择的章节目标字数稳定拆分为逐场景字数区间和模型输出上限。
+ * @date 2026-08-09
+ * @description 封装章节目标字数、场景区间与模型输出上限的现有计算规则。
  */
-public final class SceneGenerationLengthPolicy {
+@Component
+public class ChapterGenerationLengthPolicy {
 
     public static final String DEFAULT_PRESET = "about_3000";
     private static final String CUSTOM_PRESET = "custom";
@@ -21,10 +24,7 @@ public final class SceneGenerationLengthPolicy {
             DEFAULT_PRESET, 3000,
             "about_5000", 5000);
 
-    private SceneGenerationLengthPolicy() {
-    }
-
-    public static Integer resolveTargetWordCount(String lengthPreset, Integer customWordCount) {
+    public Integer resolveTargetWordCount(String lengthPreset, Integer customWordCount) {
         String normalizedPreset = normalizePreset(lengthPreset);
         if (CUSTOM_PRESET.equals(normalizedPreset)) {
             if (customWordCount == null
@@ -41,11 +41,11 @@ public final class SceneGenerationLengthPolicy {
         return target;
     }
 
-    public static String normalizePreset(String lengthPreset) {
+    public String normalizePreset(String lengthPreset) {
         return lengthPreset == null || lengthPreset.isBlank() ? DEFAULT_PRESET : lengthPreset.trim();
     }
 
-    public static SceneWordRange sceneWordRange(int totalWordCount, int sceneCount, int sequenceNo) {
+    public SceneWordRange sceneWordRange(int totalWordCount, int sceneCount, int sequenceNo) {
         if (totalWordCount <= 0 || sceneCount <= 0 || sequenceNo <= 0 || sequenceNo > sceneCount) {
             throw new IllegalArgumentException("章节目标字数、场景数量和场景序号必须为有效正整数");
         }
@@ -57,14 +57,14 @@ public final class SceneGenerationLengthPolicy {
         return new SceneWordRange(minimum, target, maximum);
     }
 
-    public static int maxOutputTokens(int maximumWordCount, Integer providerMaximum) {
+    public int maxOutputTokens(int maximumWordCount, Integer providerMaximum) {
         int calculated = Math.max(MIN_OUTPUT_TOKENS, maximumWordCount);
         return providerMaximum == null ? calculated : Math.min(calculated, providerMaximum);
     }
 
-    public static ChapterWordRange chapterWordRange(int targetWordCount) {
+    public ChapterWordRange chapterWordRange(int targetWordCount) {
         if (targetWordCount <= 0) {
-            throw new IllegalArgumentException("章节目标字数必须为有效正数");
+            throw new IllegalArgumentException("章节目标字数必须为有效正整数");
         }
         return new ChapterWordRange(
                 (int) Math.floor(targetWordCount * LOWER_BOUND_RATIO),

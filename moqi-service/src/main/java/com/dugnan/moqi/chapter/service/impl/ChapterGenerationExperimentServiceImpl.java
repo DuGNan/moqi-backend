@@ -24,9 +24,9 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationExperimentModels.RunExperime
 import com.dugnan.moqi.chapter.entity.ChapterGenerationExperimentEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationExperimentMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationExperimentService;
-import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy;
-import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy.ChapterWordRange;
-import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy.SceneWordRange;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.ChapterWordRange;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.SceneWordRange;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
@@ -80,6 +80,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
     private final UserConfigService userConfigService;
     private final LlmProviderFactory providerFactory;
     private final ObjectMapper objectMapper;
+    private final ChapterGenerationLengthPolicy lengthPolicy;
 
     public ChapterGenerationExperimentServiceImpl(
             ChapterMapper chapterMapper,
@@ -87,13 +88,15 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
             PublishedScenePlanQueryPort scenePlanQueryPort,
             UserConfigService userConfigService,
             LlmProviderFactory providerFactory,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            ChapterGenerationLengthPolicy lengthPolicy) {
         this.chapterMapper = chapterMapper;
         this.experimentMapper = experimentMapper;
         this.scenePlanQueryPort = scenePlanQueryPort;
         this.userConfigService = userConfigService;
         this.providerFactory = providerFactory;
         this.objectMapper = objectMapper;
+        this.lengthPolicy = lengthPolicy;
     }
 
     @Override
@@ -218,7 +221,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
         String previousContent = null;
         for (int index = 0; index < scenes.size(); index++) {
             ScenePlanView scene = scenes.get(index);
-            SceneWordRange range = SceneGenerationLengthPolicy.sceneWordRange(
+            SceneWordRange range = lengthPolicy.sceneWordRange(
                     targetWordCount, scenes.size(), index + 1);
             String sceneInput = sceneInput(sceneRouteJson, scene, previousContent, range);
             String content = call(
@@ -231,7 +234,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
                                     new LlmMessage(LlmRole.SYSTEM, sceneInstruction(range)),
                                     new LlmMessage(LlmRole.USER, sceneInput)),
                             new LlmOptions(
-                                    SceneGenerationLengthPolicy.maxOutputTokens(
+                                    lengthPolicy.maxOutputTokens(
                                             range.maximum(),
                                             null),
                                     temperature,
@@ -255,7 +258,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
                                                 + "\n\n逐场景原始正文：\n" + joinedScenes)),
                         options(targetWordCount, temperature, executionConfig)),
                 modelCallIds);
-        ChapterWordRange chapterWordRange = SceneGenerationLengthPolicy.chapterWordRange(targetWordCount);
+        ChapterWordRange chapterWordRange = lengthPolicy.chapterWordRange(targetWordCount);
         if (chapterWordRange.contains(wordCount(cohesiveContent))) {
             return cohesiveContent;
         }
@@ -334,9 +337,9 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
             int targetWordCount,
             Double temperature,
             LlmExecutionConfig executionConfig) {
-        int maximumWordCount = SceneGenerationLengthPolicy.chapterWordRange(targetWordCount).maximum();
+        int maximumWordCount = lengthPolicy.chapterWordRange(targetWordCount).maximum();
         return new LlmOptions(
-                SceneGenerationLengthPolicy.maxOutputTokens(
+                lengthPolicy.maxOutputTokens(
                         maximumWordCount,
                         null),
                 temperature,
