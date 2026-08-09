@@ -525,6 +525,12 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 generation.getGeneratedContent(),
                 generation.getWordCount(),
                 generation.getAiTaskId(),
+                StringUtils.hasText(generation.getContentAssemblyMode())
+                        ? generation.getContentAssemblyMode() : "scene_join_legacy",
+                StringUtils.hasText(generation.getCohesionStatus())
+                        ? generation.getCohesionStatus() : "not_applicable",
+                generation.getCohesionModelCallId(),
+                generation.getCohesionTemplateVersion(),
                 generation.getGmtCreate(),
                 generation.getGmtModified());
     }

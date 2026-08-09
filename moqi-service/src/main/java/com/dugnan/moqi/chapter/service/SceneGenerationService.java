@@ -25,4 +25,7 @@ public interface SceneGenerationService {
     AgentRunView cancel(Long generationId);
 
     AgentRunView retryScene(Long generationId, Long sceneId, RetrySceneRequest request);
+
+    /** 重试失败的整章收束步骤，不重新生成已完成的场景。 */
+    AgentRunView retryCohesion(Long generationId);
 }

@@ -46,6 +46,14 @@ public class ChapterGenerationEntity extends BaseEntity {
 
     private String generatedContent;
 
+    private String contentAssemblyMode;
+
+    private String cohesionStatus;
+
+    private Long cohesionModelCallId;
+
+    private String cohesionTemplateVersion;
+
     private Integer wordCount;
 
     private Long aiTaskId;

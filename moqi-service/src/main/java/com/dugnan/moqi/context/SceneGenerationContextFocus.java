@@ -12,7 +12,10 @@ public record SceneGenerationContextFocus(
         Integer chapterPlanNo,
         Long scenePlanVersionId,
         String sceneKey,
+        String chapterSceneRoute,
         String sceneContent,
+        String nextSceneContent,
+        PreviousSceneDraft immediatePreviousScene,
         List<PreviousSceneDraft> previousScenes) {
 
     /**

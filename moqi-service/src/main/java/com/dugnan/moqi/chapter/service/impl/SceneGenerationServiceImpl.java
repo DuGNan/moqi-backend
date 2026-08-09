@@ -68,7 +68,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private static final String STATUS_CANCELED = "canceled";
     private static final String SCENE_PENDING = "pending";
     private static final String SCENE_COPIED = "copied";
-    private static final String PROMPT_TEMPLATE_VERSION = "scene-novel-v2";
+    private static final String PROMPT_TEMPLATE_VERSION = "scene-novel-v3";
     private static final Set<String> SELECTION_MODES = Set.of("all", "continue_from", "rewrite_selected");
 
     private final ChapterMapper chapterMapper;
@@ -264,6 +264,31 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         return run;
     }
 
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public AgentRunView retryCohesion(Long generationId) {
+        ChapterGenerationEntity generation = requireGeneration(generationId);
+        if (!STATUS_FAILED.equals(generation.getGenerationStatus())
+                || !"cohesive_chapter".equals(generation.getContentAssemblyMode())
+                || !"failed".equals(generation.getCohesionStatus())
+                || generation.getAgentRunId() == null) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "当前整章收束不能重试");
+        }
+        AgentRunStepEntity step = latestStep(generation.getAgentRunId(), "cohere_chapter");
+        if (step == null || !STATUS_FAILED.equals(step.getStepStatus()) || !Integer.valueOf(1).equals(step.getRetryable())) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "当前整章收束不能重试");
+        }
+        AgentRunView run = agentRuntime.retryStep(new RetryAgentStepCommand(
+                generation.getAgentRunId(), "cohere_chapter", step.getAttempt()));
+        generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
+                .eq("id", generationId).eq("generation_status", STATUS_FAILED)
+                .eq("cohesion_status", "failed")
+                .set("generation_status", STATUS_RUNNING).set("cohesion_status", "pending")
+                .set("generated_content", null).set("word_count", 0)
+                .setSql("version = version + 1").set("gmt_modified", LocalDateTime.now()));
+        return run;
+    }
+
     private ChapterGenerationEntity createGeneration(
             ChapterEntity chapter,
             ChapterPlanView plan,
@@ -278,6 +303,9 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         generation.setOutlineRevision(plan.outlineRevision());
         generation.setGenerationStatus(STATUS_QUEUED);
         generation.setGenerationMode("scene_novel_generation");
+        generation.setContentAssemblyMode("cohesive_chapter");
+        generation.setCohesionStatus("pending");
+        generation.setCohesionTemplateVersion("chapter-cohesion-v1");
         generation.setSelectionMode(normalizedMode(request.selectionMode()));
         generation.setIdempotencyKey(request.idempotencyKey());
         String lengthPreset = SceneGenerationLengthPolicy.normalizePreset(request.lengthPreset());
@@ -421,9 +449,13 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         if (agentRunId == null || !StringUtils.hasText(sceneKey)) {
             return null;
         }
+        return latestStep(agentRunId, "generate_scene:" + sceneKey);
+    }
+
+    private AgentRunStepEntity latestStep(Long agentRunId, String stepKey) {
         return agentRunStepMapper.selectOne(new LambdaQueryWrapper<AgentRunStepEntity>()
                 .eq(AgentRunStepEntity::getRunId, agentRunId)
-                .eq(AgentRunStepEntity::getStepKey, "generate_scene:" + sceneKey)
+                .eq(AgentRunStepEntity::getStepKey, stepKey)
                 .eq(AgentRunStepEntity::getDeleted, 0)
                 .orderByDesc(AgentRunStepEntity::getAttempt).last("LIMIT 1"));
     }

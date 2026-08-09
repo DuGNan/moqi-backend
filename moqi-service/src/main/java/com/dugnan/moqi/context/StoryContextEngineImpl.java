@@ -327,8 +327,22 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         if (focus == null) {
             return;
         }
+        add(candidates, StoryContextSourceType.SCENE_PLAN, id(focus.chapterPlanVersionId()), "SYSTEM",
+                "整章场景路线：\n" + focus.chapterSceneRoute(), true, 996, 24, focus.chapterPlanNo(), null,
+                Category.STRUCTURE);
         add(candidates, StoryContextSourceType.SCENE_PLAN, id(focus.scenePlanVersionId()), "SYSTEM",
-                focus.sceneContent(), true, 995, 25, focus.chapterPlanNo(), null, Category.STRUCTURE);
+                "当前场景：\n" + focus.sceneContent(), true, 995, 25, focus.chapterPlanNo(), null, Category.STRUCTURE);
+        if (focus.nextSceneContent() != null) {
+            add(candidates, StoryContextSourceType.SCENE_PLAN, "next:" + id(focus.scenePlanVersionId()), "SYSTEM",
+                    "下一场目标：\n" + focus.nextSceneContent(), true, 994, 26, focus.chapterPlanNo(), null,
+                    Category.STRUCTURE);
+        }
+        if (focus.immediatePreviousScene() != null) {
+            SceneGenerationContextFocus.PreviousSceneDraft previous = focus.immediatePreviousScene();
+            add(candidates, StoryContextSourceType.GENERATED_SCENE_DRAFT, id(previous.generationSceneId()), "SYSTEM",
+                    "紧邻上一场完整正文（必须从最后动作续写）：\n" + previous.content(), true, 993, 27,
+                    null, null, Category.CURRENT);
+        }
         int order = 320;
         for (SceneGenerationContextFocus.PreviousSceneDraft previous : focus.previousScenes()) {
             add(candidates, StoryContextSourceType.GENERATED_SCENE_DRAFT, id(previous.generationSceneId()), "SYSTEM",

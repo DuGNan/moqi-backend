@@ -106,6 +106,10 @@ class ChapterGenerationControllerTest {
                 "预览正文",
                 4,
                 9003L,
+                "scene_join_legacy",
+                "not_applicable",
+                null,
+                null,
                 null,
                 null));
         when(chapterGenerationService.getLatestPreview(12L))
