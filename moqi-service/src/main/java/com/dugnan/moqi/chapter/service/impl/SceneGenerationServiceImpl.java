@@ -37,7 +37,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
-import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
@@ -81,6 +81,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private final AgentRuntime agentRuntime;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final ChapterGenerationLengthPolicy lengthPolicy;
     private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
     private ScenePlanConsistencyService consistencyService = ScenePlanConsistencyService.noop();
 
@@ -104,7 +105,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             UserConfigService userConfigService,
             AgentRuntime agentRuntime,
             ObjectMapper objectMapper,
-            ApplicationEventPublisher eventPublisher) {
+            ApplicationEventPublisher eventPublisher,
+            ChapterGenerationLengthPolicy lengthPolicy) {
         this.chapterMapper = chapterMapper;
         this.generationMapper = generationMapper;
         this.sceneMapper = sceneMapper;
@@ -115,6 +117,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         this.agentRuntime = agentRuntime;
         this.objectMapper = objectMapper;
         this.eventPublisher = eventPublisher;
+        this.lengthPolicy = lengthPolicy;
     }
 
     @Override
@@ -308,8 +311,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         generation.setCohesionTemplateVersion("chapter-cohesion-v1");
         generation.setSelectionMode(normalizedMode(request.selectionMode()));
         generation.setIdempotencyKey(request.idempotencyKey());
-        String lengthPreset = SceneGenerationLengthPolicy.normalizePreset(request.lengthPreset());
-        int targetWordCount = SceneGenerationLengthPolicy.resolveTargetWordCount(
+        String lengthPreset = lengthPolicy.normalizePreset(request.lengthPreset());
+        int targetWordCount = lengthPolicy.resolveTargetWordCount(
                 lengthPreset, request.customWordCount());
         generation.setLengthPreset(lengthPreset);
         generation.setCustomWordCount("custom".equals(lengthPreset) ? request.customWordCount() : null);
@@ -505,7 +508,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             throw invalidSelection("selectionMode 不合法");
         }
         try {
-            SceneGenerationLengthPolicy.resolveTargetWordCount(
+            lengthPolicy.resolveTargetWordCount(
                     request.lengthPreset(), request.customWordCount());
         } catch (IllegalArgumentException exception) {
             throw invalidSelection(exception.getMessage());
@@ -534,7 +537,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             int plannedSceneCount) {
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("generationId", generationId);
-        input.put("targetChapterWordCount", SceneGenerationLengthPolicy.resolveTargetWordCount(
+        input.put("targetChapterWordCount", lengthPolicy.resolveTargetWordCount(
                 request.lengthPreset(), request.customWordCount()));
         input.put("plannedSceneCount", plannedSceneCount);
         if (request.temperature() != null) {

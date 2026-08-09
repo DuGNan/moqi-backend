@@ -69,7 +69,8 @@ class ChapterGenerationExperimentServiceImplTest {
                 scenePlanQueryPort,
                 userConfigService,
                 providerFactory,
-                new ObjectMapper());
+                new ObjectMapper(),
+                new com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy());
         when(experimentMapper.selectOne(any())).thenReturn(null);
         when(chapterMapper.selectById(65L)).thenReturn(chapter());
         when(scenePlanQueryPort.loadCurrent(65L)).thenReturn(plan());

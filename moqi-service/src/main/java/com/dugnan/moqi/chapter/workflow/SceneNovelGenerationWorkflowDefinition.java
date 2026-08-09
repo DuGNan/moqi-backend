@@ -1,119 +1,54 @@
 package com.dugnan.moqi.chapter.workflow;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 
 import com.dugnan.moqi.agent.AgentWorkflowDefinition;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
-import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
-import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
-import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
-import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy.SceneWordRange;
-import com.dugnan.moqi.chapter.workflow.SceneGenerationLengthPolicy.ChapterWordRange;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.SceneWordRange;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationModelInvoker.SceneInvocationContext;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
-import com.dugnan.moqi.config.service.UserConfigService;
-import com.dugnan.moqi.context.SceneGenerationContextFocus;
-import com.dugnan.moqi.context.StoryContextBuildCommand;
-import com.dugnan.moqi.context.StoryContextEngine;
-import com.dugnan.moqi.context.StoryContextProfile;
 import com.dugnan.moqi.context.StoryContextSnapshot;
-import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
-import com.dugnan.moqi.llm.LlmExecutionConfig;
-import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
-import com.dugnan.moqi.llm.LlmCallContext;
-import com.dugnan.moqi.llm.LlmMessage;
-import com.dugnan.moqi.llm.LlmOptions;
-import com.dugnan.moqi.llm.LlmProvider;
-import com.dugnan.moqi.llm.LlmProviderException;
-import com.dugnan.moqi.llm.LlmProviderFactory;
-import com.dugnan.moqi.llm.LlmResponse;
-import com.dugnan.moqi.llm.LlmResponseFormat;
-import com.dugnan.moqi.llm.LlmResponseMetadata;
-import com.dugnan.moqi.llm.LlmRole;
-import com.dugnan.moqi.llm.LlmStreamCall;
-import com.dugnan.moqi.llm.LlmStreamEvent;
-import com.dugnan.moqi.llm.LlmStreamResult;
-import com.dugnan.moqi.llm.LlmStreamStatus;
-import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
-import com.dugnan.moqi.planning.entity.ScenePlanVersionEntity;
-import com.dugnan.moqi.planning.mapper.ScenePlanVersionMapper;
 
 /**
  * @author dgn
  * @date 2026-08-01
- * @description 使用 Agent Runtime 按场景生成可恢复小说候选正文。
+ * @description 通过 Agent Runtime 分派章节正文生成步骤并编排状态迁移。
  */
 @Component
 public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefinition {
 
     public static final String WORKFLOW_TYPE = "scene_novel_generation";
-    private static final String LOAD = "load_generation";
-    private static final String GENERATE_PREFIX = "generate_scene:";
-    private static final String COHERE = "cohere_chapter";
-    private static final String FINALIZE = "finalize_generation";
-    private static final String STATUS_QUEUED = "queued";
-    private static final String STATUS_RUNNING = "running";
-    private static final String STATUS_PREVIEW = "preview";
-    private static final String ASSEMBLY_COHESIVE_CHAPTER = "cohesive_chapter";
-    private static final String COHESION_COMPLETED = "completed";
-    private static final String SCENE_PENDING = "pending";
-    private static final String SCENE_RUNNING = "running";
-    private static final String SCENE_COMPLETED = "completed";
-    private static final String SCENE_COPIED = "copied";
-    private static final String TEMPLATE_VERSION = "scene-novel-v3";
-    private static final String COHESION_TEMPLATE_VERSION = "chapter-cohesion-v1";
+    static final String LOAD = "load_generation";
     private static final int MAX_ATTEMPTS = 3;
 
-    private final ChapterGenerationMapper generationMapper;
-    private final ChapterGenerationSceneMapper generationSceneMapper;
-    private final ScenePlanVersionMapper scenePlanMapper;
-    private final StoryContextEngine contextEngine;
-    private final StoryContextSnapshotQueryPort snapshotQueryPort;
-    private final UserConfigService userConfigService;
-    private final LlmProviderFactory providerFactory;
-    private final ObjectMapper objectMapper;
-    private final ApplicationEventPublisher eventPublisher;
+    private final ChapterGenerationStateStore stateStore;
+    private final ChapterGenerationStepPlanner stepPlanner;
+    private final ChapterGenerationLengthPolicy lengthPolicy;
+    private final ChapterGenerationPromptCompiler promptCompiler;
+    private final ChapterGenerationModelInvoker modelInvoker;
+    private final ChapterGenerationCompletionHandler completionHandler;
 
     public SceneNovelGenerationWorkflowDefinition(
-            ChapterGenerationMapper generationMapper,
-            ChapterGenerationSceneMapper generationSceneMapper,
-            ScenePlanVersionMapper scenePlanMapper,
-            StoryContextEngine contextEngine,
-            StoryContextSnapshotQueryPort snapshotQueryPort,
-            UserConfigService userConfigService,
-            LlmProviderFactory providerFactory,
-            ObjectMapper objectMapper,
-            ApplicationEventPublisher eventPublisher) {
-        this.generationMapper = generationMapper;
-        this.generationSceneMapper = generationSceneMapper;
-        this.scenePlanMapper = scenePlanMapper;
-        this.contextEngine = contextEngine;
-        this.snapshotQueryPort = snapshotQueryPort;
-        this.userConfigService = userConfigService;
-        this.providerFactory = providerFactory;
-        this.objectMapper = objectMapper;
-        this.eventPublisher = eventPublisher;
+            ChapterGenerationStateStore stateStore,
+            ChapterGenerationStepPlanner stepPlanner,
+            ChapterGenerationLengthPolicy lengthPolicy,
+            ChapterGenerationPromptCompiler promptCompiler,
+            ChapterGenerationModelInvoker modelInvoker,
+            ChapterGenerationCompletionHandler completionHandler) {
+        this.stateStore = stateStore;
+        this.stepPlanner = stepPlanner;
+        this.lengthPolicy = lengthPolicy;
+        this.promptCompiler = promptCompiler;
+        this.modelInvoker = modelInvoker;
+        this.completionHandler = completionHandler;
     }
 
     @Override
@@ -140,622 +75,111 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
     public AgentStepResult execute(String stepKey, AgentStepExecutionContext context) {
         Long generationId = generationId(context);
         if (LOAD.equals(stepKey)) {
-            ChapterGenerationEntity generation = requireGeneration(generationId);
-            return AgentStepResult.completed(Map.of("generationId", generation.getId()), Map.of(), nextStep(generationId, 0));
+            ChapterGenerationEntity generation = stateStore.requireGeneration(generationId);
+            return AgentStepResult.completed(Map.of("generationId", generation.getId()), Map.of(),
+                    stepPlanner.nextStep(generationId, 0));
         }
-        if (FINALIZE.equals(stepKey)) {
+        if (ChapterGenerationStepPlanner.FINALIZE.equals(stepKey)) {
             return AgentStepResult.completed(Map.of("generationId", generationId), Map.of(), null);
         }
-        if (COHERE.equals(stepKey)) {
+        if (ChapterGenerationStepPlanner.COHERE.equals(stepKey)) {
             return cohereChapter(context, generationId);
         }
-        if (!stepKey.startsWith(GENERATE_PREFIX)) {
+        if (!stepKey.startsWith(ChapterGenerationStepPlanner.GENERATE_PREFIX)) {
             throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "场景生成步骤键不合法");
         }
-        return generate(stepKey.substring(GENERATE_PREFIX.length()), context, generationId);
+        return generateScene(stepKey.substring(ChapterGenerationStepPlanner.GENERATE_PREFIX.length()),
+                context, generationId);
     }
 
     @Override
     public void applyResult(String stepKey, AgentStepExecutionContext context, AgentStepResult result) {
         Long generationId = generationId(context);
         if (LOAD.equals(stepKey)) {
-            generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
-                    .eq("id", generationId).eq("generation_status", STATUS_QUEUED)
-                    .set("generation_status", STATUS_RUNNING).setSql("version = version + 1")
-                    .set("gmt_modified", LocalDateTime.now()));
-            ChapterGenerationEntity generation = requireGeneration(generationId);
-            eventPublisher.publishEvent(SceneGenerationEvent.generation(
-                    "generation.started", generation.getChapterId(), generationId, STATUS_RUNNING));
+            completionHandler.generationStarted(stateStore.markStarted(generationId));
             return;
         }
-        if (FINALIZE.equals(stepKey)) {
-            finalizeGeneration(generationId);
+        if (ChapterGenerationStepPlanner.FINALIZE.equals(stepKey)) {
+            completionHandler.generationCompleted(stateStore.finalizeGeneration(generationId));
             return;
         }
-        if (COHERE.equals(stepKey)) {
-            applyCohesionResult(result, generationId);
+        if (ChapterGenerationStepPlanner.COHERE.equals(stepKey)) {
+            stateStore.applyCohesionResult(generationId, result);
             return;
         }
-        applySceneResult(context, result, generationId);
+        ChapterGenerationSceneEntity scene = stateStore.applySceneResult(generationId, result);
+        if (scene != null) {
+            completionHandler.sceneCompleted(stateStore.requireGeneration(generationId), scene);
+        }
     }
 
     @Override
     public void applyFailure(String stepKey, AgentStepExecutionContext context, Exception exception) {
-        Long generationId = generationId(context);
-        ChapterGenerationEntity generation = requireGeneration(generationId);
-        UpdateWrapper<ChapterGenerationEntity> update = new UpdateWrapper<ChapterGenerationEntity>()
-                .eq("id", generationId).eq("generation_status", STATUS_RUNNING)
-                .set("generation_status", "failed").setSql("version = version + 1")
-                .set("gmt_modified", LocalDateTime.now());
-        if (COHERE.equals(stepKey)) {
-            update.set("cohesion_status", "failed");
-        }
-        generationMapper.update(null, update);
-        if (stepKey.startsWith(GENERATE_PREFIX)) {
-            generationSceneMapper.update(null, new UpdateWrapper<ChapterGenerationSceneEntity>()
-                    .eq("generation_id", generationId)
-                    .eq("scene_key", stepKey.substring(GENERATE_PREFIX.length()))
-                    .in("scene_status", List.of(SCENE_PENDING, SCENE_RUNNING))
-                    .set("scene_status", "failed").setSql("version = version + 1")
-                    .set("gmt_modified", LocalDateTime.now()));
-        }
-        eventPublisher.publishEvent(SceneGenerationEvent.generation(
-                "generation.failed", generation.getChapterId(), generationId, "failed"));
+        ChapterGenerationEntity generation = stateStore.markFailed(
+                generationId(context), stepKey,
+                ChapterGenerationStepPlanner.GENERATE_PREFIX,
+                ChapterGenerationStepPlanner.COHERE);
+        completionHandler.generationFailed(generation);
     }
 
-    private AgentStepResult generate(String sceneKey, AgentStepExecutionContext context, Long generationId) {
-        ChapterGenerationEntity generation = requireGeneration(generationId);
-        ChapterGenerationSceneEntity scene = requireScene(generationId, sceneKey);
-        if (SCENE_COMPLETED.equals(scene.getSceneStatus()) || SCENE_COPIED.equals(scene.getSceneStatus())) {
-            return AgentStepResult.completed(Map.of("sceneId", scene.getId(), "skipped", true), Map.of(),
-                    nextStep(generationId, scene.getSequenceNo()));
+    private AgentStepResult generateScene(
+            String sceneKey,
+            AgentStepExecutionContext context,
+            Long generationId) {
+        ChapterGenerationEntity generation = stateStore.requireGeneration(generationId);
+        ChapterGenerationSceneEntity scene = stateStore.requireScene(generationId, sceneKey);
+        String nextStep = stepPlanner.nextStep(generationId, scene.getSequenceNo());
+        if (ChapterGenerationStateStore.SCENE_COMPLETED.equals(scene.getSceneStatus())
+                || ChapterGenerationStateStore.SCENE_COPIED.equals(scene.getSceneStatus())) {
+            return AgentStepResult.completed(Map.of("sceneId", scene.getId(), "skipped", true), Map.of(), nextStep);
         }
-        LlmExecutionConfig executionConfig = verifyExecutionConfig(generation, context);
-        LlmProvider provider = providerFactory.create(executionConfig.runtimeConfig());
         SceneWordRange wordRange = wordRange(context.input(), generationId, scene.getSequenceNo());
-        StoryContextSnapshot snapshot = contextSnapshot(generation, scene, provider, wordRange);
-        provider = providerFactory.createObserved(
-                executionConfig,
-                LlmCallContext.builder(WORKFLOW_TYPE, "generate_scene")
-                        .workId(generation.getWorkId())
-                        .chapterId(generation.getChapterId())
-                        .generationSceneId(scene.getId())
-                        .agentRunId(context.runId())
-                        .agentStepId(context.stepId())
-                        .logicalCallId("agent-step:" + context.stepId() + ":scene")
-                        .promptTemplateVersion(TEMPLATE_VERSION)
-                        .sourceFingerprint(snapshot.contentHash())
-                        .build());
-        StringBuilder content = new StringBuilder();
-        long started = System.nanoTime();
-        LlmStreamCall call = null;
-        try {
-            eventPublisher.publishEvent(SceneGenerationEvent.scene("generation.scene.started", generation.getChapterId(),
-                    generationId, scene.getId(), scene.getSceneKey(), SCENE_RUNNING));
-            call = provider.stream(
-                    new com.dugnan.moqi.llm.LlmRequest(snapshot.toMessages(), new LlmOptions(
-                            SceneGenerationLengthPolicy.maxOutputTokens(
-                                    wordRange.maximum(), provider.capabilities().maxOutputTokens()),
-                            temperature(context.input()), List.of(), LlmResponseFormat.TEXT)),
-                    event -> consumeDelta(event, context, generation, scene, content));
-            context.callRegistry().register(context.runId(), call);
-            LlmStreamResult streamResult = requireCompleted(call.await());
-            context.callRegistry().unregister(context.runId(), call);
-            call = null;
-            if (!wordRange.contains(wordCount(content.toString()))) {
-                List<LlmMessage> correctionMessages = new ArrayList<>(snapshot.toMessages());
-                correctionMessages.add(new LlmMessage(LlmRole.ASSISTANT, content.toString()));
-                correctionMessages.add(new LlmMessage(LlmRole.USER, correctionInstruction(
-                        wordRange, wordCount(content.toString()))));
-                content.setLength(0);
-                call = provider.stream(
-                        new com.dugnan.moqi.llm.LlmRequest(correctionMessages, new LlmOptions(
-                                SceneGenerationLengthPolicy.maxOutputTokens(
-                                        wordRange.maximum(), provider.capabilities().maxOutputTokens()),
-                                temperature(context.input()), List.of(), LlmResponseFormat.TEXT)),
-                        event -> consumeCorrectionDelta(event, context, content));
-                context.callRegistry().register(context.runId(), call);
-                streamResult = requireCompleted(call.await());
-            }
-            if (!StringUtils.hasText(content)) {
-                throw new BusinessException(ErrorCode.BUSINESS_ERROR, "模型未返回场景正文");
-            }
-            Map<String, Object> output = new LinkedHashMap<>();
-            output.put("sceneId", scene.getId());
-            output.put("contextSnapshotId", snapshot.id());
-            Long modelCallId = streamResult.metadata() == null ? null : streamResult.metadata().modelCallId();
-            output.put("modelCallId", modelCallId);
-            output.put("content", content.toString());
-            output.put("targetWordCount", wordRange.target());
-            output.put("minimumWordCount", wordRange.minimum());
-            output.put("maximumWordCount", wordRange.maximum());
-            output.put("elapsedMillis", Duration.ofNanos(System.nanoTime() - started).toMillis());
-            putMetadata(output, streamResult.metadata());
-            return new AgentStepResult(output, Map.of("lastSceneId", scene.getId()),
-                    nextStep(generationId, scene.getSequenceNo()),
-                    modelCallId == null ? null : String.valueOf(modelCallId),
-                    null);
-        } finally {
-            context.callRegistry().unregister(context.runId(), call);
-        }
-    }
-
-    private StoryContextSnapshot contextSnapshot(
-            ChapterGenerationEntity generation,
-            ChapterGenerationSceneEntity scene,
-            LlmProvider provider,
-            SceneWordRange wordRange) {
-        if (scene.getContextSnapshotId() != null) {
-            return snapshotQueryPort.load(scene.getContextSnapshotId());
-        }
-        ScenePlanVersionEntity plan = scenePlanMapper.selectById(scene.getScenePlanVersionId());
-        if (plan == null || Integer.valueOf(1).equals(plan.getDeleted())) {
-            throw new BusinessException(ErrorCode.SCENE_PLAN_NOT_FOUND, "场景规划叶子节点不存在");
-        }
-        ScenePlanContent planContent = read(plan.getContentJson(), ScenePlanContent.class);
-        List<SceneGenerationContextFocus.PreviousSceneDraft> allPrevious = generationSceneMapper.selectList(
-                new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
-                        .eq(ChapterGenerationSceneEntity::getGenerationId, generation.getId())
-                        .lt(ChapterGenerationSceneEntity::getSequenceNo, scene.getSequenceNo())
-                        .in(ChapterGenerationSceneEntity::getSceneStatus, List.of(SCENE_COMPLETED, SCENE_COPIED))
-                        .eq(ChapterGenerationSceneEntity::getDeleted, 0)
-                        .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo)).stream()
-                .map(item -> new SceneGenerationContextFocus.PreviousSceneDraft(
-                        item.getId(), item.getSceneKey(), item.getGeneratedContent()))
-                .toList();
-        SceneGenerationContextFocus.PreviousSceneDraft immediatePrevious = allPrevious.isEmpty()
-                ? null : allPrevious.get(allPrevious.size() - 1);
-        List<SceneGenerationContextFocus.PreviousSceneDraft> previous = allPrevious.isEmpty()
-                ? List.of() : allPrevious.subList(0, allPrevious.size() - 1);
-        ChapterGenerationSceneEntity nextScene = nextScene(generation.getId(), scene.getSequenceNo());
-        String nextSceneContent = nextScene == null ? null : scenePlanContent(nextScene.getScenePlanVersionId());
-        int contextWindow = provider.capabilities().maxContextTokens() == null
-                ? 16384 : provider.capabilities().maxContextTokens();
-        int reserve = Math.min(StoryContextProfile.SCENE_GENERATION.defaultOutputReserveTokens(), contextWindow / 2);
-        StoryContextSnapshot snapshot = contextEngine.build(contextBuildCommand(
-                generation.getWorkId(),
-                generation.getChapterId(),
-                contextWindow,
-                reserve,
-                new SceneGenerationContextFocus(
-                        generation.getChapterPlanVersionId(),
-                        plan.getVersion(),
-                        plan.getId(),
-                        scene.getSceneKey(),
-                        chapterSceneRoute(generation.getId()),
-                        json(planContent),
-                        nextSceneContent,
-                        immediatePrevious,
-                        previous),
-                wordRange));
-        int changed = generationSceneMapper.update(null, new UpdateWrapper<ChapterGenerationSceneEntity>()
-                .eq("id", scene.getId()).eq("version", scene.getVersion())
-                .in("scene_status", List.of(SCENE_PENDING, "failed"))
-                .set("context_snapshot_id", snapshot.id()).set("scene_status", SCENE_RUNNING)
-                .set("version", scene.getVersion() + 1).set("gmt_modified", LocalDateTime.now()));
-        if (changed != 1) {
-            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "场景生成状态已变化");
-        }
-        return snapshot;
-    }
-
-    private void applySceneResult(AgentStepExecutionContext context, AgentStepResult result, Long generationId) {
-        Long sceneId = longValue(result.outputSummary().get("sceneId"));
-        if (Boolean.TRUE.equals(result.outputSummary().get("skipped"))) {
-            return;
-        }
-        ChapterGenerationSceneEntity scene = sceneId == null ? null : generationSceneMapper.selectById(sceneId);
-        if (scene == null || !generationId.equals(scene.getGenerationId())) {
-            throw new BusinessException(ErrorCode.GENERATION_SCENE_NOT_FOUND, "场景候选不存在");
-        }
-        if (SCENE_COMPLETED.equals(scene.getSceneStatus())) {
-            return;
-        }
-        int changed = generationSceneMapper.update(null, new UpdateWrapper<ChapterGenerationSceneEntity>()
-                .eq("id", sceneId).eq("version", scene.getVersion()).eq("scene_status", SCENE_RUNNING)
-                .set("generated_content", result.outputSummary().get("content"))
-                .set("content_hash", sha256(String.valueOf(result.outputSummary().get("content"))))
-                .set("word_count", wordCount(String.valueOf(result.outputSummary().get("content"))))
-                .set("model_call_id", longValue(result.outputSummary().get("modelCallId")))
-                .set("finish_reason", stringValue(result.outputSummary().get("finishReason")))
-                .set("input_tokens", integerValue(result.outputSummary().get("inputTokens")))
-                .set("output_tokens", integerValue(result.outputSummary().get("outputTokens")))
-                .set("total_tokens", integerValue(result.outputSummary().get("totalTokens")))
-                .set("elapsed_millis", longValue(result.outputSummary().get("elapsedMillis")))
-                .set("scene_status", SCENE_COMPLETED).set("version", scene.getVersion() + 1)
-                .set("gmt_modified", LocalDateTime.now()));
-        if (changed != 1) {
-            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "场景候选已被并发修改");
-        }
-        ChapterGenerationEntity generation = requireGeneration(generationId);
-        eventPublisher.publishEvent(SceneGenerationEvent.scene("generation.scene.completed", generation.getChapterId(),
-                generationId, sceneId, scene.getSceneKey(), SCENE_COMPLETED));
+        SceneInvocationContext invocationContext = modelInvoker.prepareScene(generation);
+        StoryContextSnapshot snapshot = promptCompiler.compileSnapshot(
+                generation, scene, invocationContext.contextProvider(), wordRange);
+        return modelInvoker.generateScene(
+                generation, scene, snapshot, wordRange, invocationContext, context, nextStep);
     }
 
     private AgentStepResult cohereChapter(AgentStepExecutionContext context, Long generationId) {
-        ChapterGenerationEntity generation = requireGeneration(generationId);
-        List<ChapterGenerationSceneEntity> scenes = completedScenes(generationId);
+        ChapterGenerationEntity generation = stateStore.requireGeneration(generationId);
+        List<ChapterGenerationSceneEntity> scenes = stateStore.completedScenes(generationId);
         if (scenes.isEmpty()) {
             throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "没有可供整章收束的场景正文");
         }
-        generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
-                .eq("id", generationId).eq("generation_status", STATUS_RUNNING)
-                .in("cohesion_status", List.of("pending", "failed"))
-                .set("cohesion_status", "running").setSql("version = version + 1")
-                .set("gmt_modified", LocalDateTime.now()));
-        LlmExecutionConfig executionConfig = verifyExecutionConfig(generation, context);
-        LlmProvider provider = providerFactory.createObserved(
-                executionConfig,
-                LlmCallContext.builder(WORKFLOW_TYPE, "cohere_chapter")
-                        .workId(generation.getWorkId())
-                        .chapterId(generation.getChapterId())
-                        .agentRunId(context.runId())
-                        .agentStepId(context.stepId())
-                        .logicalCallId("agent-step:" + context.stepId() + ":cohere")
-                        .promptTemplateVersion(COHESION_TEMPLATE_VERSION)
-                        .sourceFingerprint(sha256(joinScenes(scenes)))
-                        .build());
-        int target = targetChapterWordCount(context.input(), generationId);
-        ChapterWordRange wordRange = SceneGenerationLengthPolicy.chapterWordRange(target);
-        String joined = joinScenes(scenes);
-        LlmResponse response = provider.generate(new com.dugnan.moqi.llm.LlmRequest(
-                List.of(
-                        new LlmMessage(LlmRole.SYSTEM, cohesionInstruction(target)),
-                        new LlmMessage(LlmRole.USER, joined)),
-                new LlmOptions(
-                        SceneGenerationLengthPolicy.maxOutputTokens(
-                                Math.max(target + target / 5, target),
-                                provider.capabilities().maxOutputTokens()),
-                        temperature(context.input()), List.of(), LlmResponseFormat.TEXT)));
-        String content = response.content();
-        if (!StringUtils.hasText(content)) {
-            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "整章收束未返回正文");
-        }
-        if (!wordRange.contains(wordCount(content))) {
-            response = provider.generate(new com.dugnan.moqi.llm.LlmRequest(
-                    List.of(
-                            new LlmMessage(LlmRole.SYSTEM, cohesionInstruction(target)),
-                            new LlmMessage(LlmRole.ASSISTANT, content),
-                            new LlmMessage(LlmRole.USER, cohesionCorrectionInstruction(wordRange, wordCount(content)))),
-                    new LlmOptions(
-                            SceneGenerationLengthPolicy.maxOutputTokens(
-                                    wordRange.maximum(), provider.capabilities().maxOutputTokens()),
-                            temperature(context.input()), List.of(), LlmResponseFormat.TEXT)));
-            content = response.content();
-        }
-        if (!StringUtils.hasText(content) || !wordRange.contains(wordCount(content))) {
-            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "整章收束字数未满足目标范围");
-        }
-        Map<String, Object> output = new LinkedHashMap<>();
-        output.put("content", content);
-        output.put("modelCallId", response.metadata() == null ? null : response.metadata().modelCallId());
-        return new AgentStepResult(output, Map.of(), FINALIZE,
-                response.metadata() == null || response.metadata().modelCallId() == null
-                        ? null : String.valueOf(response.metadata().modelCallId()), null);
+        stateStore.markCohesionRunning(generationId);
+        return modelInvoker.cohereChapter(generation, scenes,
+                targetChapterWordCount(context.input()), context);
     }
 
-    private void applyCohesionResult(AgentStepResult result, Long generationId) {
-        ChapterGenerationEntity generation = requireGeneration(generationId);
-        String content = stringValue(result.outputSummary().get("content"));
-        if (!StringUtils.hasText(content)) {
-            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "整章收束正文为空");
+    private SceneWordRange wordRange(Map<String, Object> input, Long generationId, int sequenceNo) {
+        Integer targetWordCount = integerValue(input.get("targetChapterWordCount"));
+        if (targetWordCount == null || targetWordCount <= 0) {
+            targetWordCount = lengthPolicy.resolveTargetWordCount(ChapterGenerationLengthPolicy.DEFAULT_PRESET, null);
         }
-        int changed = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
-                .eq("id", generationId).eq("version", generation.getVersion())
-                .eq("generation_status", STATUS_RUNNING)
-                .set("generated_content", content)
-                .set("word_count", wordCount(content))
-                .set("cohesion_status", COHESION_COMPLETED)
-                .set("cohesion_model_call_id", longValue(result.outputSummary().get("modelCallId")))
-                .set("cohesion_template_version", COHESION_TEMPLATE_VERSION)
-                .set("version", generation.getVersion() + 1)
-                .set("gmt_modified", LocalDateTime.now()));
-        if (changed != 1) {
-            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "整章收束结果已被并发修改");
+        Integer sceneCount = integerValue(input.get("plannedSceneCount"));
+        if (sceneCount == null || sceneCount <= 0) {
+            sceneCount = stateStore.sceneCount(generationId);
         }
+        return lengthPolicy.sceneWordRange(targetWordCount, sceneCount, sequenceNo);
     }
 
-    private List<ChapterGenerationSceneEntity> completedScenes(Long generationId) {
-        List<ChapterGenerationSceneEntity> scenes = generationSceneMapper.selectList(
-                new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
-                        .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
-                        .eq(ChapterGenerationSceneEntity::getDeleted, 0)
-                        .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo));
-        if (scenes.stream().anyMatch(scene -> !(SCENE_COMPLETED.equals(scene.getSceneStatus())
-                || SCENE_COPIED.equals(scene.getSceneStatus())))) {
-            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "仍有场景候选未完成");
-        }
-        return scenes;
-    }
-
-    private String joinScenes(List<ChapterGenerationSceneEntity> scenes) {
-        return scenes.stream().map(ChapterGenerationSceneEntity::getGeneratedContent)
-                .filter(StringUtils::hasText).collect(Collectors.joining("\n\n"));
-    }
-
-    private String cohesionInstruction(int targetWordCount) {
-        return "你是整章小说编辑。以下是按场景生成的原始正文。请只输出一篇完整的整章正文，"
-                + "仅允许补足场景间过渡、消除重复、统一节奏并修复时间、地点、人物位置、伤势、道具和未完成目标的连续性。"
-                + "不得删除、改写或新增场景规划中的关键事件，也不得改变任何权威事实。"
-                + "不要输出分析、标题或分场景标记；目标篇幅约 " + targetWordCount + " 字。";
-    }
-
-    static String cohesionCorrectionInstruction(ChapterWordRange wordRange, int actualWordCount) {
-        String action = actualWordCount < wordRange.minimum() ? "扩写" : "压缩";
-        return "上一稿共 " + actualWordCount + " 个中文字符。请在不改变场景规划、关键事件和权威事实的前提下"
-                + action + "，严格控制在 " + wordRange.minimum() + " 至 " + wordRange.maximum()
-                + " 个中文字符之间；只输出修订后的完整整章正文。";
-    }
-
-    private int targetChapterWordCount(Map<String, Object> input, Long generationId) {
+    private int targetChapterWordCount(Map<String, Object> input) {
         Integer target = integerValue(input.get("targetChapterWordCount"));
-        if (target != null && target > 0) {
-            return target;
-        }
-        return SceneGenerationLengthPolicy.resolveTargetWordCount(
-                SceneGenerationLengthPolicy.DEFAULT_PRESET, null);
-    }
-
-    private void finalizeGeneration(Long generationId) {
-        ChapterGenerationEntity generation = requireGeneration(generationId);
-        List<ChapterGenerationSceneEntity> scenes = generationSceneMapper.selectList(
-                new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
-                        .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
-                        .eq(ChapterGenerationSceneEntity::getDeleted, 0)
-                        .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo));
-        if (scenes.isEmpty() || scenes.stream().anyMatch(scene -> !(SCENE_COMPLETED.equals(scene.getSceneStatus())
-                || SCENE_COPIED.equals(scene.getSceneStatus())))) {
-            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "仍有场景候选未完成");
-        }
-        boolean cohesive = ASSEMBLY_COHESIVE_CHAPTER.equals(generation.getContentAssemblyMode());
-        if (cohesive && !COHESION_COMPLETED.equals(generation.getCohesionStatus())) {
-            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "整章收束尚未完成");
-        }
-        String content = generation.getGeneratedContent();
-        if (!cohesive) {
-            content = scenes.stream().map(ChapterGenerationSceneEntity::getGeneratedContent)
-                    .filter(StringUtils::hasText).collect(Collectors.joining("\n\n"));
-        }
-        int changed = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
-                .eq("id", generationId).eq("version", generation.getVersion()).eq("generation_status", STATUS_RUNNING)
-                .set("generated_content", content).set("word_count", wordCount(content))
-                .set("generation_status", STATUS_PREVIEW).set("version", generation.getVersion() + 1)
-                .set("gmt_modified", LocalDateTime.now()));
-        if (changed != 1) {
-            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "生成批次已被并发修改");
-        }
-        eventPublisher.publishEvent(SceneGenerationEvent.generation(
-                "generation.completed", generation.getChapterId(), generationId, STATUS_PREVIEW));
-    }
-
-    private void consumeDelta(
-            LlmStreamEvent event,
-            AgentStepExecutionContext context,
-            ChapterGenerationEntity generation,
-            ChapterGenerationSceneEntity scene,
-            StringBuilder content) {
-        if (event instanceof LlmStreamEvent.TextDelta delta && StringUtils.hasText(delta.text())
-                && !context.callRegistry().isCancellationRequested(context.runId())) {
-            content.append(delta.text());
-            eventPublisher.publishEvent(SceneGenerationEvent.delta(generation.getChapterId(), generation.getId(),
-                    scene.getId(), scene.getSceneKey(), delta.text()));
-        }
-    }
-
-    private LlmExecutionConfig verifyExecutionConfig(
-            ChapterGenerationEntity generation,
-            AgentStepExecutionContext context) {
-        LlmExecutionConfigDescriptor expected = read(generation.getExecutionConfigJson(), LlmExecutionConfigDescriptor.class);
-        LlmExecutionConfig current = userConfigService.requireAvailableExecutionConfig();
-        if (!expected.equals(current.descriptor())) {
-            throw new BusinessException(ErrorCode.GENERATION_CONFIG_STALE, "模型配置或凭据已变化，请创建新的生成批次");
-        }
-        return current;
-    }
-
-    private String nextStep(Long generationId, int sequenceNo) {
-        ChapterGenerationSceneEntity next = nextScene(generationId, sequenceNo);
-        return next == null ? COHERE : GENERATE_PREFIX + next.getSceneKey();
-    }
-
-    private ChapterGenerationSceneEntity nextScene(Long generationId, int sequenceNo) {
-        return generationSceneMapper.selectList(
-                new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
-                        .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
-                        .gt(ChapterGenerationSceneEntity::getSequenceNo, sequenceNo)
-                        .eq(ChapterGenerationSceneEntity::getDeleted, 0)
-                        .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo)).stream().findFirst().orElse(null);
-    }
-
-    private String chapterSceneRoute(Long generationId) {
-        return completedOrPlannedScenes(generationId).stream()
-                .map(scene -> scene.getSequenceNo() + ". " + scene.getSceneKey() + "\n"
-                        + scenePlanContent(scene.getScenePlanVersionId()))
-                .collect(Collectors.joining("\n\n"));
-    }
-
-    private List<ChapterGenerationSceneEntity> completedOrPlannedScenes(Long generationId) {
-        return generationSceneMapper.selectList(new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
-                .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
-                .eq(ChapterGenerationSceneEntity::getDeleted, 0)
-                .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo));
-    }
-
-    private String scenePlanContent(Long scenePlanVersionId) {
-        ScenePlanVersionEntity plan = scenePlanMapper.selectById(scenePlanVersionId);
-        if (plan == null || Integer.valueOf(1).equals(plan.getDeleted())) {
-            throw new BusinessException(ErrorCode.SCENE_PLAN_NOT_FOUND, "场景规划叶子节点不存在");
-        }
-        return json(read(plan.getContentJson(), ScenePlanContent.class));
+        return target != null && target > 0 ? target
+                : lengthPolicy.resolveTargetWordCount(ChapterGenerationLengthPolicy.DEFAULT_PRESET, null);
     }
 
     private Long generationId(AgentStepExecutionContext context) {
-        Long generationId = longValue(context.input().get("generationId"));
+        Object value = context.input().get("generationId");
+        Long generationId = value instanceof Number number ? number.longValue() : null;
         if (generationId == null) {
             throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "场景生成运行缺少 generationId");
         }
         return generationId;
     }
 
-    private ChapterGenerationEntity requireGeneration(Long generationId) {
-        ChapterGenerationEntity generation = generationMapper.selectById(generationId);
-        if (generation == null || Integer.valueOf(1).equals(generation.getDeleted())) {
-            throw new BusinessException(ErrorCode.GENERATION_NOT_FOUND, "生成批次不存在");
-        }
-        return generation;
-    }
-
-    private ChapterGenerationSceneEntity requireScene(Long generationId, String sceneKey) {
-        ChapterGenerationSceneEntity scene = generationSceneMapper.selectOne(
-                new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
-                        .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
-                        .eq(ChapterGenerationSceneEntity::getSceneKey, sceneKey)
-                        .eq(ChapterGenerationSceneEntity::getDeleted, 0));
-        if (scene == null) {
-            throw new BusinessException(ErrorCode.GENERATION_SCENE_NOT_FOUND, "场景候选不存在");
-        }
-        return scene;
-    }
-
-    private void putMetadata(Map<String, Object> output, LlmResponseMetadata metadata) {
-        if (metadata == null) {
-            return;
-        }
-        output.put("finishReason", metadata.finishReason());
-        output.put("providerRequestId", metadata.providerRequestId());
-        output.put("inputTokens", metadata.inputTokens());
-        output.put("outputTokens", metadata.outputTokens());
-        output.put("totalTokens", metadata.totalTokens());
-    }
-
-    static String generationInstruction(SceneWordRange wordRange) {
-        return "请根据已发布的整章场景路线、当前场景、下一场目标和 Story Context 创作本场候选正文。"
-                + "若提供上一场完整正文，必须从其最后一个动作和未完成目标自然续写；禁止复述已经发生的事件或台词。"
-                + "持续维护时间、地点、人物位置、伤势、道具和未完成目标的连续性，不得新增或改变权威事实。正文长度必须严格控制在 "
-                + wordRange.minimum() + " 至 " + wordRange.maximum()
-                + " 个中文字符（含标点）之间，建议约 " + wordRange.target()
-                + " 个中文字符。若尚未达到 " + wordRange.minimum()
-                + " 个中文字符，不得提前收束；完成前自行核对长度，且不得超过 "
-                + wordRange.maximum() + " 个中文字符。"
-                + "不得改写已确认设定，不得输出分析、标题或隐藏推理。";
-    }
-
-    static String correctionInstruction(SceneWordRange wordRange, int actualWordCount) {
-        String action = actualWordCount < wordRange.minimum() ? "扩写" : "压缩";
-        return "上一稿共 " + actualWordCount + " 个中文字符，不符合篇幅要求。请在不改变事件、设定和结局的前提下"
-                + action + "为完整正文，严格控制在 " + wordRange.minimum() + " 至 "
-                + wordRange.maximum() + " 个中文字符（含标点）之间。只输出修订后的完整正文。";
-    }
-
-    static StoryContextBuildCommand contextBuildCommand(
-            Long workId,
-            Long chapterId,
-            int contextWindow,
-            int outputReserve,
-            SceneGenerationContextFocus focus,
-            SceneWordRange wordRange) {
-        return new StoryContextBuildCommand(
-                StoryContextProfile.SCENE_GENERATION,
-                workId,
-                chapterId,
-                null,
-                null,
-                "创作场景候选正文",
-                generationInstruction(wordRange),
-                null,
-                contextWindow,
-                outputReserve,
-                null,
-                focus);
-    }
-
-    private SceneWordRange wordRange(Map<String, Object> input, Long generationId, int sequenceNo) {
-        Integer targetWordCount = integerValue(input.get("targetChapterWordCount"));
-        if (targetWordCount == null || targetWordCount <= 0) {
-            targetWordCount = SceneGenerationLengthPolicy.resolveTargetWordCount(
-                    SceneGenerationLengthPolicy.DEFAULT_PRESET, null);
-        }
-        Integer sceneCount = integerValue(input.get("plannedSceneCount"));
-        if (sceneCount == null || sceneCount <= 0) {
-            sceneCount = Math.toIntExact(generationSceneMapper.selectCount(
-                    new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
-                            .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
-                            .eq(ChapterGenerationSceneEntity::getDeleted, 0)));
-        }
-        return SceneGenerationLengthPolicy.sceneWordRange(targetWordCount, sceneCount, sequenceNo);
-    }
-
-    private LlmStreamResult requireCompleted(LlmStreamResult streamResult) {
-        if (streamResult.status() == LlmStreamStatus.CANCELED) {
-            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "场景生成已取消");
-        }
-        if (streamResult.status() == LlmStreamStatus.FAILED) {
-            throw new LlmProviderException(streamResult.error());
-        }
-        return streamResult;
-    }
-
-    private void consumeCorrectionDelta(
-            LlmStreamEvent event,
-            AgentStepExecutionContext context,
-            StringBuilder content) {
-        if (event instanceof LlmStreamEvent.TextDelta delta && StringUtils.hasText(delta.text())
-                && !context.callRegistry().isCancellationRequested(context.runId())) {
-            content.append(delta.text());
-        }
-    }
-
-    private Double temperature(Map<String, Object> input) {
-        Object value = input.get("temperature");
-        return value instanceof Number number ? number.doubleValue() : null;
-    }
-
-    private int wordCount(String content) {
-        return StringUtils.hasText(content) ? content.trim().length() : 0;
-    }
-
-    private Long longValue(Object value) {
-        return value instanceof Number number ? number.longValue() : null;
-    }
-
     private Integer integerValue(Object value) {
         return value instanceof Number number ? number.intValue() : null;
-    }
-
-    private String stringValue(Object value) {
-        return value == null ? null : String.valueOf(value);
-    }
-
-    private String json(Object value) {
-        try {
-            return objectMapper.writeValueAsString(value);
-        } catch (JsonProcessingException exception) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "场景规划无法序列化", exception);
-        }
-    }
-
-    private <T> T read(String value, Class<T> type) {
-        try {
-            return objectMapper.readValue(value, type);
-        } catch (JsonProcessingException exception) {
-            throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "已持久化生成数据无法读取", exception);
-        }
-    }
-
-    private String sha256(String value) {
-        try {
-            byte[] bytes = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder builder = new StringBuilder(bytes.length * 2);
-            for (byte item : bytes) {
-                builder.append(String.format("%02x", item));
-            }
-            return builder.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "SHA-256 不可用", exception);
-        }
-    }
-
-    private String safeMessage(RuntimeException exception) {
-        return exception instanceof BusinessException businessException ? businessException.getMessage() : "场景模型调用失败";
     }
 }
