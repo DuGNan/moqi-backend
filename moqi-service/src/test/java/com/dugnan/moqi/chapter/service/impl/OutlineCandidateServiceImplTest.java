@@ -37,6 +37,9 @@ import com.dugnan.moqi.chapter.outline.OutlineCandidateContentCodec;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateDiffService;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
+import com.dugnan.moqi.planning.SceneOutlineRevisionModels.ScenePlanChange;
+import com.dugnan.moqi.planning.SceneOutlineRevisionModels.ScenePlanDiff;
+import com.dugnan.moqi.sourcechain.SourcePropagationService;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.ChapterOutlineEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
@@ -327,6 +330,7 @@ class OutlineCandidateServiceImplTest {
         when(chapterMapper.selectById(2L)).thenReturn(chapter());
         when(workMapper.selectById(1L)).thenReturn(work());
         ChapterOutlineCandidateEntity candidate = readyCandidate();
+        candidate.setSourceScenePlanId(9L);
         when(candidateMapper.findByIdForUpdate(7L, 2L)).thenReturn(candidate);
         when(briefMapper.findByIdAndChapterId(4L, 2L)).thenReturn(brief());
         when(briefMapper.findLatestByChapterIdAndStatus(2L, "confirmed")).thenReturn(brief());
@@ -336,6 +340,8 @@ class OutlineCandidateServiceImplTest {
         when(outlineMapper.updateByRevisionAndVersion(eq(6L), eq(2L), eq(4L), eq("draft"), any(), eq(5), eq(3)))
                 .thenReturn(1);
         when(candidateMapper.update(eq(null), any())).thenReturn(1);
+        SourcePropagationService propagationService = org.mockito.Mockito.mock(SourcePropagationService.class);
+        service.setSourcePropagationService(propagationService);
 
         var first = service.confirm(2L, 7L);
         assertThat(first.candidate().candidateStatus()).isEqualTo("confirmed");
@@ -344,6 +350,7 @@ class OutlineCandidateServiceImplTest {
         var second = service.confirm(2L, 7L);
         assertThat(second.candidate().resultOutlineRevision()).isEqualTo(6);
         verify(outlineMapper).updateByRevisionAndVersion(eq(6L), eq(2L), eq(4L), eq("draft"), any(), eq(5), eq(3));
+        verify(propagationService).sceneRevisionRequiresReview(2L, 9L, 6L);
     }
 
     /**
@@ -363,6 +370,27 @@ class OutlineCandidateServiceImplTest {
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.OUTLINE_CANDIDATE_STALE);
         verify(outlineMapper, never()).updateByRevisionAndVersion(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void restoresStructuredSceneRevisionSourceOnCandidateRead() throws Exception {
+        when(chapterMapper.selectById(2L)).thenReturn(chapter());
+        when(workMapper.selectById(1L)).thenReturn(work());
+        ChapterOutlineCandidateEntity candidate = readyCandidate();
+        candidate.setSourceScenePlanId(9L);
+        candidate.setSourceScenePlanVersion(3);
+        candidate.setSourceConsistencyReportId(12L);
+        ScenePlanDiff diff = new ScenePlanDiff(5L, 4, 9L, 3,
+                List.of(new ScenePlanChange("scene-1", "modified", 1, 2, List.of("goal"))));
+        candidate.setSceneDiffJson(new ObjectMapper().writeValueAsString(diff));
+        when(candidateMapper.selectById(7L)).thenReturn(candidate);
+
+        var detail = service.get(2L, 7L);
+
+        assertThat(detail.sourceScenePlanId()).isEqualTo(9L);
+        assertThat(detail.sourceConsistencyReportId()).isEqualTo(12L);
+        assertThat(detail.sceneDiff().changes()).singleElement()
+                .satisfies(change -> assertThat(change.changedFields()).containsExactly("goal"));
     }
 
     private void prepareCreateDependencies() {

@@ -10,6 +10,7 @@ import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineDetail;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Beat;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Scene;
+import com.dugnan.moqi.planning.SceneOutlineRevisionModels.ScenePlanDiff;
 
 /**
  * @author dgn
@@ -44,6 +45,14 @@ public final class OutlineCandidateModels {
     public record UpdateOutlineCandidateRequest(
             OutlineCandidateContent candidateContent,
             Integer baseCandidateVersion) {
+    }
+
+    public record SceneRevisionOutlineCandidateCommand(
+            CreateOutlineCandidateRequest request,
+            Long sourceScenePlanId,
+            Integer sourceScenePlanVersion,
+            Long sourceConsistencyReportId,
+            String sceneDiffJson) {
     }
 
     public record RefreshOutlineRequest(
@@ -126,6 +135,10 @@ public final class OutlineCandidateModels {
             Long confirmedBriefId,
             String candidateType,
             String idempotencyKey,
+            Long sourceScenePlanId,
+            Integer sourceScenePlanVersion,
+            Long sourceConsistencyReportId,
+            ScenePlanDiff sceneDiff,
             Integer candidateVersion,
             Long baseOutlineId,
             Integer baseOutlineRevision,

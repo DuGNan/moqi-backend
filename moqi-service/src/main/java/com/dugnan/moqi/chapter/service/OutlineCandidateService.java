@@ -4,6 +4,7 @@ import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.CreateOutlineCandidate
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateConfirmation;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateCreated;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateDetail;
+import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.SceneRevisionOutlineCandidateCommand;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.UpdateOutlineCandidateRequest;
 
 /**
@@ -21,6 +22,7 @@ public interface OutlineCandidateService {
      * @return 已创建候选和任务引用
      */
     OutlineCandidateCreated create(Long chapterId, CreateOutlineCandidateRequest request);
+    OutlineCandidateCreated createFromSceneRevision(Long chapterId, SceneRevisionOutlineCandidateCommand command);
 
     /**
      * 查询章节最新候选。

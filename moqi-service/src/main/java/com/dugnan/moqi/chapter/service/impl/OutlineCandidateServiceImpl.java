@@ -19,6 +19,7 @@ import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateConfir
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateCreated;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateDetail;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.OutlineCandidateDiff;
+import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.SceneRevisionOutlineCandidateCommand;
 import com.dugnan.moqi.chapter.dto.OutlineCandidateModels.UpdateOutlineCandidateRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
@@ -37,6 +38,7 @@ import com.dugnan.moqi.chapter.stream.OutlineCandidateEvent;
 import com.dugnan.moqi.chapter.stream.OutlineCandidateTaskSubmittedEvent;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
+import com.dugnan.moqi.planning.SceneOutlineRevisionModels.ScenePlanDiff;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.ChapterOutlineEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
@@ -118,6 +120,24 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public OutlineCandidateCreated create(Long chapterId, CreateOutlineCandidateRequest request) {
+        return createInternal(chapterId, request, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public OutlineCandidateCreated createFromSceneRevision(
+            Long chapterId,
+            SceneRevisionOutlineCandidateCommand command) {
+        if (command == null || command.request() == null || command.sourceScenePlanId() == null
+                || command.sourceScenePlanVersion() == null || command.sourceConsistencyReportId() == null
+                || !StringUtils.hasText(command.sceneDiffJson())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "场景修订来源不能为空");
+        }
+        return createInternal(chapterId, command.request(), command);
+    }
+
+    private OutlineCandidateCreated createInternal(Long chapterId, CreateOutlineCandidateRequest request,
+            SceneRevisionOutlineCandidateCommand source) {
         ChapterEntity chapter = requireChapterAndWorkForUpdate(chapterId);
         ChapterConversationEntity conversation = requireConversation(chapter, request == null ? null : request.conversationId());
         ChapterBriefEntity brief = requireCurrentConfirmedBrief(chapterId,
@@ -129,7 +149,8 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         if (existing != null) {
             if (!candidateType.equals(existing.getCandidateType())
                     || !brief.getId().equals(existing.getConfirmedBriefId())
-                    || !conversation.getId().equals(existing.getConversationId())) {
+                    || !conversation.getId().equals(existing.getConversationId())
+                    || !matchesSource(existing, source)) {
                 throw stateConflict("幂等键已用于不同的候选请求");
             }
             return created(existing);
@@ -165,6 +186,12 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         candidate.setConfirmedBriefId(brief.getId());
         candidate.setCandidateType(candidateType);
         candidate.setIdempotencyKey(idempotencyKey);
+        if (source != null) {
+            candidate.setSourceScenePlanId(source.sourceScenePlanId());
+            candidate.setSourceScenePlanVersion(source.sourceScenePlanVersion());
+            candidate.setSourceConsistencyReportId(source.sourceConsistencyReportId());
+            candidate.setSceneDiffJson(source.sceneDiffJson());
+        }
         candidate.setBaseOutlineId(outline == null ? null : outline.getId());
         candidate.setBaseOutlineRevision(outline == null ? null : outline.getRevision());
         candidate.setBaseOutlineContent(outline == null ? null : outline.getOutlineContent());
@@ -183,6 +210,17 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
                 chapterId, task.getId(), candidate.getId(), STATUS_QUEUED, STATUS_QUEUED,
                 candidate.getBaseOutlineId(), candidate.getBaseOutlineRevision()));
         return created(candidate);
+    }
+
+    private boolean matchesSource(ChapterOutlineCandidateEntity candidate,
+            SceneRevisionOutlineCandidateCommand source) {
+        if (source == null) {
+            return candidate.getSourceScenePlanId() == null;
+        }
+        return source.sourceScenePlanId().equals(candidate.getSourceScenePlanId())
+                && source.sourceScenePlanVersion().equals(candidate.getSourceScenePlanVersion())
+                && source.sourceConsistencyReportId().equals(candidate.getSourceConsistencyReportId())
+                && source.sceneDiffJson().equals(candidate.getSceneDiffJson());
     }
 
     @Override
@@ -320,6 +358,10 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         candidate.setVersion(candidateVersion + 1);
         ChapterOutlineEntity confirmedOutline = requireOutline(chapterId);
         sourcePropagationService.outlineConfirmed(chapterId, confirmedOutline.getId());
+        if (candidate.getSourceScenePlanId() != null) {
+            sourcePropagationService.sceneRevisionRequiresReview(
+                    chapterId, candidate.getSourceScenePlanId(), confirmedOutline.getId());
+        }
         eventPublisher.publishEvent(OutlineCandidateEvent.updated(
                 chapterId, candidate.getAiTaskId(), candidate.getId(), "succeeded", STATUS_CONFIRMED,
                 confirmedOutline.getId(), confirmedOutline.getRevision()));
@@ -456,7 +498,9 @@ public class OutlineCandidateServiceImpl implements OutlineCandidateService {
         return new OutlineCandidateDetail(
                 candidate.getId(), candidate.getWorkId(), candidate.getChapterId(), candidate.getConversationId(),
                 candidate.getAiTaskId(), candidate.getConfirmedBriefId(), candidate.getCandidateType(),
-                candidate.getIdempotencyKey(), version(candidate), candidate.getBaseOutlineId(),
+                candidate.getIdempotencyKey(), candidate.getSourceScenePlanId(), candidate.getSourceScenePlanVersion(),
+                candidate.getSourceConsistencyReportId(), readOrNull(candidate.getSceneDiffJson(), ScenePlanDiff.class),
+                version(candidate), candidate.getBaseOutlineId(),
                 candidate.getBaseOutlineRevision(), readOutlineOrNull(candidate.getBaseOutlineContent()),
                 candidate.getCandidateStatus(), candidate.getAdjustmentInstruction(),
                 readOutlineOrNull(candidate.getCandidateContent()),

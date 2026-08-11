@@ -20,6 +20,10 @@ public class ChapterOutlineCandidateEntity extends BaseEntity {
     private Long confirmedBriefId;
     private String candidateType;
     private String idempotencyKey;
+    private Long sourceScenePlanId;
+    private Integer sourceScenePlanVersion;
+    private Long sourceConsistencyReportId;
+    private String sceneDiffJson;
     private Long baseOutlineId;
     private Integer baseOutlineRevision;
     private String baseOutlineContent;
