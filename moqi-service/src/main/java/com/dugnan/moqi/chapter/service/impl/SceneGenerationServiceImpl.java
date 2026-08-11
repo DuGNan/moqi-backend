@@ -68,7 +68,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private static final String STATUS_CANCELED = "canceled";
     private static final String SCENE_PENDING = "pending";
     private static final String SCENE_COPIED = "copied";
-    private static final String PROMPT_TEMPLATE_VERSION = "scene-novel-v3";
+    private static final String PROMPT_TEMPLATE_VERSION = "scene-novel-v4";
     private static final Set<String> SELECTION_MODES = Set.of("all", "continue_from", "rewrite_selected");
 
     private final ChapterMapper chapterMapper;

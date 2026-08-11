@@ -1,5 +1,6 @@
 package com.dugnan.moqi.planning;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -309,8 +310,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         if (changed != 1) {
             throw sceneConflict("候选已被更新，请刷新后重试");
         }
-        sceneMapper.delete(new LambdaQueryWrapper<ScenePlanVersionEntity>().eq(ScenePlanVersionEntity::getChapterPlanVersionId, planId));
-        saveScenes(planId, scenes);
+        synchronizeScenes(planId, scenes);
         return chapterPlanView(requireChapterPlan(chapterId, planId));
     }
 
@@ -388,17 +388,36 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         return chapterPlanView(entity);
     }
 
-    private void saveScenes(Long planId, List<ScenePlanContent> scenes) {
+    private void synchronizeScenes(Long planId, List<ScenePlanContent> scenes) {
+        List<ScenePlanVersionEntity> existingScenes = sceneMapper.findAllByPlanId(planId);
+        Map<String, ScenePlanVersionEntity> existingByKey = new HashMap<>(existingScenes.size());
+        existingScenes.forEach(scene -> existingByKey.put(scene.getSceneKey(), scene));
         for (ScenePlanContent scene : scenes) {
+            ScenePlanVersionEntity existing = existingByKey.remove(scene.sceneKey());
+            if (existing != null) {
+                int changed = sceneMapper.updateContent(
+                        existing.getId(), scene.sequence(), PlanningContentCodec.CURRENT_SCENE_CONTENT_SCHEMA_VERSION,
+                        json(scene), existing.getVersion());
+                if (changed != 1) {
+                    throw sceneConflict("场景候选已被更新，请刷新后重试");
+                }
+                continue;
+            }
             ScenePlanVersionEntity entity = new ScenePlanVersionEntity();
             entity.setChapterPlanVersionId(planId);
             entity.setSceneKey(scene.sceneKey());
             entity.setSequenceNo(scene.sequence());
+            entity.setContentSchemaVersion(PlanningContentCodec.CURRENT_SCENE_CONTENT_SCHEMA_VERSION);
             entity.setContentJson(json(scene));
             entity.setDeleted(0);
             entity.setVersion(0);
             sceneMapper.insert(entity);
         }
+        existingByKey.values().stream().filter(scene -> !Integer.valueOf(1).equals(scene.getDeleted())).forEach(scene -> {
+            if (sceneMapper.markDeleted(scene.getId(), scene.getVersion()) != 1) {
+                throw sceneConflict("场景候选已被更新，请刷新后重试");
+            }
+        });
     }
 
     private void assertSourcesCurrent(ChapterPlanVersionEntity entity) {
@@ -420,7 +439,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
                 .eq(ScenePlanVersionEntity::getChapterPlanVersionId, entity.getId()).eq(ScenePlanVersionEntity::getDeleted, 0)
                 .orderByAsc(ScenePlanVersionEntity::getSequenceNo)).stream()
                 .map(scene -> new ScenePlanView(scene.getId(), scene.getSceneKey(), scene.getSequenceNo(),
-                        read(scene.getContentJson(), ScenePlanContent.class))).toList();
+                        scene.getContentSchemaVersion(), read(scene.getContentJson(), ScenePlanContent.class))).toList();
         return new ChapterPlanView(entity.getId(), entity.getChapterId(), entity.getPlanNo(), entity.getPlanStatus(),
                 entity.getNarrativePlanId(), entity.getNarrativePlanNo(), entity.getOutlineId(), entity.getOutlineRevision(),
                 entity.getAiTaskId(), entity.getAgentRunId(), readOrNull(entity.getContentJson(), ChapterPlanContent.class), scenes,

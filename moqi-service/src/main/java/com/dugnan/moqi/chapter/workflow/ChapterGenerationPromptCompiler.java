@@ -21,6 +21,7 @@ import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
+import com.dugnan.moqi.planning.ScenePlanPromptRenderer;
 import com.dugnan.moqi.planning.entity.ScenePlanVersionEntity;
 import com.dugnan.moqi.planning.mapper.ScenePlanVersionMapper;
 
@@ -37,18 +38,21 @@ public class ChapterGenerationPromptCompiler {
     private final StoryContextSnapshotQueryPort snapshotQueryPort;
     private final ChapterGenerationStateStore stateStore;
     private final ObjectMapper objectMapper;
+    private final ScenePlanPromptRenderer promptRenderer;
 
     public ChapterGenerationPromptCompiler(
             ScenePlanVersionMapper scenePlanMapper,
             StoryContextEngine contextEngine,
             StoryContextSnapshotQueryPort snapshotQueryPort,
             ChapterGenerationStateStore stateStore,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            ScenePlanPromptRenderer promptRenderer) {
         this.scenePlanMapper = scenePlanMapper;
         this.contextEngine = contextEngine;
         this.snapshotQueryPort = snapshotQueryPort;
         this.stateStore = stateStore;
         this.objectMapper = objectMapper;
+        this.promptRenderer = promptRenderer;
     }
 
     public StoryContextSnapshot compileSnapshot(
@@ -80,7 +84,7 @@ public class ChapterGenerationPromptCompiler {
                 generation.getWorkId(), generation.getChapterId(), contextWindow, reserve,
                 new SceneGenerationContextFocus(
                         generation.getChapterPlanVersionId(), plan.getVersion(), plan.getId(), scene.getSceneKey(),
-                        chapterSceneRoute(generation.getId()), json(planContent), nextSceneContent,
+                        chapterSceneRoute(generation.getId()), promptRenderer.render(planContent), nextSceneContent,
                         immediatePrevious, previous), wordRange));
         stateStore.markSceneRunning(scene, snapshot.id());
         return snapshot;
@@ -143,14 +147,13 @@ public class ChapterGenerationPromptCompiler {
 
     private String chapterSceneRoute(Long generationId) {
         return stateStore.scenes(generationId).stream()
-                .map(scene -> scene.getSequenceNo() + ". " + scene.getSceneKey() + "\n"
-                        + scenePlanContent(scene.getScenePlanVersionId()))
+                .map(scene -> scenePlanContent(scene.getScenePlanVersionId()))
                 .collect(Collectors.joining("\n\n"));
     }
 
     private String scenePlanContent(Long scenePlanVersionId) {
         ScenePlanVersionEntity plan = requirePlan(scenePlanVersionId);
-        return json(read(plan.getContentJson(), ScenePlanContent.class));
+        return promptRenderer.render(read(plan.getContentJson(), ScenePlanContent.class));
     }
 
     private ScenePlanVersionEntity requirePlan(Long scenePlanVersionId) {
@@ -159,14 +162,6 @@ public class ChapterGenerationPromptCompiler {
             throw new BusinessException(ErrorCode.SCENE_PLAN_NOT_FOUND, "场景规划叶子节点不存在");
         }
         return plan;
-    }
-
-    private String json(Object value) {
-        try {
-            return objectMapper.writeValueAsString(value);
-        } catch (JsonProcessingException exception) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "场景规划无法序列化", exception);
-        }
     }
 
     private <T> T read(String value, Class<T> type) {

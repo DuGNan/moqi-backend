@@ -28,7 +28,32 @@ public final class PlanningModels {
             String timeAnchor, PlanReference location, String goal, String conflict,
             String emotion, String pacing, List<PlanReference> participants,
             List<PlanReference> requiredSettings, List<ForeshadowingAction> foreshadowingActions,
-            String expectedOutcome, String status, List<String> outlineBeatKeys) {
+            String expectedOutcome, String status, List<String> outlineBeatKeys,
+            List<String> readerMustKnow, List<String> causalPreconditions, String locationTransition,
+            List<String> stateChanges, List<String> continuityConstraints, String narrativeWeight,
+            List<String> optionalExpression, List<String> doNotInvent) {
+        public ScenePlanContent {
+            readerMustKnow = emptyIfNull(readerMustKnow);
+            causalPreconditions = emptyIfNull(causalPreconditions);
+            locationTransition = locationTransition == null ? "" : locationTransition;
+            stateChanges = emptyIfNull(stateChanges);
+            continuityConstraints = emptyIfNull(continuityConstraints);
+            narrativeWeight = narrativeWeight == null ? "unspecified" : narrativeWeight;
+            optionalExpression = emptyIfNull(optionalExpression);
+            doNotInvent = emptyIfNull(doNotInvent);
+        }
+
+        /** 兼容内容 schema v1 的场景规划。 */
+        public ScenePlanContent(String sceneKey, Integer sequence, String title, PlanReference viewpointCharacter,
+                String timeAnchor, PlanReference location, String goal, String conflict, String emotion, String pacing,
+                List<PlanReference> participants, List<PlanReference> requiredSettings,
+                List<ForeshadowingAction> foreshadowingActions, String expectedOutcome, String status,
+                List<String> outlineBeatKeys) {
+            this(sceneKey, sequence, title, viewpointCharacter, timeAnchor, location, goal, conflict, emotion, pacing,
+                    participants, requiredSettings, foreshadowingActions, expectedOutcome, status, outlineBeatKeys,
+                    List.of(), List.of(), "", List.of(), List.of(), "unspecified", List.of(), List.of());
+        }
+
         /** 兼容尚未写入节拍映射的旧场景规划。 */
         public ScenePlanContent(String sceneKey, Integer sequence, String title, PlanReference viewpointCharacter,
                 String timeAnchor, PlanReference location, String goal, String conflict, String emotion, String pacing,
@@ -36,6 +61,10 @@ public final class PlanningModels {
                 List<ForeshadowingAction> foreshadowingActions, String expectedOutcome, String status) {
             this(sceneKey, sequence, title, viewpointCharacter, timeAnchor, location, goal, conflict, emotion, pacing,
                     participants, requiredSettings, foreshadowingActions, expectedOutcome, status, List.of());
+        }
+
+        private static List<String> emptyIfNull(List<String> values) {
+            return values == null ? List.of() : values;
         }
     }
 
@@ -50,7 +79,16 @@ public final class PlanningModels {
             NarrativePlanContent content, Integer version, LocalDateTime gmtCreate, LocalDateTime gmtModified) {
     }
 
-    public record ScenePlanView(Long scenePlanId, String sceneKey, Integer sequence, ScenePlanContent content) {
+    public record ScenePlanView(Long scenePlanId, String sceneKey, Integer sequence,
+            Integer contentSchemaVersion, ScenePlanContent content) {
+        public ScenePlanView {
+            contentSchemaVersion = contentSchemaVersion == null ? 1 : contentSchemaVersion;
+        }
+
+        /** 兼容未暴露内容 schema 版本的旧调用。 */
+        public ScenePlanView(Long scenePlanId, String sceneKey, Integer sequence, ScenePlanContent content) {
+            this(scenePlanId, sceneKey, sequence, 1, content);
+        }
     }
 
     public record SourceRef(String sourceType, String sourceId, String contentVersion) {

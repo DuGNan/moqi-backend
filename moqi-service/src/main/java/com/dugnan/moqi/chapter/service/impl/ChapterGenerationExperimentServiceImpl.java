@@ -43,6 +43,7 @@ import com.dugnan.moqi.llm.LlmRole;
 import com.dugnan.moqi.planning.PlanningModels.ChapterPlanView;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanView;
 import com.dugnan.moqi.planning.PublishedScenePlanQueryPort;
+import com.dugnan.moqi.planning.ScenePlanPromptRenderer;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 
@@ -60,8 +61,8 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
     private static final String STATUS_RUNNING = "running";
     private static final String STATUS_COMPLETED = "completed";
     private static final String STATUS_FAILED = "failed";
-    private static final String WHOLE_TEMPLATE = "chapter-whole-once-v1";
-    private static final String SCENE_TEMPLATE = "scene-novel-v3+chapter-cohesion-v1";
+    private static final String WHOLE_TEMPLATE = "chapter-whole-once-v2";
+    private static final String SCENE_TEMPLATE = "scene-novel-v4+chapter-cohesion-v1";
     private static final String LOOSE_STORY_INTENT_TEMPLATE = "chapter-loose-intent-v1";
     private static final String WORKFLOW_TYPE = "chapter_generation_experiment";
     private static final int DEFAULT_TARGET_WORD_COUNT = 3000;
@@ -81,6 +82,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
     private final LlmProviderFactory providerFactory;
     private final ObjectMapper objectMapper;
     private final ChapterGenerationLengthPolicy lengthPolicy;
+    private final ScenePlanPromptRenderer promptRenderer;
 
     public ChapterGenerationExperimentServiceImpl(
             ChapterMapper chapterMapper,
@@ -89,7 +91,8 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
             UserConfigService userConfigService,
             LlmProviderFactory providerFactory,
             ObjectMapper objectMapper,
-            ChapterGenerationLengthPolicy lengthPolicy) {
+            ChapterGenerationLengthPolicy lengthPolicy,
+            ScenePlanPromptRenderer promptRenderer) {
         this.chapterMapper = chapterMapper;
         this.experimentMapper = experimentMapper;
         this.scenePlanQueryPort = scenePlanQueryPort;
@@ -97,6 +100,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
         this.providerFactory = providerFactory;
         this.objectMapper = objectMapper;
         this.lengthPolicy = lengthPolicy;
+        this.promptRenderer = promptRenderer;
     }
 
     @Override
@@ -112,6 +116,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
         LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
         int targetWordCount = resolveTargetWordCount(request.targetWordCount());
         String sceneRouteJson = json(scenes);
+        String sceneRouteText = promptRenderer.renderRoute(scenes);
         String experimentInputJson = experimentInputJson(request, sceneRouteJson);
         String templateVersion = templateVersion(request.strategy());
         String inputFingerprint = sha256(json(Arrays.asList(
@@ -136,8 +141,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
             if (STRATEGY_WHOLE_CHAPTER_ONCE.equals(request.strategy())) {
                 generatedContent = generateWholeChapter(
                             experiment,
-                            scenes,
-                            sceneRouteJson,
+                            sceneRouteText,
                             targetWordCount,
                             request.temperature(),
                             executionConfig,
@@ -154,7 +158,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
                 generatedContent = generateByScenes(
                             experiment,
                             scenes,
-                            sceneRouteJson,
+                            sceneRouteText,
                             targetWordCount,
                             request.temperature(),
                             executionConfig,
@@ -185,8 +189,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
 
     private String generateWholeChapter(
             ChapterGenerationExperimentEntity experiment,
-            List<ScenePlanView> scenes,
-            String sceneRouteJson,
+            String sceneRouteText,
             int targetWordCount,
             Double temperature,
             LlmExecutionConfig executionConfig,
@@ -195,7 +198,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
                 + "必须保留每个场景的目标、冲突、结果和关键事件，并用自然动作、因果和时空转换连接相邻场景。"
                 + "禁止输出标题、场景编号、分析或说明；避免复述台词、交接动作和意象。目标约 "
                 + targetWordCount + " 个中文字符。";
-        String input = "有序场景规划如下（必须按数组顺序执行）：\n" + sceneRouteJson;
+        String input = "有序场景规划如下（必须按顺序执行）：\n" + sceneRouteText;
         return call(
                 experiment,
                 "whole_chapter_once",
@@ -212,7 +215,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
     private String generateByScenes(
             ChapterGenerationExperimentEntity experiment,
             List<ScenePlanView> scenes,
-            String sceneRouteJson,
+            String sceneRouteText,
             int targetWordCount,
             Double temperature,
             LlmExecutionConfig executionConfig,
@@ -223,11 +226,11 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
             ScenePlanView scene = scenes.get(index);
             SceneWordRange range = lengthPolicy.sceneWordRange(
                     targetWordCount, scenes.size(), index + 1);
-            String sceneInput = sceneInput(sceneRouteJson, scene, previousContent, range);
+            String sceneInput = sceneInput(sceneRouteText, scene, previousContent, range);
             String content = call(
                     experiment,
                     "generate_scene_" + (index + 1),
-                    "scene-novel-v3",
+                    "scene-novel-v4",
                     executionConfig,
                     new LlmRequest(
                             List.of(
@@ -254,7 +257,7 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
                         List.of(
                                 new LlmMessage(LlmRole.SYSTEM, cohesionInstruction(targetWordCount)),
                                 new LlmMessage(LlmRole.USER,
-                                        "有序场景规划：\n" + sceneRouteJson
+                                        "有序场景规划：\n" + sceneRouteText
                                                 + "\n\n逐场景原始正文：\n" + joinedScenes)),
                         options(targetWordCount, temperature, executionConfig)),
                 modelCallIds);
@@ -348,13 +351,13 @@ public class ChapterGenerationExperimentServiceImpl implements ChapterGeneration
     }
 
     private String sceneInput(
-            String sceneRouteJson,
+            String sceneRouteText,
             ScenePlanView scene,
             String previousContent,
             SceneWordRange range) {
         String previous = StringUtils.hasText(previousContent) ? previousContent : "无，这是本章第一场。";
-        return "整章有序场景路线：\n" + sceneRouteJson
-                + "\n\n当前场景：\n" + json(scene)
+        return "整章有序场景路线：\n" + sceneRouteText
+                + "\n\n当前场景：\n" + promptRenderer.render(scene)
                 + "\n\n完整上一场正文：\n" + previous
                 + "\n\n必须从上一场最后动作和未完成目标自然继续。本场正文限制为 "
                 + range.minimum() + " 至 " + range.maximum() + " 个中文字符。";

@@ -51,7 +51,7 @@ import com.dugnan.moqi.llm.LlmStreamStatus;
 public class ChapterGenerationModelInvoker {
 
     static final String WORKFLOW_TYPE = "scene_novel_generation";
-    static final String SCENE_TEMPLATE_VERSION = "scene-novel-v3";
+    static final String SCENE_TEMPLATE_VERSION = "scene-novel-v4";
     static final String COHESION_TEMPLATE_VERSION = "chapter-cohesion-v1";
 
     private final UserConfigService userConfigService;

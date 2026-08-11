@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import java.util.List;
 import java.util.Map;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -129,21 +130,35 @@ class ScenePlanWorkflowDefinitionTest {
     }
 
     @Test
-    void rejectsInventedSettingReferenceAndKeepsPromptContractExplicit() throws Exception {
+    void discardsUngroundedReferencesAndKeepsPromptContractExplicit() throws Exception {
         when(provider.generate(any(LlmRequest.class))).thenReturn(new LlmResponse(
                 null,
-                objectMapper.readTree(validScenesJson().replace("\"participants\":[]",
-                        "\"participants\":[{\"settingEntryId\":7,\"name\":\"陌生人\"}]")),
+                objectMapper.readTree(validScenesJson()
+                        .replace("\"viewpointCharacter\":null", "\"viewpointCharacter\":\"主角\"")
+                        .replace("\"participants\":[]",
+                                "\"participants\":[{\"settingEntryId\":7,\"name\":\"陌生人\"}]")
+                        .replace("\"foreshadowingActions\":[]",
+                                "\"foreshadowingActions\":[{\"action\":\"advance\","
+                                        + "\"foreshadowingItemId\":null,\"description\":\"推进未知伏笔\"}]")),
                 null));
 
-        assertThatThrownBy(() -> workflow.execute("generate_candidate", context()))
-                .satisfies(exception -> assertThat(workflow.errorCode((Exception) exception))
-                        .isEqualTo("SCENE_PLAN_VALIDATION_FAILED"));
+        AgentStepResult result = workflow.execute("generate_candidate", context());
+
+        JsonNode persisted = objectMapper.readTree((String) result.outputSummary().get("scenesJson")).get(0);
+        assertThat(persisted.get("viewpointCharacter").isNull()).isTrue();
+        assertThat(persisted.get("participants").isEmpty()).isTrue();
+        assertThat(persisted.get("foreshadowingActions").isEmpty()).isTrue();
         ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
         verify(provider).generate(requestCaptor.capture());
         assertThat(requestCaptor.getValue().options().responseFormat().name()).isEqualTo("JSON_OBJECT");
         assertThat(requestCaptor.getValue().messages().get(0).content())
-                .contains("仅输出 JSON 对象", "status 必须为 planned", "禁止编造 ID");
+                .contains("仅输出 JSON 对象", "status 必须为 planned", "禁止编造 ID",
+                        "viewpointCharacter 和 location 只能为 null 或 PlanReference 对象",
+                        "participants 和 requiredSettings 必须是", "PlanReference 对象数组",
+                        "上下文没有列出可用 ID 时，引用字段必须使用 null 或空数组",
+                        "advance 和 payoff 必须引用上下文中的既有伏笔 ID",
+                        "没有既有伏笔时，foreshadowingActions 只能为空数组")
+                .doesNotContain("settingEntryId\":123", "foreshadowingItemId\":123");
     }
 
     @Test
@@ -160,7 +175,8 @@ class ScenePlanWorkflowDefinitionTest {
     void rejectsScenesThatDoNotCoverTheFormalOutlineAndIncludesBeatContractInPrompt() throws Exception {
         when(provider.generate(any(LlmRequest.class))).thenReturn(new LlmResponse(
                 null,
-                objectMapper.readTree(validScenesJson().replace(",\"outlineBeatKeys\":[\"beat-001\"]", "")),
+                objectMapper.readTree(validScenesJson().replace("\"outlineBeatKeys\":[\"beat-001\"]",
+                        "\"outlineBeatKeys\":[]")),
                 null));
 
         assertThatThrownBy(() -> workflow.execute("generate_candidate", context()))
@@ -188,6 +204,22 @@ class ScenePlanWorkflowDefinitionTest {
                         .isEqualTo("SCENE_PLAN_PERSISTENCE_FAILED"));
     }
 
+    @Test
+    void persistsGeneratedScenesAsContentSchemaV2() throws Exception {
+        when(planMapper.update(eq(null), any())).thenReturn(1);
+        AgentStepResult result = new AgentStepResult(
+                Map.of("scenesJson", objectMapper.writeValueAsString(
+                        objectMapper.readTree(validScenesJson()).get("scenes"))),
+                Map.of("candidateId", 301L), null, null, null);
+
+        workflow.applyResult("generate_candidate", context(), result);
+
+        ArgumentCaptor<ScenePlanVersionEntity> sceneCaptor = ArgumentCaptor.forClass(ScenePlanVersionEntity.class);
+        verify(sceneMapper).insert(sceneCaptor.capture());
+        assertThat(sceneCaptor.getValue().getContentSchemaVersion())
+                .isEqualTo(PlanningContentCodec.CURRENT_SCENE_CONTENT_SCHEMA_VERSION);
+    }
+
     private AgentStepExecutionContext context() {
         return new AgentStepExecutionContext(501L, 601L, "generate_candidate", 1, "501:generate_candidate",
                 Map.of("candidateId", 301L, "contextSnapshotId", 701L), Map.of(), Map.of(),
@@ -199,7 +231,11 @@ class ScenePlanWorkflowDefinitionTest {
                 {"scenes":[{"sceneKey":"rainy-deal","sequence":1,"title":"雨夜交易","viewpointCharacter":null,
                 "timeAnchor":"雨夜","location":null,"goal":"完成交易","conflict":"身份暴露","emotion":"紧张",
                 "pacing":"中速","participants":[],"requiredSettings":[],"foreshadowingActions":[],
-                "expectedOutcome":"保住同伴","status":"planned","outlineBeatKeys":["beat-001"]}]}
+                "expectedOutcome":"保住同伴","status":"planned","outlineBeatKeys":["beat-001"],
+                "readerMustKnow":["敌方已经潜入"],"causalPreconditions":["备用电源失效"],
+                "locationTransition":"从舰桥进入交易舱","stateChanges":["交易完成"],
+                "continuityConstraints":["同伴仍然受伤"],"narrativeWeight":"core",
+                "optionalExpression":[],"doNotInvent":["不得新增援军"]}]}
                 """;
     }
 }

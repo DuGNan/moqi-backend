@@ -75,7 +75,8 @@ class ChapterGenerationModelInvokerTest {
                 new LlmExecutionConfigDescriptor("fake", "fake-model", 1, 1));
         invoker = new ChapterGenerationModelInvoker(
                 userConfigService, providerFactory, new ChapterGenerationLengthPolicy(),
-                new ChapterGenerationPromptCompiler(null, null, null, null, null),
+                new ChapterGenerationPromptCompiler(null, null, null, null, null,
+                        new com.dugnan.moqi.planning.ScenePlanPromptRenderer()),
                 completionHandler, objectMapper);
         lenient().when(provider.capabilities()).thenReturn(
                 new LlmProviderCapabilities(true, false, false, 16384, 4096));
