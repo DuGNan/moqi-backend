@@ -16,5 +16,6 @@ public class ScenePlanVersionEntity extends BaseEntity {
     private Long chapterPlanVersionId;
     private String sceneKey;
     private Integer sequenceNo;
+    private Integer contentSchemaVersion;
     private String contentJson;
 }

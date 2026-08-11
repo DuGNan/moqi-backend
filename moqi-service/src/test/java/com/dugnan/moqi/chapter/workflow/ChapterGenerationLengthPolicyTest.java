@@ -16,7 +16,8 @@ class ChapterGenerationLengthPolicyTest {
 
     private final ChapterGenerationLengthPolicy lengthPolicy = new ChapterGenerationLengthPolicy();
     private final ChapterGenerationPromptCompiler promptCompiler =
-            new ChapterGenerationPromptCompiler(null, null, null, null, null);
+            new ChapterGenerationPromptCompiler(null, null, null, null, null,
+                    new com.dugnan.moqi.planning.ScenePlanPromptRenderer());
 
     @Test
     void resolvesPresetAndDistributesTheChapterTargetAcrossAllScenes() {

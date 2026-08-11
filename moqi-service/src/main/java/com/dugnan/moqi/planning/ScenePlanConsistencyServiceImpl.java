@@ -156,7 +156,7 @@ public class ScenePlanConsistencyServiceImpl implements ScenePlanConsistencyServ
         report.setPlanSnapshotJson(snapshot);
         report.setReportStatus(STATUS_QUEUED);
         report.setRulesetVersion("scene-plan-rules-v1");
-        report.setEvaluatorVersion("scene-plan-evaluator-v1");
+        report.setEvaluatorVersion("scene-plan-evaluator-v2");
         report.setDeleted(0);
         report.setVersion(0);
         reportMapper.insert(report);

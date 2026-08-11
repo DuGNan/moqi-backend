@@ -21,8 +21,10 @@ import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
  */
 @Component
 public class PlanningContentCodec {
+    public static final int CURRENT_SCENE_CONTENT_SCHEMA_VERSION = 2;
     private static final Set<String> SCENE_STATUS = Set.of("planned", "disabled");
     private static final Set<String> FORESHADOWING_ACTIONS = Set.of("seed", "advance", "payoff");
+    private static final Set<String> NARRATIVE_WEIGHTS = Set.of("core", "supporting", "transition");
 
     public NarrativePlanContent narrative(NarrativePlanContent content) {
         if (content == null) {
@@ -53,12 +55,22 @@ public class PlanningContentCodec {
             if (!SCENE_STATUS.contains(status)) {
                 throw invalid("status 仅支持 planned 或 disabled");
             }
+            String narrativeWeight = required(scene.narrativeWeight(), "narrativeWeight", 32);
+            if (!NARRATIVE_WEIGHTS.contains(narrativeWeight)) {
+                throw invalid("narrativeWeight 仅支持 core、supporting 或 transition");
+            }
             normalized.add(new ScenePlanContent(key, sequence, required(scene.title(), "title", 200), scene.viewpointCharacter(),
                     required(scene.timeAnchor(), "timeAnchor", 500), scene.location(), required(scene.goal(), "goal", 2000),
                     required(scene.conflict(), "conflict", 2000), required(scene.emotion(), "emotion", 500),
                     required(scene.pacing(), "pacing", 500), references(scene.participants()), references(scene.requiredSettings()),
                     actions(scene.foreshadowingActions()), required(scene.expectedOutcome(), "expectedOutcome", 2000), status,
-                    beatKeys(scene.outlineBeatKeys())));
+                    beatKeys(scene.outlineBeatKeys()), semanticStrings(scene.readerMustKnow(), "readerMustKnow"),
+                    semanticStrings(scene.causalPreconditions(), "causalPreconditions"),
+                    optional(scene.locationTransition(), "locationTransition", 1000),
+                    semanticStrings(scene.stateChanges(), "stateChanges"),
+                    semanticStrings(scene.continuityConstraints(), "continuityConstraints"), narrativeWeight,
+                    semanticStrings(scene.optionalExpression(), "optionalExpression"),
+                    semanticStrings(scene.doNotInvent(), "doNotInvent")));
         }
         for (int sequence = 1; sequence <= normalized.size(); sequence++) {
             if (!sequences.contains(sequence)) {
@@ -119,6 +131,18 @@ public class PlanningContentCodec {
             result.add(required(value, field, maxLength));
         }
         return List.copyOf(result);
+    }
+
+    private List<String> semanticStrings(List<String> values, String field) {
+        return strings(values, field, 20, 500);
+    }
+
+    private String optional(String value, String field, int maxLength) {
+        String normalized = value == null ? "" : value.trim();
+        if (normalized.length() > maxLength) {
+            throw invalid(field + " 长度超限");
+        }
+        return normalized;
     }
 
     private String required(String value, String field, int maxLength) {

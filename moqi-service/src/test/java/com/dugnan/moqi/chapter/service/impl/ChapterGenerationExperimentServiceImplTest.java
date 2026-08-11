@@ -35,6 +35,7 @@ import com.dugnan.moqi.planning.PlanningModels.ChapterPlanView;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanView;
 import com.dugnan.moqi.planning.PublishedScenePlanQueryPort;
+import com.dugnan.moqi.planning.ScenePlanPromptRenderer;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 
@@ -70,7 +71,8 @@ class ChapterGenerationExperimentServiceImplTest {
                 userConfigService,
                 providerFactory,
                 new ObjectMapper(),
-                new com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy());
+                new com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy(),
+                new ScenePlanPromptRenderer());
         when(experimentMapper.selectOne(any())).thenReturn(null);
         when(chapterMapper.selectById(65L)).thenReturn(chapter());
         when(scenePlanQueryPort.loadCurrent(65L)).thenReturn(plan());
@@ -93,12 +95,16 @@ class ChapterGenerationExperimentServiceImplTest {
 
         var result = service.run(65L, request("whole_chapter_once"));
 
+        ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).generate(requestCaptor.capture());
         assertThat(result.experimentStatus()).isEqualTo("completed");
         assertThat(result.generatedContent()).isEqualTo("整章一次生成正文");
         assertThat(result.modelCallIds()).containsExactly(201L);
         assertThat(result.rawSceneOutputsJson()).isNull();
+        assertThat(requestCaptor.getValue().messages().get(1).content())
+                .contains("场景 1｜scene-001", "叙事权重：未标注")
+                .doesNotContain("\"sceneKey\"", "{\"scenes\"");
         verify(providerFactory).createObserved(any(), any());
-        verify(provider).generate(any());
     }
 
     @Test
