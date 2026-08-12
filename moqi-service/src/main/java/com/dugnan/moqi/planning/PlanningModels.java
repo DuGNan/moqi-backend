@@ -100,6 +100,7 @@ public final class PlanningModels {
             Integer outlineContentSchemaVersion, String outlineMigrationReviewStatus,
             Long contextSnapshotId, Long sourceSnapshotId, List<SourceRef> sourceRefs,
             String validityStatus, List<String> validityReasonCodes,
+            Long sourceScenePlanId, Integer sourceScenePlanVersion,
             Integer version, LocalDateTime gmtCreate, LocalDateTime gmtModified) {
         /** 兼容 V1 场景规划视图构造。 */
         public ChapterPlanView(Long id, Long chapterId, Integer planNo, String status, Long narrativePlanId,
@@ -108,7 +109,7 @@ public final class PlanningModels {
                 LocalDateTime gmtModified) {
             this(id, chapterId, planNo, status, narrativePlanId, narrativePlanNo, outlineId, outlineRevision, aiTaskId,
                     agentRunId, content, scenes, 1, "review_required", null, null, List.of(), null, List.of(),
-                    version, gmtCreate, gmtModified);
+                    null, null, version, gmtCreate, gmtModified);
         }
     }
 
