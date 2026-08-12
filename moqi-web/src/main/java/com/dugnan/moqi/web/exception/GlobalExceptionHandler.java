@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
@@ -118,6 +120,18 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AsyncRequestNotUsableException.class)
     public void handleAsyncRequestNotUsable(AsyncRequestNotUsableException exception) {
         LOGGER.debug("客户端已断开异步请求: {}", exception.getMessage());
+    }
+
+    /**
+     * 处理不存在的 API 路由，避免被通用异常处理器转换为 500。
+     *
+     * @param exception 未匹配到 Controller 的请求
+     * @return 路由不存在响应
+     */
+    @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ApiResponse<Map<String, Object>> handleApiNotFound(Exception exception) {
+        return ApiResponse.failure(ErrorCode.API_NOT_FOUND, "接口不存在", Map.of());
     }
 
     /**

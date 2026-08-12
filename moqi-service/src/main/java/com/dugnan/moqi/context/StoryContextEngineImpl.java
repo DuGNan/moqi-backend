@@ -45,8 +45,6 @@ import com.dugnan.moqi.knowledge.mapper.ChapterKeyEventMapper;
 import com.dugnan.moqi.knowledge.mapper.ChapterSummaryMapper;
 import com.dugnan.moqi.knowledge.mapper.ForeshadowingItemMapper;
 import com.dugnan.moqi.knowledge.mapper.SettingEntryMapper;
-import com.dugnan.moqi.planning.entity.WorkNarrativePlanVersionEntity;
-import com.dugnan.moqi.planning.mapper.WorkNarrativePlanVersionMapper;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.ChapterOutlineEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
@@ -79,7 +77,6 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
     private final ChapterMapper chapterMapper;
     private final ChapterBriefMapper briefMapper;
     private final ChapterOutlineQueryMapper outlineMapper;
-    private final WorkNarrativePlanVersionMapper narrativeMapper;
     private final SettingEntryMapper settingMapper;
     private final ForeshadowingItemMapper foreshadowingMapper;
     private final ChapterSummaryMapper summaryMapper;
@@ -112,7 +109,6 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             ChapterMapper chapterMapper,
             ChapterBriefMapper briefMapper,
             ChapterOutlineQueryMapper outlineMapper,
-            WorkNarrativePlanVersionMapper narrativeMapper,
             SettingEntryMapper settingMapper,
             ForeshadowingItemMapper foreshadowingMapper,
             ChapterSummaryMapper summaryMapper,
@@ -126,7 +122,6 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         this.chapterMapper = chapterMapper;
         this.briefMapper = briefMapper;
         this.outlineMapper = outlineMapper;
-        this.narrativeMapper = narrativeMapper;
         this.settingMapper = settingMapper;
         this.foreshadowingMapper = foreshadowingMapper;
         this.summaryMapper = summaryMapper;
@@ -237,7 +232,6 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                         chapter.getContent(), false, 700, 300, chapter.getVersion(), chapter.getGmtModified(), Category.CURRENT);
             }
         }
-        addNarrativePlan(candidates, command);
         addKnowledge(candidates, command, chapter);
         if (StringUtils.hasText(command.targetText())) {
             add(candidates, StoryContextSourceType.TARGET_TEXT, "target", "SYSTEM", command.targetText(),
@@ -405,26 +399,6 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                     outline.getOutlineContent(), false, "confirmed".equals(outline.getOutlineStatus()) ? 900 : 650, 110,
                     outline.getVersion() + ":" + outline.getRevision(), outline.getGmtModified(), Category.STRUCTURE);
         }
-    }
-
-    private void addNarrativePlan(List<Candidate> candidates, StoryContextBuildCommand command) {
-        if (command.profile() != StoryContextProfile.SCENE_PLANNING) {
-            return;
-        }
-        List<WorkNarrativePlanVersionEntity> plans = narrativeMapper.selectList(
-                new LambdaQueryWrapper<WorkNarrativePlanVersionEntity>()
-                        .eq(WorkNarrativePlanVersionEntity::getWorkId, command.workId())
-                        .eq(WorkNarrativePlanVersionEntity::getPlanStatus, "published")
-                        .eq(WorkNarrativePlanVersionEntity::getDeleted, 0)
-                        .orderByDesc(WorkNarrativePlanVersionEntity::getId)
-                        .last("LIMIT 1"));
-        if (plans.isEmpty()) {
-            return;
-        }
-        WorkNarrativePlanVersionEntity plan = plans.get(0);
-        add(candidates, StoryContextSourceType.NARRATIVE_PLAN, id(plan.getId()), "SYSTEM", plan.getContentJson(),
-                true, 920, 105, plan.getVersion(), plan.getGmtModified(), Category.STRUCTURE,
-                StoryContextAuthorityStatus.CONFIRMED);
     }
 
     private void addKnowledge(List<Candidate> candidates, StoryContextBuildCommand command, ChapterEntity chapter) {

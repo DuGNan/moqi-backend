@@ -209,10 +209,6 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     @Transactional(rollbackFor = RuntimeException.class)
     public ChapterPlanView createCandidate(Long chapterId, CreateScenePlanCandidateRequest request) {
         ChapterEntity chapter = requireChapterForUpdate(chapterId);
-        WorkNarrativePlanVersionEntity narrative = currentNarrative(chapter.getWorkId());
-        if (narrative == null) {
-            throw new BusinessException(ErrorCode.NARRATIVE_PLAN_REQUIRED, "请先发布作品叙事规划");
-        }
         ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
         if (outline == null || request == null || request.baseOutlineRevision() == null
                 || !request.baseOutlineRevision().equals(outline.getRevision())) {
@@ -223,7 +219,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         }
         StoryContextSnapshot contextSnapshot = storyContextEngine.build(new StoryContextBuildCommand(
                 StoryContextProfile.SCENE_PLANNING, chapter.getWorkId(), chapterId, null, null,
-                "根据已确认的章节共识、作品叙事规划、正式章纲和选入的正式设定生成可编辑场景候选。"
+                "根据已确认的章节共识、正式章纲和选入的正式设定生成可编辑场景候选。"
                         + "不得发布或覆盖已发布场景规划；所有场景必须使用 planned 状态。",
                 SCENE_PLANNING_INPUT, null, 16384,
                 StoryContextProfile.SCENE_PLANNING.defaultOutputReserveTokens()));
@@ -249,8 +245,6 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         candidate.setWorkId(chapter.getWorkId());
         candidate.setChapterId(chapterId);
         candidate.setPlanNo(nextChapterPlanNo(chapterId));
-        candidate.setNarrativePlanId(narrative.getId());
-        candidate.setNarrativePlanNo(narrative.getPlanNo());
         candidate.setOutlineId(outline.getId());
         candidate.setOutlineRevision(outline.getRevision());
         candidate.setOutlineContentSchemaVersion(outline.getContentSchemaVersion() == null ? 1 : outline.getContentSchemaVersion());
@@ -423,11 +417,10 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     }
 
     private void assertSourcesCurrent(ChapterPlanVersionEntity entity) {
-        WorkNarrativePlanVersionEntity narrative = currentNarrative(entity.getWorkId());
         ChapterOutlineEntity outline = outlineMapper.findLatest(entity.getChapterId());
-        if (narrative == null || !entity.getNarrativePlanId().equals(narrative.getId()) || outline == null
-                || !entity.getOutlineId().equals(outline.getId()) || !entity.getOutlineRevision().equals(outline.getRevision())) {
-            throw new BusinessException(ErrorCode.SCENE_PLAN_OUTLINE_STALE, "作品规划或章节大纲已更新，请重新生成候选");
+        if (outline == null || !entity.getOutlineId().equals(outline.getId())
+                || !entity.getOutlineRevision().equals(outline.getRevision())) {
+            throw new BusinessException(ErrorCode.SCENE_PLAN_OUTLINE_STALE, "章节大纲已更新，请重新生成候选");
         }
     }
 

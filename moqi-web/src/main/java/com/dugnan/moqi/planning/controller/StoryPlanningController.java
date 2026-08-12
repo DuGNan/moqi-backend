@@ -10,12 +10,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.dugnan.moqi.common.api.ApiResponse;
 import com.dugnan.moqi.planning.PlanningModels.ChapterPlanView;
-import com.dugnan.moqi.planning.PlanningModels.CreateNarrativePlanRequest;
 import com.dugnan.moqi.planning.PlanningModels.CreateScenePlanCandidateRequest;
-import com.dugnan.moqi.planning.PlanningModels.NarrativePlanView;
-import com.dugnan.moqi.planning.PlanningModels.PublishNarrativePlanRequest;
 import com.dugnan.moqi.planning.PlanningModels.PublishScenePlanRequest;
-import com.dugnan.moqi.planning.PlanningModels.UpdateNarrativePlanRequest;
 import com.dugnan.moqi.planning.PlanningModels.UpdateScenePlanCandidateRequest;
 import com.dugnan.moqi.planning.StoryPlanningService;
 import com.dugnan.moqi.planning.ScenePlanConsistencyService;
@@ -29,7 +25,7 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 /**
  * @author dgn
  * @date 2026-08-01
- * @description 提供作品叙事规划和章节场景规划的 HTTP 接口。
+ * @description 提供章节场景规划候选、发布和一致性检查的 HTTP 接口。
  */
 @RestController
 @RequestMapping("/api")
@@ -40,39 +36,6 @@ public class StoryPlanningController {
     public StoryPlanningController(StoryPlanningService planningService, ScenePlanConsistencyService consistencyService) {
         this.planningService = planningService;
         this.consistencyService = consistencyService;
-    }
-
-    @PostMapping("/works/{workId}/narrative-plans")
-    public ApiResponse<NarrativePlanView> createNarrative(@PathVariable Long workId,
-            @RequestBody CreateNarrativePlanRequest request) {
-        return ApiResponse.success(planningService.createNarrativePlan(workId, request));
-    }
-
-    @GetMapping("/works/{workId}/narrative-plans/current")
-    public ApiResponse<NarrativePlanView> currentNarrative(@PathVariable Long workId) {
-        return ApiResponse.success(planningService.getCurrentNarrativePlan(workId));
-    }
-
-    @GetMapping("/works/{workId}/narrative-plans/latest-draft")
-    public ApiResponse<NarrativePlanView> latestNarrativeDraft(@PathVariable Long workId) {
-        return ApiResponse.success(planningService.getLatestNarrativeDraft(workId));
-    }
-
-    @GetMapping("/works/{workId}/narrative-plans/{planId}")
-    public ApiResponse<NarrativePlanView> narrative(@PathVariable Long workId, @PathVariable Long planId) {
-        return ApiResponse.success(planningService.getNarrativePlan(workId, planId));
-    }
-
-    @PutMapping("/works/{workId}/narrative-plans/{planId}")
-    public ApiResponse<NarrativePlanView> updateNarrative(@PathVariable Long workId, @PathVariable Long planId,
-            @RequestBody UpdateNarrativePlanRequest request) {
-        return ApiResponse.success(planningService.updateNarrativePlan(workId, planId, request));
-    }
-
-    @PostMapping("/works/{workId}/narrative-plans/{planId}/publish")
-    public ApiResponse<NarrativePlanView> publishNarrative(@PathVariable Long workId, @PathVariable Long planId,
-            @RequestBody PublishNarrativePlanRequest request) {
-        return ApiResponse.success(planningService.publishNarrativePlan(workId, planId, request));
     }
 
     @PostMapping("/chapters/{chapterId}/scene-plan-candidates")
