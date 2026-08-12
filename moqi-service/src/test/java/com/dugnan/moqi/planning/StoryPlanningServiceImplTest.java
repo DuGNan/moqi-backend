@@ -39,6 +39,41 @@ import com.dugnan.moqi.work.mapper.WorkMapper;
 class StoryPlanningServiceImplTest {
 
     @Test
+    void restoresNeedsReviewRevisionCandidateWithItsPublishedSource() {
+        WorkMapper workMapper = mock(WorkMapper.class);
+        ChapterMapper chapterMapper = mock(ChapterMapper.class);
+        ChapterPlanVersionMapper planMapper = mock(ChapterPlanVersionMapper.class);
+        ScenePlanVersionMapper sceneMapper = mock(ScenePlanVersionMapper.class);
+        ChapterEntity chapter = new ChapterEntity();
+        chapter.setId(69L);
+        chapter.setWorkId(17L);
+        chapter.setDeleted(0);
+        WorkEntity work = new WorkEntity();
+        work.setId(17L);
+        work.setDeleted(0);
+        ChapterPlanVersionEntity candidate = new ChapterPlanVersionEntity();
+        candidate.setId(10L);
+        candidate.setChapterId(69L);
+        candidate.setPlanStatus("needs_review");
+        candidate.setSourceScenePlanId(8L);
+        candidate.setSourceScenePlanVersion(3);
+        candidate.setDeleted(0);
+        candidate.setVersion(4);
+        when(chapterMapper.selectById(69L)).thenReturn(chapter);
+        when(workMapper.selectById(17L)).thenReturn(work);
+        when(planMapper.selectOne(any())).thenReturn(candidate);
+        when(sceneMapper.selectList(any())).thenReturn(List.of());
+
+        StoryPlanningServiceImpl service = service(workMapper, chapterMapper, planMapper, sceneMapper);
+
+        var result = service.getLatestCandidate(69L);
+
+        assertThat(result.status()).isEqualTo("needs_review");
+        assertThat(result.sourceScenePlanId()).isEqualTo(8L);
+        assertThat(result.sourceScenePlanVersion()).isEqualTo(3);
+    }
+
+    @Test
     void updatesExistingSceneInPlaceWithoutCollidingWithStableSceneKey() throws Exception {
         ChapterPlanVersionMapper planMapper = mock(ChapterPlanVersionMapper.class);
         ScenePlanVersionMapper sceneMapper = mock(ScenePlanVersionMapper.class);
@@ -129,6 +164,18 @@ class StoryPlanningServiceImplTest {
                 mock(WorkNarrativePlanVersionMapper.class), planMapper, sceneMapper,
                 mock(AiTaskMapper.class), mock(AgentRuntime.class), mock(StoryContextEngine.class),
                 mock(StoryContextSnapshotQueryPort.class), codec, new ObjectMapper());
+    }
+
+    private StoryPlanningServiceImpl service(
+            WorkMapper workMapper,
+            ChapterMapper chapterMapper,
+            ChapterPlanVersionMapper planMapper,
+            ScenePlanVersionMapper sceneMapper) {
+        return new StoryPlanningServiceImpl(
+                workMapper, chapterMapper, mock(ChapterOutlineQueryMapper.class),
+                mock(WorkNarrativePlanVersionMapper.class), planMapper, sceneMapper,
+                mock(AiTaskMapper.class), mock(AgentRuntime.class), mock(StoryContextEngine.class),
+                mock(StoryContextSnapshotQueryPort.class), new PlanningContentCodec(), new ObjectMapper());
     }
 
     private ScenePlanContent scene() {

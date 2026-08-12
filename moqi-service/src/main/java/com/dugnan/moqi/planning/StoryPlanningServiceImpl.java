@@ -63,6 +63,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
     private static final String SUPERSEDED = "superseded";
     private static final String QUEUED = "queued";
     private static final String READY = "ready";
+    private static final String NEEDS_REVIEW = "needs_review";
     private static final String ABANDONED = "abandoned";
     private static final String TASK_TYPE = "scene_plan_generation";
     private static final String SOURCE_FINGERPRINT_FIELD = "sourceFingerprint";
@@ -287,7 +288,8 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
         requireChapter(chapterId);
         ChapterPlanVersionEntity entity = chapterPlanMapper.selectOne(new LambdaQueryWrapper<ChapterPlanVersionEntity>()
                 .eq(ChapterPlanVersionEntity::getChapterId, chapterId).eq(ChapterPlanVersionEntity::getDeleted, 0)
-                .in(ChapterPlanVersionEntity::getPlanStatus, QUEUED, READY).orderByDesc(ChapterPlanVersionEntity::getId).last("LIMIT 1"));
+                .in(ChapterPlanVersionEntity::getPlanStatus, QUEUED, READY, NEEDS_REVIEW)
+                .orderByDesc(ChapterPlanVersionEntity::getId).last("LIMIT 1"));
         return entity == null ? null : chapterPlanView(entity);
     }
 
@@ -446,6 +448,7 @@ public class StoryPlanningServiceImpl implements StoryPlanningService {
                 entity.getOutlineContentSchemaVersion(), entity.getOutlineMigrationReviewStatus(),
                 contextSnapshotId(entity), entity.getSourceSnapshotId(), sourceRefs(entity), entity.getValidityStatus(),
                 reasonCodes(entity.getValidityReasonCodesJson()),
+                entity.getSourceScenePlanId(), entity.getSourceScenePlanVersion(),
                 entity.getVersion(), entity.getGmtCreate(), entity.getGmtModified());
     }
 
