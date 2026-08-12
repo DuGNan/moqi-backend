@@ -20,6 +20,7 @@ import com.dugnan.moqi.sourcechain.dto.ChapterAssetSourceChainModels.AssetSource
  */
 @Service
 public class SourcePropagationServiceImpl implements SourcePropagationService {
+    private static final String OUTLINE_CHANGED_REASONS = "[\"outline_changed\"]";
     private final ChapterAssetSourceChainService sourceChainService;
     private final ChapterPlanVersionMapper planMapper;
     private final ChapterGenerationMapper generationMapper;
@@ -49,6 +50,20 @@ public class SourcePropagationServiceImpl implements SourcePropagationService {
             outlineMapper.updateById(outline);
         }
         sourceChainService.markNeedsReview(chapterId, "outline:" + outlineId, List.of("outline_changed"), false, true, true);
+    }
+
+    @Override
+    public void sceneRevisionRequiresReview(Long chapterId, Long scenePlanId, Long outlineId) {
+        if (chapterId == null || scenePlanId == null || outlineId == null) {
+            return;
+        }
+        planMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>()
+                .eq("id", scenePlanId)
+                .eq("chapter_id", chapterId)
+                .eq("deleted", 0)
+                .set("validity_status", "needs_review")
+                .set("validity_reason_codes_json", OUTLINE_CHANGED_REASONS)
+                .setSql("version = version + 1"));
     }
 
     @Override public void narrativePublished(Long workId, Long narrativePlanId) {

@@ -27,6 +27,9 @@ public class ChapterPlanVersionEntity extends BaseEntity {
     private String planStatus;
     private String contentJson;
     private String sourceType;
+    private Long sourceScenePlanId;
+    private Integer sourceScenePlanVersion;
+    private String revisionIdempotencyKey;
     private String createdBy;
     private String publishedBy;
     private Integer currentMarker;

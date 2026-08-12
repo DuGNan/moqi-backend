@@ -46,6 +46,18 @@ class SourcePropagationServiceImplTest {
     }
 
     @Test
+    void marksSceneRevisionDraftForReviewAfterOutlineConfirmation() {
+        ChapterPlanVersionMapper planMapper = mock(ChapterPlanVersionMapper.class);
+        SourcePropagationServiceImpl service = new SourcePropagationServiceImpl(
+                mock(ChapterAssetSourceChainService.class), planMapper,
+                mock(ChapterGenerationMapper.class), mock(ChapterOutlineQueryMapper.class));
+
+        service.sceneRevisionRequiresReview(8L, 21L, 12L);
+
+        verify(planMapper).update(org.mockito.ArgumentMatchers.eq(null), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void ignoresRepeatedEventWithoutUpdatingAssets() {
         ChapterPlanVersionMapper planMapper = mock(ChapterPlanVersionMapper.class);
         ChapterGenerationMapper generationMapper = mock(ChapterGenerationMapper.class);

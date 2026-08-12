@@ -18,6 +18,15 @@ public interface SourcePropagationService {
      * @param outlineId 章纲编号
      */
     void outlineConfirmed(Long chapterId, Long outlineId);
+
+    /**
+     * 将章纲修订候选直接来源的场景草稿标记为需要复核。
+     *
+     * @param chapterId 章节编号
+     * @param scenePlanId 场景修订草稿编号
+     * @param outlineId 新确认的章纲编号
+     */
+    void sceneRevisionRequiresReview(Long chapterId, Long scenePlanId, Long outlineId);
     /**
      * 传播已发布全书规划的影响。
      * @param workId 作品编号
@@ -62,6 +71,7 @@ public interface SourcePropagationService {
         return new SourcePropagationService() {
             @Override public void consensusConfirmed(Long chapterId, Long consensusId) { }
             @Override public void outlineConfirmed(Long chapterId, Long outlineId) { }
+            @Override public void sceneRevisionRequiresReview(Long chapterId, Long scenePlanId, Long outlineId) { }
             @Override public void narrativePublished(Long workId, Long narrativePlanId) { }
             @Override public void scenePlanPublished(Long chapterId, Long scenePlanId) { }
             @Override public void scenePlanCreated(Long chapterId, Long scenePlanId) { }
