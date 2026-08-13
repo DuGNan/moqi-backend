@@ -7,25 +7,31 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.util.StringUtils;
 
 import com.dugnan.moqi.agent.AgentRuntime;
+import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.context.StoryContextEngine;
+import com.dugnan.moqi.context.StoryContextProfile;
+import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.planning.PlanningModels.CreateScenePlanCandidateRequest;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
 import com.dugnan.moqi.planning.PlanningModels.UpdateScenePlanCandidateRequest;
 import com.dugnan.moqi.planning.entity.ChapterPlanVersionEntity;
 import com.dugnan.moqi.planning.entity.ScenePlanVersionEntity;
-import com.dugnan.moqi.planning.entity.WorkNarrativePlanVersionEntity;
 import com.dugnan.moqi.planning.mapper.ChapterPlanVersionMapper;
 import com.dugnan.moqi.planning.mapper.ScenePlanVersionMapper;
 import com.dugnan.moqi.planning.mapper.WorkNarrativePlanVersionMapper;
@@ -110,7 +116,7 @@ class StoryPlanningServiceImplTest {
     }
 
     @Test
-    void suppliesCurrentInputWhenBuildingScenePlanningContext() {
+    void buildsScenePlanningContextWithoutNarrativePlan() {
         WorkMapper workMapper = mock(WorkMapper.class);
         ChapterMapper chapterMapper = mock(ChapterMapper.class);
         ChapterOutlineQueryMapper outlineMapper = mock(ChapterOutlineQueryMapper.class);
@@ -124,15 +130,12 @@ class StoryPlanningServiceImplTest {
         chapter.setId(65L);
         chapter.setWorkId(17L);
         chapter.setDeleted(0);
-        WorkNarrativePlanVersionEntity narrative = new WorkNarrativePlanVersionEntity();
-        narrative.setId(2L);
         ChapterOutlineEntity outline = new ChapterOutlineEntity();
         outline.setId(30L);
         outline.setRevision(0);
 
         when(chapterMapper.selectByIdForUpdate(65L)).thenReturn(chapter);
         when(workMapper.selectById(17L)).thenReturn(work);
-        when(narrativeMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(narrative);
         when(outlineMapper.findLatest(65L)).thenReturn(outline);
         when(storyContextEngine.build(org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> {
             var command = invocation.getArgument(0, com.dugnan.moqi.context.StoryContextBuildCommand.class);
@@ -153,6 +156,67 @@ class StoryPlanningServiceImplTest {
                 65L, new CreateScenePlanCandidateRequest(0, "qa-scene-plan")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("上下文契约验证完成");
+        verifyNoInteractions(narrativeMapper);
+    }
+
+    @Test
+    void createsScenePlanCandidateWithNoNarrativeSource() {
+        WorkMapper workMapper = mock(WorkMapper.class);
+        ChapterMapper chapterMapper = mock(ChapterMapper.class);
+        ChapterOutlineQueryMapper outlineMapper = mock(ChapterOutlineQueryMapper.class);
+        WorkNarrativePlanVersionMapper narrativeMapper = mock(WorkNarrativePlanVersionMapper.class);
+        ChapterPlanVersionMapper planMapper = mock(ChapterPlanVersionMapper.class);
+        ScenePlanVersionMapper sceneMapper = mock(ScenePlanVersionMapper.class);
+        AiTaskMapper taskMapper = mock(AiTaskMapper.class);
+        AgentRuntime agentRuntime = mock(AgentRuntime.class);
+        StoryContextEngine storyContextEngine = mock(StoryContextEngine.class);
+
+        WorkEntity work = new WorkEntity();
+        work.setId(17L);
+        work.setDeleted(0);
+        ChapterEntity chapter = new ChapterEntity();
+        chapter.setId(65L);
+        chapter.setWorkId(17L);
+        chapter.setDeleted(0);
+        ChapterOutlineEntity outline = new ChapterOutlineEntity();
+        outline.setId(30L);
+        outline.setRevision(2);
+
+        when(chapterMapper.selectByIdForUpdate(65L)).thenReturn(chapter);
+        when(workMapper.selectById(17L)).thenReturn(work);
+        when(outlineMapper.findLatest(65L)).thenReturn(outline);
+        when(storyContextEngine.build(any())).thenReturn(new StoryContextSnapshot(
+                701L, "scene-planning:17:65", 17L, 65L, null, StoryContextProfile.SCENE_PLANNING,
+                2, 1L, 16384, 4096, 12288, 32, "source-fingerprint", List.of(), List.of(), LocalDateTime.now()));
+        when(agentRuntime.findByIdempotencyKey(any(), any(), any())).thenReturn(Optional.empty());
+        when(taskMapper.insert(any(com.dugnan.moqi.chapter.entity.AiTaskEntity.class))).thenAnswer(invocation -> {
+            invocation.<com.dugnan.moqi.chapter.entity.AiTaskEntity>getArgument(0).setId(80L);
+            return 1;
+        });
+        when(planMapper.selectCount(any())).thenReturn(0L);
+        when(planMapper.insert(any(ChapterPlanVersionEntity.class))).thenAnswer(invocation -> {
+            invocation.<ChapterPlanVersionEntity>getArgument(0).setId(90L);
+            return 1;
+        });
+        when(agentRuntime.start(any())).thenReturn(new AgentRunView(
+                100L, ScenePlanWorkflowDefinition.WORKFLOW_TYPE, "queued", 17L, 65L, 80L,
+                null, null, null, null, null, null, null));
+        when(sceneMapper.selectList(any())).thenReturn(List.of());
+
+        StoryPlanningServiceImpl service = new StoryPlanningServiceImpl(
+                workMapper, chapterMapper, outlineMapper, narrativeMapper, planMapper, sceneMapper,
+                taskMapper, agentRuntime, storyContextEngine, mock(StoryContextSnapshotQueryPort.class),
+                new PlanningContentCodec(), new ObjectMapper());
+
+        var result = service.createCandidate(65L, new CreateScenePlanCandidateRequest(2, "qa-no-work-plan"));
+
+        ArgumentCaptor<ChapterPlanVersionEntity> candidate = ArgumentCaptor.forClass(ChapterPlanVersionEntity.class);
+        verify(planMapper).insert(candidate.capture());
+        assertThat(result.narrativePlanId()).isNull();
+        assertThat(result.narrativePlanNo()).isNull();
+        assertThat(candidate.getValue().getNarrativePlanId()).isNull();
+        assertThat(candidate.getValue().getOutlineId()).isEqualTo(30L);
+        verifyNoInteractions(narrativeMapper);
     }
 
     private StoryPlanningServiceImpl service(

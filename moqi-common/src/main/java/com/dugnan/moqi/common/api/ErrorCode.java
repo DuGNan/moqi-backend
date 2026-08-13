@@ -10,6 +10,8 @@ public enum ErrorCode {
     SUCCESS,
     /** 请求参数错误。 */
     BAD_REQUEST,
+    /** 请求的 API 路由不存在。 */
+    API_NOT_FOUND,
     /** 作品不存在。 */
     WORK_NOT_FOUND,
     /** 章节不存在。 */

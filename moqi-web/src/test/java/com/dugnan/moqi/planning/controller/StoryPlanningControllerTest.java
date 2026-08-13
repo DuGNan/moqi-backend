@@ -1,9 +1,8 @@
 package com.dugnan.moqi.planning.controller;
 
-import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,7 +17,7 @@ import com.dugnan.moqi.web.exception.GlobalExceptionHandler;
 /**
  * @author dgn
  * @date 2026-08-01
- * @description 验证作品叙事规划草稿恢复接口的空结果语义。
+ * @description 验证已移除的作品规划 HTTP 入口不再对外暴露。
  */
 class StoryPlanningControllerTest {
 
@@ -35,11 +34,9 @@ class StoryPlanningControllerTest {
     }
 
     @Test
-    void returnsNullDataWhenLatestDraftDoesNotExist() throws Exception {
+    void doesNotExposeNarrativePlanRoutes() throws Exception {
         mvc.perform(get("/api/works/2/narrative-plans/latest-draft"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data").doesNotExist());
-
-        verify(planningService).getLatestNarrativeDraft(2L);
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("API_NOT_FOUND"));
     }
 }
