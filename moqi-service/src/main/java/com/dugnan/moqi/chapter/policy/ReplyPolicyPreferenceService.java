@@ -50,6 +50,23 @@ public interface ReplyPolicyPreferenceService {
     ResolvedReplyPolicy resolve(Long conversationId, String content, ReplyControlRequest control);
 
     /**
+     * 结合最近一轮回复特征解析指定会话消息的最终策略。
+     *
+     * @param conversationId 会话 ID
+     * @param content 当前消息正文
+     * @param control 单次控制
+     * @param signals 最近回复信号
+     * @return 最终回复策略
+     */
+    default ResolvedReplyPolicy resolve(
+            Long conversationId,
+            String content,
+            ReplyControlRequest control,
+            ReplyConversationSignals signals) {
+        return resolve(conversationId, content, control);
+    }
+
+    /**
      * 读取会话对应的分层深度偏好。
      *
      * @param conversationId 会话 ID

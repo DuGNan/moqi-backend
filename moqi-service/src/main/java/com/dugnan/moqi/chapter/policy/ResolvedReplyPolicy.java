@@ -18,5 +18,8 @@ public record ResolvedReplyPolicy(
         ReplyScope scope,
         String controlSource,
         String policyVersion,
-        boolean convergenceApplied) {
+        boolean convergenceApplied,
+        ReplyMode previousMode,
+        boolean consecutiveQuestionSuppressed,
+        boolean crossChapterRequested) {
 }

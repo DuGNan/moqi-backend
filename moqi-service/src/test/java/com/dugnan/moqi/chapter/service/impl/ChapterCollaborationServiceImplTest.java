@@ -20,6 +20,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageCreated;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.MessageInteractionResponse;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.BriefRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.DiscussionFocusRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineRequest;
@@ -161,10 +162,46 @@ class ChapterCollaborationServiceImplTest {
         verify(eventPublisher).publishEvent(new ConversationReplyTaskSubmittedEvent(12L));
         verify(aiTaskMapper).insert(org.mockito.ArgumentMatchers.<AiTaskEntity>argThat(task ->
                 task.getResultMessageId() == null
-                        && task.getTaskInputJson().contains("\"schemaVersion\":1")
+                        && task.getTaskInputJson().contains("\"schemaVersion\":2")
                         && task.getTaskInputJson().contains("\"messageId\":11")
-                        && task.getTaskInputJson().contains("\"replyMode\":\"clarify\"")
+                        && task.getTaskInputJson().contains("\"replyMode\":\"explore\"")
                         && !task.getTaskInputJson().contains("讨论本章目标")));
+    }
+
+    @Test
+    void persistsReadableStructuredAnswerAndRejectsForgedQuestion() {
+        when(conversationMapper.selectById(8L)).thenReturn(conversation(8L, 1L, 2L));
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        ChapterConversationMessageEntity source = new ChapterConversationMessageEntity();
+        source.setId(20L);
+        source.setConversationId(8L);
+        source.setChapterId(2L);
+        source.setMessageRole("assistant");
+        source.setDeleted(0);
+        source.setInteractionJson("""
+                {"schemaVersion":1,"type":"single_choice","questionId":"q-1","question":"代价？",
+                "allowCustom":true,"options":[{"optionId":"a","title":"记忆","description":"","tradeoffs":""},
+                {"optionId":"b","title":"疼痛","description":"","tradeoffs":""}]}
+                """);
+        when(messageMapper.selectById(20L)).thenReturn(source);
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity entity = invocation.getArgument(0);
+            entity.setId(21L);
+            return 1;
+        });
+
+        MessageCreated created = service.sendMessage(8L, new SendMessageRequest(
+                "user", "客户端不可作为权威正文", false, null, null, 20L,
+                new MessageInteractionResponse(1, "q-1", "a", "保留面孔")));
+
+        assertThat(created.content()).isEqualTo("我选择“记忆”。补充：保留面孔");
+        assertThat(created.interactionResponse()).isEqualTo(
+                new MessageInteractionResponse(1, "q-1", "a", "保留面孔"));
+        assertThatThrownBy(() -> service.sendMessage(8L, new SendMessageRequest(
+                "user", "", false, null, null, 20L,
+                new MessageInteractionResponse(1, "forged", "a", null))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("来源问题不一致");
     }
 
     /**

@@ -93,19 +93,41 @@ class DefaultReplyPolicyResolverTest {
         assertThat(result.controlSource()).isEqualTo("user");
     }
 
+    @Test
+    void defaultsToExploreAndSuppressesConsecutiveQuestionsAfterShortAnswer() {
+        ResolvedReplyPolicy defaultPolicy = resolver.resolve("我想让觉醒更有代价", null, Map.of());
+        assertThat(defaultPolicy.mode()).isEqualTo(ReplyMode.EXPLORE);
+        assertThat(defaultPolicy.scope().allowedChanges()).isEqualTo("discussion_expansion");
+
+        ResolvedReplyPolicy afterChoice = resolver.resolve(
+                "B，再保留一点悬念",
+                null,
+                Map.of(),
+                new ReplyConversationSignals(ReplyMode.COMPARE, true, true));
+        assertThat(afterChoice.mode()).isEqualTo(ReplyMode.EXPLORE);
+        assertThat(afterChoice.consecutiveQuestionSuppressed()).isTrue();
+        assertThat(afterChoice.previousMode()).isEqualTo(ReplyMode.COMPARE);
+    }
+
+    @Test
+    void onlyAllowsCrossChapterScopeWhenUserExplicitlyRequestsIt() {
+        assertThat(resolver.resolve("继续完善这一章", null, Map.of()).crossChapterRequested()).isFalse();
+        assertThat(resolver.resolve("顺便讨论下一章怎么衔接", null, Map.of()).crossChapterRequested()).isTrue();
+    }
+
     private static Stream<Arguments> chapter62Cases() {
         return Stream.of(
-                Arguments.of("现代都市超能文", ReplyMode.CLARIFY, ReplyDepth.BRIEF, "question_only"),
+                Arguments.of("现代都市超能文", ReplyMode.EXPLORE, ReplyDepth.BALANCED, "discussion_expansion"),
                 Arguments.of("给我更多能力选择", ReplyMode.COMPARE, ReplyDepth.BRIEF, "candidate_summaries"),
                 Arguments.of("有点复杂了", ReplyMode.CONVERGE, ReplyDepth.BRIEF, "confirmed_and_pending_summary"),
                 Arguments.of("世界要架空", ReplyMode.CLARIFY, ReplyDepth.BRIEF, "question_only"),
-                Arguments.of("只把国家名字架空", ReplyMode.CLARIFY, ReplyDepth.BRIEF, "question_only"),
-                Arguments.of("只调整第一章觉醒方式", ReplyMode.CLARIFY, ReplyDepth.BRIEF, "changes_only"),
+                Arguments.of("只把国家名字架空", ReplyMode.EXPLORE, ReplyDepth.BALANCED, "changes_only"),
+                Arguments.of("只调整第一章觉醒方式", ReplyMode.EXPLORE, ReplyDepth.BALANCED, "changes_only"),
                 Arguments.of("请做完整章节设计", ReplyMode.PLAN, ReplyDepth.BALANCED, "requested_plan"),
                 Arguments.of("写一段正文草稿", ReplyMode.DRAFT, ReplyDepth.DEEP, "requested_draft"),
                 Arguments.of("总结并确认我们已经决定的内容", ReplyMode.CONVERGE, ReplyDepth.BRIEF,
                         "confirmed_and_pending_summary"),
-                Arguments.of("详细展开当前能力", ReplyMode.CLARIFY, ReplyDepth.DEEP, "question_only"),
+                Arguments.of("详细展开当前能力", ReplyMode.EXPLORE, ReplyDepth.DEEP, "discussion_expansion"),
                 Arguments.of("比较三个方案", ReplyMode.COMPARE, ReplyDepth.BRIEF, "candidate_summaries"));
     }
 }

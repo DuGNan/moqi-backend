@@ -45,6 +45,8 @@ public final class ChapterCollaborationModels {
             MessageReferenceSummary referencedMessage,
             Long continuationMessageId,
             ReplyPolicySnapshot effectiveReplyPolicy,
+            MessageInteraction interaction,
+            MessageInteractionResponse interactionResponse,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
 
@@ -69,7 +71,8 @@ public final class ChapterCollaborationModels {
                 Long aiTaskId,
                 LocalDateTime gmtCreate,
                 LocalDateTime gmtModified) {
-            this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, null, null, null, null, gmtCreate, gmtModified);
+            this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, null, null,
+                    null, null, null, null, gmtCreate, gmtModified);
         }
     }
 
@@ -87,6 +90,8 @@ public final class ChapterCollaborationModels {
             MessageReferenceSummary referencedMessage,
             Long continuationMessageId,
             ReplyPolicySnapshot effectiveReplyPolicy,
+            MessageInteraction interaction,
+            MessageInteractionResponse interactionResponse,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
 
@@ -111,7 +116,8 @@ public final class ChapterCollaborationModels {
                 Long aiTaskId,
                 LocalDateTime gmtCreate,
                 LocalDateTime gmtModified) {
-            this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, null, null, null, null, gmtCreate, gmtModified);
+            this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, null, null,
+                    null, null, null, null, gmtCreate, gmtModified);
         }
     }
 
@@ -121,7 +127,8 @@ public final class ChapterCollaborationModels {
             Boolean createAiTask,
             DiscussionFocusRequest discussionFocus,
             ReplyControlRequest replyControl,
-            Long referencedMessageId) {
+            Long referencedMessageId,
+            MessageInteractionResponse interactionResponse) {
 
         public SendMessageRequest(
                 String messageRole,
@@ -129,7 +136,17 @@ public final class ChapterCollaborationModels {
                 Boolean createAiTask,
                 DiscussionFocusRequest discussionFocus,
                 ReplyControlRequest replyControl) {
-            this(messageRole, content, createAiTask, discussionFocus, replyControl, null);
+            this(messageRole, content, createAiTask, discussionFocus, replyControl, null, null);
+        }
+
+        public SendMessageRequest(
+                String messageRole,
+                String content,
+                Boolean createAiTask,
+                DiscussionFocusRequest discussionFocus,
+                ReplyControlRequest replyControl,
+                Long referencedMessageId) {
+            this(messageRole, content, createAiTask, discussionFocus, replyControl, referencedMessageId, null);
         }
 
         /**
@@ -140,7 +157,7 @@ public final class ChapterCollaborationModels {
          * @param createAiTask 是否创建 AI 回复任务
          */
         public SendMessageRequest(String messageRole, String content, Boolean createAiTask) {
-            this(messageRole, content, createAiTask, null, null, null);
+            this(messageRole, content, createAiTask, null, null, null, null);
         }
 
         /**
@@ -156,8 +173,31 @@ public final class ChapterCollaborationModels {
                 String content,
                 Boolean createAiTask,
                 DiscussionFocusRequest discussionFocus) {
-            this(messageRole, content, createAiTask, discussionFocus, null, null);
+            this(messageRole, content, createAiTask, discussionFocus, null, null, null);
         }
+    }
+
+    public record MessageInteraction(
+            int schemaVersion,
+            String type,
+            String questionId,
+            String question,
+            List<MessageInteractionOption> options,
+            boolean allowCustom) {
+    }
+
+    public record MessageInteractionOption(
+            String optionId,
+            String title,
+            String description,
+            String tradeoffs) {
+    }
+
+    public record MessageInteractionResponse(
+            int schemaVersion,
+            String questionId,
+            String optionId,
+            String customText) {
     }
 
     /**

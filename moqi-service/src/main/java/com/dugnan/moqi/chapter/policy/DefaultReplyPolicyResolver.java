@@ -17,7 +17,7 @@ import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ReplyControlReques
 @Component
 public class DefaultReplyPolicyResolver implements ReplyPolicyResolver {
 
-    public static final String POLICY_VERSION = "chapter-reply-policy-v1";
+    public static final String POLICY_VERSION = "chapter-reply-policy-v2";
 
     private static final String SCOPE_CONVERSATION = "conversation";
     private static final String SCOPE_CHAPTER = "chapter";
@@ -35,25 +35,40 @@ public class DefaultReplyPolicyResolver implements ReplyPolicyResolver {
     private static final List<String> CONVERGE_TERMS =
             List.of("总结", "确认", "收束", "就这样", "采用", "撤回", "否定");
     private static final List<String> COMPARE_TERMS =
-            List.of("选择", "选项", "方案", "比较", "几个", "更多", "一些");
+            List.of("给我选项", "给我候选", "给我几个方案", "给我更多", "有哪些选项",
+                    "比较", "对比方案", "没有思路", "没想法");
     private static final List<String> AMBIGUOUS_TERMS =
             List.of("架空", "调整一下", "改一下", "换一个", "优化一下");
     private static final List<String> LOCAL_TERMS =
-            List.of("只改", "只调整", "局部", "这个问题", "这一点", "第一章", "本轮仅讨论");
+            List.of("只改", "只把", "只调整", "局部", "这个问题", "这一点", "第一章", "本轮仅讨论");
     private static final List<String> DEEP_TERMS =
             List.of("详细", "深入", "完整展开", "展开讲");
     private static final List<String> BRIEF_TERMS =
             List.of("简单一点", "简短");
+    private static final List<String> CROSS_CHAPTER_TERMS =
+            List.of("第二章", "下一章", "后续章节", "跨章", "后面几章");
 
     @Override
     public ResolvedReplyPolicy resolve(
             String content,
             ReplyControlRequest control,
             Map<String, ReplyDepth> inheritedDepths) {
+        return resolve(content, control, inheritedDepths, ReplyConversationSignals.empty());
+    }
+
+    @Override
+    public ResolvedReplyPolicy resolve(
+            String content,
+            ReplyControlRequest control,
+            Map<String, ReplyDepth> inheritedDepths,
+            ReplyConversationSignals signals) {
         validateControl(control);
         String normalized = content == null ? "" : content.trim().toLowerCase(Locale.ROOT);
         boolean convergence = containsAny(normalized, CONVERGENCE_TERMS);
-        ReplyMode mode = resolveMode(normalized, convergence);
+        ReplyConversationSignals effectiveSignals = signals == null ? ReplyConversationSignals.empty() : signals;
+        ReplyMode mode = resolveMode(normalized, convergence, effectiveSignals);
+        boolean consecutiveQuestionSuppressed = mode == ReplyMode.EXPLORE
+                && isShortAnswer(normalized) && suppressConsecutiveQuestion(effectiveSignals);
         ReplyDepth automaticDepth = automaticDepth(normalized, mode, convergence);
         DepthSelection depthSelection = selectDepth(control, inheritedDepths, automaticDepth, normalized);
         if (convergence) {
@@ -77,10 +92,13 @@ public class DefaultReplyPolicyResolver implements ReplyPolicyResolver {
                 scope,
                 depthSelection.source(),
                 POLICY_VERSION,
-                convergence);
+                convergence,
+                effectiveSignals.previousMode(),
+                consecutiveQuestionSuppressed,
+                containsAny(normalized, CROSS_CHAPTER_TERMS));
     }
 
-    private ReplyMode resolveMode(String content, boolean convergence) {
+    private ReplyMode resolveMode(String content, boolean convergence, ReplyConversationSignals signals) {
         if (convergence || containsAny(content, CONVERGE_TERMS)) {
             return ReplyMode.CONVERGE;
         }
@@ -90,13 +108,27 @@ public class DefaultReplyPolicyResolver implements ReplyPolicyResolver {
         if (containsAny(content, PLAN_TERMS)) {
             return ReplyMode.PLAN;
         }
+        if (isShortAnswer(content) && suppressConsecutiveQuestion(signals)) {
+            return ReplyMode.EXPLORE;
+        }
         if (containsAny(content, AMBIGUOUS_TERMS) && !containsAny(content, LOCAL_TERMS)) {
             return ReplyMode.CLARIFY;
         }
         if (containsAny(content, COMPARE_TERMS)) {
             return ReplyMode.COMPARE;
         }
-        return ReplyMode.CLARIFY;
+        return ReplyMode.EXPLORE;
+    }
+
+    private boolean isShortAnswer(String content) {
+        return content.length() <= 24;
+    }
+
+    private boolean suppressConsecutiveQuestion(ReplyConversationSignals signals) {
+        return signals.previousMode() == ReplyMode.CLARIFY
+                || signals.previousMode() == ReplyMode.COMPARE
+                || signals.previousAssistantAskedQuestion()
+                || signals.previousAssistantOfferedOptions();
     }
 
     private ReplyDepth automaticDepth(String content, ReplyMode mode, boolean convergence) {
@@ -174,6 +206,7 @@ public class DefaultReplyPolicyResolver implements ReplyPolicyResolver {
 
     private String primaryIntent(ReplyMode mode) {
         return switch (mode) {
+            case EXPLORE -> "explore_direction";
             case CLARIFY -> "clarify_direction";
             case COMPARE -> "compare_candidates";
             case CONVERGE -> "converge_consensus";
@@ -192,6 +225,7 @@ public class DefaultReplyPolicyResolver implements ReplyPolicyResolver {
 
     private String allowedChanges(ReplyMode mode) {
         return switch (mode) {
+            case EXPLORE -> "discussion_expansion";
             case CLARIFY -> "question_only";
             case COMPARE -> "candidate_summaries";
             case CONVERGE -> "confirmed_and_pending_summary";

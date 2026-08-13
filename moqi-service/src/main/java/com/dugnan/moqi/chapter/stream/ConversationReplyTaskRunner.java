@@ -18,6 +18,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.interaction.DiscussionInteractionCodec;
+import com.dugnan.moqi.chapter.interaction.DiscussionInteractionCodec.AssistantResult;
 import com.dugnan.moqi.chapter.focus.ChapterDiscussionFocusResolver;
 import com.dugnan.moqi.chapter.focus.ResolvedDiscussionFocus;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
@@ -270,24 +272,37 @@ public class ConversationReplyTaskRunner {
                                 taskInput.policyVersion())
                         .build());
         eventPublisher.publishEvent(ChapterReplyEvent.started(task.getChapterId(), task.getId()));
+        boolean structured = isStructuredInteraction(taskInput.replyMode());
         state.call = provider.stream(
-                contextSnapshot == null ? request(input, taskInput) : request(contextSnapshot),
-                event -> appendDelta(task, response, event));
+                contextSnapshot == null ? request(input, taskInput) : request(contextSnapshot, taskInput),
+                event -> appendDelta(task, response, event, !structured));
         callRegistry.register(task.getId(), state.call);
         LlmStreamResult streamResult = state.call.await();
         ensureCompleted(streamResult);
         ensureRunning(task);
-        Long messageId = persistenceService.complete(task, input, response.toString());
+        AssistantResult result = structured
+                ? DiscussionInteractionCodec.parseAssistantEnvelope(response.toString(), objectMapper())
+                : new AssistantResult(response.toString(), null, null);
+        if (structured && StringUtils.hasText(result.content())) {
+            eventPublisher.publishEvent(ChapterReplyEvent.delta(task.getChapterId(), task.getId(), result.content()));
+        }
+        Long messageId = persistenceService.complete(task, input, result.content(), result.interactionJson());
         eventPublisher.publishEvent(ChapterReplyEvent.completed(task.getChapterId(), task.getId(), messageId));
     }
 
-    private void appendDelta(AiTaskEntity task, StringBuilder response, LlmStreamEvent event) {
+    private void appendDelta(
+            AiTaskEntity task,
+            StringBuilder response,
+            LlmStreamEvent event,
+            boolean publish) {
         if (event instanceof LlmStreamEvent.TextDelta delta
                 && !callRegistry.isCancellationRequested(task.getId())
                 && StringUtils.hasText(delta.text())) {
             response.append(delta.text());
-            eventPublisher.publishEvent(ChapterReplyEvent.delta(
-                    task.getChapterId(), task.getId(), delta.text()));
+            if (publish) {
+                eventPublisher.publishEvent(ChapterReplyEvent.delta(
+                        task.getChapterId(), task.getId(), delta.text()));
+            }
         }
     }
 
@@ -473,10 +488,10 @@ public class ConversationReplyTaskRunner {
                 sources);
     }
 
-    private LlmRequest request(StoryContextSnapshot snapshot) {
+    private LlmRequest request(StoryContextSnapshot snapshot, ConversationReplyTaskInputV1 taskInput) {
         return new LlmRequest(
                 snapshot.toMessages(),
-                new LlmOptions(snapshot.outputReserveTokens(), null, List.of(), LlmResponseFormat.TEXT));
+                new LlmOptions(snapshot.outputReserveTokens(), null, List.of(), responseFormat(taskInput.replyMode())));
     }
 
     private LlmRequest request(ChapterConversationMessageEntity input) {
@@ -496,7 +511,19 @@ public class ConversationReplyTaskRunner {
                         outputBudget(taskInput.replyMode(), taskInput.replyDepth()),
                         null,
                         List.of(),
-                        LlmResponseFormat.TEXT));
+                        responseFormat(taskInput.replyMode())));
+    }
+
+    private LlmResponseFormat responseFormat(ReplyMode mode) {
+        return isStructuredInteraction(mode) ? LlmResponseFormat.JSON_OBJECT : LlmResponseFormat.TEXT;
+    }
+
+    private boolean isStructuredInteraction(ReplyMode mode) {
+        return mode == ReplyMode.COMPARE || mode == ReplyMode.CLARIFY;
+    }
+
+    private ObjectMapper objectMapper() {
+        return objectMapper == null ? new ObjectMapper() : objectMapper;
     }
 
     private ConversationReplyTaskInputV1 readTaskInput(
@@ -509,7 +536,8 @@ public class ConversationReplyTaskRunner {
             ObjectMapper mapper = objectMapper == null ? new ObjectMapper() : objectMapper;
             ConversationReplyTaskInputV1 snapshot =
                     mapper.readValue(task.getTaskInputJson(), ConversationReplyTaskInputV1.class);
-            if (snapshot.schemaVersion() != ConversationReplyTaskInputV1.SCHEMA_VERSION
+            if (snapshot.schemaVersion() < 1
+                    || snapshot.schemaVersion() > ConversationReplyTaskInputV1.SCHEMA_VERSION
                     || !input.getId().equals(snapshot.messageId())
                     || !input.getConversationId().equals(snapshot.conversationId())
                     || snapshot.replyMode() == null
@@ -531,8 +559,9 @@ public class ConversationReplyTaskRunner {
 
     private String taskRule(ConversationReplyTaskInputV1 input) {
         String modeRule = switch (input.replyMode()) {
+            case EXPLORE -> "硬约束：先理解并综合作者刚表达的意图，再只沿最有价值的一条因果、人物动机、冲突或叙事后果线索展开成连贯讨论。用户没有要求选择时，严禁生成任何显式或隐式的多方案结构，包括‘候选方向’‘选项’‘方案 A/B’‘需要你决定’‘几条路径’‘几种质地’‘第一种/第二种/第三种’及其同义改写；不得用编号、项目符号或多个小标题陈列替代方向，不得列出让作者逐项作答的问题。只有确实能帮助作者继续形成自己想法时，结尾可以提出一个开放问题；整条回复最多出现一个问号，而且该问题不得内含‘还是’等并列选择。若无法同时满足，以不提问、继续综合拓展为准。";
             case CLARIFY -> "只提出一个最影响方向的澄清问题，不自行扩写完整方案。";
-            case COMPARE -> "只给出差异明确的少量候选，每个候选保持简短并等待用户选择。";
+            case COMPARE -> "用户已明确要求候选或比较；给出差异明确的少量候选，也必须保留用户自行描述的空间。";
             case CONVERGE -> "只总结已确认内容和剩余待决，不新增大范围设定。";
             case PLAN -> "仅在请求范围内输出结构化规划，不生成正文。";
             case DRAFT -> "仅在请求范围内生成正文草稿，不把草稿自动确认为正式内容。";
@@ -549,7 +578,26 @@ public class ConversationReplyTaskRunner {
                 + "；允许修改：" + input.replyScope().allowedChanges()
                 + "；最多候选数：" + input.replyScope().maxCandidates()
                 + "。已确认内容才是权威事实；候选、待决、证据与已否定内容不得混用。"
-                + "不得宣称已经确认、保存或更新任何 Brief、大纲、场景规划或正文。";
+                + (input.consecutiveQuestionSuppressed()
+                        ? "上一轮已经提问或给出选项，本轮必须先综合用户回答并拓展思考，不得再次连续出题。" : "")
+                + (input.crossChapterRequested()
+                        ? "用户已明确要求跨章讨论，可以在请求范围内涉及后续章节。"
+                        : "只讨论当前章节，不得主动设计、追问或预设下一章。")
+                + "除非用户明确索要建议，不得输出‘我的倾向’或替作者做决定；不得用连续二选一代替共同思考。"
+                + "不得宣称已经确认、保存或更新任何 Brief、大纲、场景规划或正文。"
+                + (isStructuredInteraction(input.replyMode()) ? structuredInteractionRule(input.replyMode()) : "");
+    }
+
+    private String structuredInteractionRule(ReplyMode mode) {
+        String interactionRule = mode == ReplyMode.COMPARE
+                ? "interaction.type 必须为 single_choice，options 必须为 2 至 4 项，allowCustom 必须为 true。"
+                : "interaction.type 必须为 open_question，options 必须为空数组，allowCustom 必须为 true。";
+        return "只输出一个 JSON 对象，不要 Markdown 代码块。对象格式为："
+                + "{\"content\":\"给作者看的简短引导\",\"interaction\":{\"schemaVersion\":1,"
+                + "\"type\":\"single_choice 或 open_question\",\"questionId\":\"本问题稳定唯一 ID\","
+                + "\"question\":\"问题\",\"options\":[{\"optionId\":\"唯一 ID\",\"title\":\"标题\","
+                + "\"description\":\"说明\",\"tradeoffs\":\"取舍\"}],\"allowCustom\":true}}。"
+                + interactionRule;
     }
 
     private int outputBudget(ReplyMode mode, ReplyDepth depth) {
