@@ -31,11 +31,15 @@ import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
 import com.dugnan.moqi.chapter.focus.ChapterDiscussionFocusResolver;
+import com.dugnan.moqi.chapter.interaction.DiscussionInteractionCodec;
+import com.dugnan.moqi.chapter.interaction.DiscussionInteractionCodec.ValidatedResponse;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.chapter.policy.ConversationReplyTaskInputV1;
+import com.dugnan.moqi.chapter.policy.ReplyConversationSignals;
+import com.dugnan.moqi.chapter.policy.ReplyMode;
 import com.dugnan.moqi.chapter.policy.ReplyPolicyPreferenceService;
 import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.chapter.service.ChapterCollaborationService;
@@ -259,7 +263,9 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         ChapterConversationEntity conversation = requireConversation(conversationId);
         ChapterEntity chapter = requireChapter(conversation.getChapterId());
         String role = role(request == null ? null : request.messageRole());
-        String content = requiredText(request == null ? null : request.content(), "消息内容不能为空");
+        ValidatedResponse interactionResponse = validateInteractionResponse(conversation, request, role);
+        String content = requiredText(interactionResponse == null
+                ? (request == null ? null : request.content()) : interactionResponse.content(), "消息内容不能为空");
         Long continuationMessageId = requireContinuation(conversation, request, role);
 
         ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
@@ -269,6 +275,10 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         message.setContent(content);
         applyDiscussionFocus(conversation, request, role, message);
         applyReferencedMessage(conversation, chapter, request, role, message);
+        if (interactionResponse != null) {
+            message.setInteractionResponseJson(DiscussionInteractionCodec.serializeResponse(
+                    interactionResponse.response(), objectMapper()));
+        }
         message.setDeleted(0);
         messageMapper.insert(message);
 
@@ -301,10 +311,64 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                     .resolve(content, request.replyControl(), java.util.Map.of());
         }
         try {
-            return replyPolicyService.resolve(conversation.getId(), content, request.replyControl());
+            return replyPolicyService.resolve(
+                    conversation.getId(), content, request.replyControl(), recentReplySignals(conversation.getId()));
         } catch (IllegalArgumentException exception) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, exception.getMessage());
         }
+    }
+
+    private ValidatedResponse validateInteractionResponse(
+            ChapterConversationEntity conversation,
+            SendMessageRequest request,
+            String role) {
+        if (request == null || request.interactionResponse() == null) {
+            return null;
+        }
+        if (!ROLE_USER.equals(role) || request.referencedMessageId() == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "结构化回答必须由用户引用来源助手消息");
+        }
+        ChapterConversationMessageEntity source = messageMapper.selectById(request.referencedMessageId());
+        if (source == null || Integer.valueOf(1).equals(source.getDeleted())
+                || !conversation.getId().equals(source.getConversationId())
+                || !conversation.getChapterId().equals(source.getChapterId())
+                || !"assistant".equals(source.getMessageRole())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "结构化回答来源不属于当前章节会话");
+        }
+        try {
+            return DiscussionInteractionCodec.validateResponse(
+                    DiscussionInteractionCodec.parseInteraction(source.getInteractionJson(), objectMapper()),
+                    request.interactionResponse());
+        } catch (IllegalArgumentException exception) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, exception.getMessage());
+        }
+    }
+
+    private ObjectMapper objectMapper() {
+        return objectMapper == null ? new ObjectMapper() : objectMapper;
+    }
+
+    private ReplyConversationSignals recentReplySignals(Long conversationId) {
+        ChapterConversationMessageEntity assistant = messageMapper.selectOne(
+                new LambdaQueryWrapper<ChapterConversationMessageEntity>()
+                        .eq(ChapterConversationMessageEntity::getConversationId, conversationId)
+                        .eq(ChapterConversationMessageEntity::getMessageRole, "assistant")
+                        .eq(ChapterConversationMessageEntity::getDeleted, 0)
+                        .orderByDesc(ChapterConversationMessageEntity::getId)
+                        .last("LIMIT 1"));
+        if (assistant == null) {
+            return ReplyConversationSignals.empty();
+        }
+        String assistantContent = assistant.getContent() == null ? "" : assistant.getContent();
+        ReplyMode previousMode = null;
+        if (assistant.getAiTaskId() != null) {
+            ConversationReplyTaskInputV1 previousInput = replyTaskInput(aiTaskMapper.selectById(assistant.getAiTaskId()));
+            previousMode = previousInput == null ? null : previousInput.replyMode();
+        }
+        boolean askedQuestion = assistantContent.contains("？") || assistantContent.contains("?");
+        boolean offeredOptions = assistantContent.contains("选项A") || assistantContent.contains("选项 A")
+                || assistantContent.contains("方案A") || assistantContent.contains("方案 A");
+        return new ReplyConversationSignals(previousMode, askedQuestion, offeredOptions);
     }
 
     /**
@@ -707,6 +771,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 referencedMessage,
                 continuationMessageId(task),
                 replyPolicySnapshot(task),
+                DiscussionInteractionCodec.parseInteraction(entity.getInteractionJson(), objectMapper()),
+                DiscussionInteractionCodec.parseResponse(entity.getInteractionResponseJson(), objectMapper()),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
     }
@@ -734,6 +800,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 referenceSummary(referenced),
                 continuationMessageId(task),
                 replyPolicySnapshot(task),
+                DiscussionInteractionCodec.parseInteraction(entity.getInteractionJson(), objectMapper()),
+                DiscussionInteractionCodec.parseResponse(entity.getInteractionResponseJson(), objectMapper()),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
     }

@@ -29,4 +29,8 @@ public class ChapterConversationMessageEntity extends BaseEntity {
     private String focusDecisionKey;
 
     private Long referencedMessageId;
+
+    private String interactionJson;
+
+    private String interactionResponseJson;
 }

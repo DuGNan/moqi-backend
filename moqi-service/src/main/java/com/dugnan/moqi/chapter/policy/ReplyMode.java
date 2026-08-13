@@ -11,6 +11,8 @@ import com.fasterxml.jackson.annotation.JsonValue;
  * @description 定义章节讨论单轮回复模式。
  */
 public enum ReplyMode {
+    /** 围绕作者输入进行开放共创和思路拓展。 */
+    EXPLORE,
     /** 澄清高影响歧义。 */
     CLARIFY,
     /** 比较少量候选。 */

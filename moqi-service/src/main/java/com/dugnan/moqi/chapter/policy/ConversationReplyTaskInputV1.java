@@ -27,9 +27,12 @@ public record ConversationReplyTaskInputV1(
         String policyVersion,
         String contextAuthorityVersion,
         boolean convergenceApplied,
-        Long continuationMessageId) {
+        Long continuationMessageId,
+        ReplyMode previousReplyMode,
+        boolean consecutiveQuestionSuppressed,
+        boolean crossChapterRequested) {
 
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
     public static final String AUTHORITY_VERSION = "story-context-authority-v2";
 
     /**
@@ -55,7 +58,10 @@ public record ConversationReplyTaskInputV1(
                 policy.policyVersion(),
                 AUTHORITY_VERSION,
                 policy.convergenceApplied(),
-                null);
+                null,
+                policy.previousMode(),
+                policy.consecutiveQuestionSuppressed(),
+                policy.crossChapterRequested());
     }
 
     /**
@@ -83,6 +89,9 @@ public record ConversationReplyTaskInputV1(
                 policy.policyVersion(),
                 AUTHORITY_VERSION,
                 policy.convergenceApplied(),
-                continuationMessageId);
+                continuationMessageId,
+                policy.previousMode(),
+                policy.consecutiveQuestionSuppressed(),
+                policy.crossChapterRequested());
     }
 }

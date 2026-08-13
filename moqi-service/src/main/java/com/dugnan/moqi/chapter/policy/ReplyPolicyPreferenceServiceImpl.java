@@ -162,6 +162,15 @@ public class ReplyPolicyPreferenceServiceImpl implements ReplyPolicyPreferenceSe
     }
 
     @Override
+    public ResolvedReplyPolicy resolve(
+            Long conversationId,
+            String content,
+            ReplyControlRequest control,
+            ReplyConversationSignals signals) {
+        return resolver.resolve(content, control, inheritedDepths(conversationId), signals);
+    }
+
+    @Override
     public Map<String, ReplyDepth> inheritedDepths(Long conversationId) {
         ChapterConversationEntity conversation = requireConversation(conversationId);
         Map<String, ReplyDepth> result = new LinkedHashMap<>();

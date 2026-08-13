@@ -73,11 +73,21 @@ public class ConversationReplyPersistenceService {
             AiTaskEntity task,
             ChapterConversationMessageEntity input,
             String content) {
+        return complete(task, input, content, null);
+    }
+
+    @Transactional(rollbackFor = RuntimeException.class)
+    public Long complete(
+            AiTaskEntity task,
+            ChapterConversationMessageEntity input,
+            String content,
+            String interactionJson) {
         ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
         message.setConversationId(input.getConversationId());
         message.setChapterId(task.getChapterId());
         message.setMessageRole("assistant");
         message.setContent(content);
+        message.setInteractionJson(interactionJson);
         message.setAiTaskId(task.getId());
         message.setDeleted(0);
         messageMapper.insert(message);
