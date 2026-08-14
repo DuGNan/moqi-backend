@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -24,8 +25,11 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationCreated;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationDetail;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationRejected;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefPreview;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefSourceRef;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
+import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.common.api.ErrorCode;
@@ -42,6 +46,7 @@ class ChapterGenerationControllerTest {
     private ChapterGenerationService chapterGenerationService;
     private SceneGenerationService sceneGenerationService;
     private GenerationEvaluationService evaluationService;
+    private ChapterGenerationBriefService briefService;
     private MockMvc mvc;
 
     /**
@@ -52,9 +57,11 @@ class ChapterGenerationControllerTest {
         chapterGenerationService = Mockito.mock(ChapterGenerationService.class);
         sceneGenerationService = Mockito.mock(SceneGenerationService.class);
         evaluationService = Mockito.mock(GenerationEvaluationService.class);
+        briefService = Mockito.mock(ChapterGenerationBriefService.class);
         mvc = MockMvcBuilders
                 .standaloneSetup(
-                        new ChapterGenerationController(chapterGenerationService, sceneGenerationService, evaluationService),
+                        new ChapterGenerationController(
+                                chapterGenerationService, sceneGenerationService, evaluationService, briefService),
                         new GenerationController(chapterGenerationService, sceneGenerationService))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -83,6 +90,27 @@ class ChapterGenerationControllerTest {
                 .andExpect(jsonPath("$.data.generationId").value(7001))
                 .andExpect(jsonPath("$.data.agentRunId").value(9004))
                 .andExpect(jsonPath("$.data.generationStatus").value("queued"));
+    }
+
+    @Test
+    void previewsTheHumanReadableGenerationBriefForASpecificPublishedPlan() throws Exception {
+        when(briefService.preview(12L, 6)).thenReturn(new GenerationBriefPreview(
+                2L, 12L, 41L, 6, "chapter-generation-brief-v1", "current",
+                List.of(new GenerationBriefSourceRef("CHAPTER_OUTLINE", "21", "4:2")),
+                "brief-hash", LocalDateTime.of(2026, 8, 14, 10, 0),
+                "# Chapter Generation Brief\n\n## P0｜章节身份与任务"));
+
+        mvc.perform(get("/api/chapters/12/generation-brief-preview").param("scenePlanNo", "6"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("SUCCESS"))
+                .andExpect(jsonPath("$.data.chapterPlanVersionId").value(41))
+                .andExpect(jsonPath("$.data.scenePlanNo").value(6))
+                .andExpect(jsonPath("$.data.templateVersion").value("chapter-generation-brief-v1"))
+                .andExpect(jsonPath("$.data.sourceValidity").value("current"))
+                .andExpect(jsonPath("$.data.sourceRefs[0].sourceType").value("CHAPTER_OUTLINE"))
+                .andExpect(jsonPath("$.data.fingerprint").value("brief-hash"))
+                .andExpect(jsonPath("$.data.content").value(org.hamcrest.Matchers.containsString(
+                        "Chapter Generation Brief")));
     }
 
     /**

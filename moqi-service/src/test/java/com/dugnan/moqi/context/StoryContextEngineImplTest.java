@@ -152,6 +152,53 @@ class StoryContextEngineImplTest {
                 && item.selectionReason().startsWith("TRUNCATED"));
     }
 
+    @Test
+    void sceneGenerationUsesOnlyFrozenBriefAndFrozenPreviousDrafts() {
+        WorkEntity work = new WorkEntity();
+        work.setId(1L);
+        work.setTitle("运行时作品标题");
+        work.setDeleted(0);
+        ChapterEntity chapter = chapter(2L, 1L);
+        chapter.setContent("运行时章节正文");
+        when(workMapper.selectById(1L)).thenReturn(work);
+        when(chapterMapper.selectById(2L)).thenReturn(chapter);
+        SceneGenerationContextFocus focus = new SceneGenerationContextFocus(
+                "# 冻结的 Chapter Generation Brief",
+                "brief-fingerprint",
+                "chapter-generation-brief-v1",
+                "scene-2",
+                new SceneGenerationContextFocus.PreviousSceneDraft(31L, "scene-1", "冻结的上一场正文"),
+                List.of());
+
+        StoryContextSnapshot result = engine.build(new StoryContextBuildCommand(
+                StoryContextProfile.SCENE_GENERATION,
+                1L,
+                2L,
+                null,
+                null,
+                "生成当前场景正文",
+                "生成当前场景",
+                null,
+                8192,
+                2048,
+                null,
+                focus));
+
+        assertThat(result.items()).extracting(StoryContextItem::sourceType)
+                .contains(StoryContextSourceType.CHAPTER_GENERATION_BRIEF,
+                        StoryContextSourceType.GENERATED_SCENE_DRAFT)
+                .doesNotContain(StoryContextSourceType.WORK_METADATA,
+                        StoryContextSourceType.CHAPTER_BRIEF,
+                        StoryContextSourceType.CHAPTER_OUTLINE,
+                        StoryContextSourceType.CHAPTER_CONTENT,
+                        StoryContextSourceType.SETTING_ENTRY,
+                        StoryContextSourceType.FORESHADOWING,
+                        StoryContextSourceType.CHAPTER_SUMMARY,
+                        StoryContextSourceType.CHAPTER_KEY_EVENT);
+        assertThat(result.items()).extracting(StoryContextItem::content)
+                .noneMatch(content -> content.contains("运行时作品标题") || content.contains("运行时章节正文"));
+    }
+
     /**
      * 验证待决、当前共识和来源讨论以固定来源类型进入上下文。
      */

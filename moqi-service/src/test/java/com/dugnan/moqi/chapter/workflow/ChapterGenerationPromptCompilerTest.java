@@ -20,10 +20,6 @@ import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderCapabilities;
-import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
-import com.dugnan.moqi.planning.ScenePlanPromptRenderer;
-import com.dugnan.moqi.planning.entity.ScenePlanVersionEntity;
-import com.dugnan.moqi.planning.mapper.ScenePlanVersionMapper;
 
 /**
  * @author dgn
@@ -34,13 +30,11 @@ class ChapterGenerationPromptCompilerTest {
 
     @Test
     void reusesPersistedSnapshotWithoutRebuildingOrMutatingSceneState() {
-        ScenePlanVersionMapper scenePlanMapper = mock(ScenePlanVersionMapper.class);
         StoryContextEngine contextEngine = mock(StoryContextEngine.class);
         StoryContextSnapshotQueryPort snapshotQueryPort = mock(StoryContextSnapshotQueryPort.class);
         ChapterGenerationStateStore stateStore = mock(ChapterGenerationStateStore.class);
         ChapterGenerationPromptCompiler compiler = new ChapterGenerationPromptCompiler(
-                scenePlanMapper, contextEngine, snapshotQueryPort, stateStore, new ObjectMapper(),
-                new ScenePlanPromptRenderer());
+                contextEngine, snapshotQueryPort, stateStore, new ObjectMapper());
         ChapterGenerationEntity generation = new ChapterGenerationEntity();
         generation.setId(7L);
         ChapterGenerationSceneEntity scene = new ChapterGenerationSceneEntity();
@@ -56,27 +50,19 @@ class ChapterGenerationPromptCompilerTest {
         verify(contextEngine, never()).build(org.mockito.ArgumentMatchers.any());
         verify(stateStore, never()).markSceneRunning(org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());
-        verify(scenePlanMapper, never()).selectById(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
-    void rendersCurrentAdjacentAndRoutePlansAsNaturalLanguage() throws Exception {
-        ScenePlanVersionMapper scenePlanMapper = mock(ScenePlanVersionMapper.class);
+    void injectsFrozenHumanReadableBriefWithoutReReadingScenePlans() {
         StoryContextEngine contextEngine = mock(StoryContextEngine.class);
         StoryContextSnapshotQueryPort snapshotQueryPort = mock(StoryContextSnapshotQueryPort.class);
         ChapterGenerationStateStore stateStore = mock(ChapterGenerationStateStore.class);
         ObjectMapper objectMapper = new ObjectMapper();
         ChapterGenerationPromptCompiler compiler = new ChapterGenerationPromptCompiler(
-                scenePlanMapper, contextEngine, snapshotQueryPort, stateStore, objectMapper,
-                new ScenePlanPromptRenderer());
+                contextEngine, snapshotQueryPort, stateStore, objectMapper);
         ChapterGenerationEntity generation = generation();
         ChapterGenerationSceneEntity current = generationScene(8L, 101L, "alarm", 1);
-        ChapterGenerationSceneEntity next = generationScene(9L, 102L, "escape", 2);
-        when(scenePlanMapper.selectById(101L)).thenReturn(planEntity(101L, scene("alarm", 1), objectMapper));
-        when(scenePlanMapper.selectById(102L)).thenReturn(planEntity(102L, scene("escape", 2), objectMapper));
         when(stateStore.previousCompletedScenes(7L, 1)).thenReturn(List.of());
-        when(stateStore.nextScene(7L, 1)).thenReturn(next);
-        when(stateStore.scenes(7L)).thenReturn(List.of(current, next));
         LlmProvider provider = mock(LlmProvider.class);
         when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, true, false, 16384, 4096));
         StoryContextSnapshot snapshot = mock(StoryContextSnapshot.class);
@@ -88,11 +74,10 @@ class ChapterGenerationPromptCompilerTest {
                 org.mockito.ArgumentCaptor.forClass(StoryContextBuildCommand.class);
         verify(contextEngine).build(commandCaptor.capture());
         var focus = commandCaptor.getValue().sceneGenerationFocus();
-        assertThat(focus.sceneContent()).contains("场景 1｜alarm", "因果前置：备用电源失效")
+        assertThat(focus.generationBriefContent()).contains("# Chapter Generation Brief", "因果前置")
                 .doesNotContain("\"sceneKey\"", "{");
-        assertThat(focus.nextSceneContent()).contains("场景 2｜escape").doesNotContain("{");
-        assertThat(focus.chapterSceneRoute()).contains("场景 1｜alarm", "场景 2｜escape")
-                .doesNotContain("\"sceneKey\"", "{");
+        assertThat(focus.briefFingerprint()).isEqualTo("brief-hash");
+        assertThat(commandCaptor.getValue().currentInput()).contains("当前只创作场景 alarm");
     }
 
     private ChapterGenerationEntity generation() {
@@ -101,6 +86,10 @@ class ChapterGenerationPromptCompilerTest {
         generation.setWorkId(17L);
         generation.setChapterId(65L);
         generation.setChapterPlanVersionId(31L);
+        generation.setBasisSnapshotJson("""
+                {"chapterGenerationBrief":{"templateVersion":"chapter-generation-brief-v1",
+                "fingerprint":"brief-hash","content":"# Chapter Generation Brief\\n- 因果前置"}}
+                """);
         return generation;
     }
 
@@ -113,22 +102,4 @@ class ChapterGenerationPromptCompilerTest {
         return scene;
     }
 
-    private ScenePlanVersionEntity planEntity(Long id, ScenePlanContent content, ObjectMapper objectMapper)
-            throws Exception {
-        ScenePlanVersionEntity entity = new ScenePlanVersionEntity();
-        entity.setId(id);
-        entity.setVersion(0);
-        entity.setDeleted(0);
-        entity.setContentJson(objectMapper.writeValueAsString(content));
-        return entity;
-    }
-
-    private ScenePlanContent scene(String key, int sequence) {
-        return new ScenePlanContent(
-                key, sequence, key, null, "深夜", null, "脱险", "舱门锁死", "紧张", "快速",
-                List.of(), List.of(), List.of(), "抵达安全区", "planned", List.of("beat-1"),
-                List.of("敌方已经潜入"), List.of("备用电源失效"), "从舰桥进入机舱",
-                List.of("主角取得控制权"), List.of("左臂仍有伤"), "core", List.of(),
-                List.of("不得新增援军"));
-    }
 }
