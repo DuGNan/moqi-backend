@@ -23,6 +23,8 @@ import com.dugnan.moqi.agent.entity.AgentRunStepEntity;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.StartAgentRunCommand;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
+import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief;
+import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
@@ -70,6 +72,8 @@ class SceneGenerationServiceImplTest {
     private AgentRuntime agentRuntime;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private ChapterGenerationBriefService briefService;
 
     private SceneGenerationServiceImpl service;
 
@@ -86,7 +90,9 @@ class SceneGenerationServiceImplTest {
                 agentRuntime,
                 new ObjectMapper(),
                 eventPublisher,
-                new com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy());
+                new com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy(),
+                briefService);
+        org.mockito.Mockito.lenient().when(briefService.compile(any(), any())).thenReturn(brief());
     }
 
     @Test
@@ -132,6 +138,9 @@ class SceneGenerationServiceImplTest {
         assertThat(result.agentRunId()).isEqualTo(61L);
         assertThat(generation.getValue().getLengthPreset()).isEqualTo("about_3000");
         assertThat(generation.getValue().getCustomWordCount()).isNull();
+        assertThat(generation.getValue().getBasisSnapshotJson())
+                .contains("chapterGenerationBrief", "chapter-generation-brief-v1", "fingerprint")
+                .contains("# Chapter Generation Brief");
         assertThat(run.getValue().input())
                 .containsEntry("targetChapterWordCount", 3000)
                 .containsEntry("plannedSceneCount", 2)
@@ -264,5 +273,13 @@ class SceneGenerationServiceImplTest {
     private AgentRunView run() {
         return new AgentRunView(61L, "scene_novel_generation", "queued", 2L, 12L,
                 41L, "load", 0L, null, null, null, null, null);
+    }
+
+    private ChapterGenerationBrief brief() {
+        return new ChapterGenerationBrief(
+                1, "chapter-generation-brief-v1", 2L, "作品", 12L, 1, "章节", "任务", "目标", "冲突",
+                List.of("开场"), List.of("读者信息"), List.of("因果"), List.of("变化"), List.of("人物边界"),
+                List.of(), List.of("结尾"), List.of("自由发挥"), List.of("禁止发明"), List.of(),
+                "fingerprint", LocalDateTime.of(2026, 8, 14, 10, 0), "# Chapter Generation Brief");
     }
 }

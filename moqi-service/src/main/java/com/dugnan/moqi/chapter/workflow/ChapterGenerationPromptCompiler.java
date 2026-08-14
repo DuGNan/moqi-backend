@@ -1,9 +1,8 @@
 package com.dugnan.moqi.chapter.workflow;
 
 import java.util.List;
-import java.util.stream.Collectors;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 
@@ -20,10 +19,6 @@ import com.dugnan.moqi.context.StoryContextProfile;
 import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.llm.LlmProvider;
-import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
-import com.dugnan.moqi.planning.ScenePlanPromptRenderer;
-import com.dugnan.moqi.planning.entity.ScenePlanVersionEntity;
-import com.dugnan.moqi.planning.mapper.ScenePlanVersionMapper;
 
 /**
  * @author dgn
@@ -33,26 +28,20 @@ import com.dugnan.moqi.planning.mapper.ScenePlanVersionMapper;
 @Component
 public class ChapterGenerationPromptCompiler {
 
-    private final ScenePlanVersionMapper scenePlanMapper;
     private final StoryContextEngine contextEngine;
     private final StoryContextSnapshotQueryPort snapshotQueryPort;
     private final ChapterGenerationStateStore stateStore;
     private final ObjectMapper objectMapper;
-    private final ScenePlanPromptRenderer promptRenderer;
 
     public ChapterGenerationPromptCompiler(
-            ScenePlanVersionMapper scenePlanMapper,
             StoryContextEngine contextEngine,
             StoryContextSnapshotQueryPort snapshotQueryPort,
             ChapterGenerationStateStore stateStore,
-            ObjectMapper objectMapper,
-            ScenePlanPromptRenderer promptRenderer) {
-        this.scenePlanMapper = scenePlanMapper;
+            ObjectMapper objectMapper) {
         this.contextEngine = contextEngine;
         this.snapshotQueryPort = snapshotQueryPort;
         this.stateStore = stateStore;
         this.objectMapper = objectMapper;
-        this.promptRenderer = promptRenderer;
     }
 
     public StoryContextSnapshot compileSnapshot(
@@ -63,8 +52,7 @@ public class ChapterGenerationPromptCompiler {
         if (scene.getContextSnapshotId() != null) {
             return snapshotQueryPort.load(scene.getContextSnapshotId());
         }
-        ScenePlanVersionEntity plan = requirePlan(scene.getScenePlanVersionId());
-        ScenePlanContent planContent = read(plan.getContentJson(), ScenePlanContent.class);
+        FrozenBrief brief = frozenBrief(generation);
         List<SceneGenerationContextFocus.PreviousSceneDraft> allPrevious = stateStore
                 .previousCompletedScenes(generation.getId(), scene.getSequenceNo()).stream()
                 .map(item -> new SceneGenerationContextFocus.PreviousSceneDraft(
@@ -74,8 +62,6 @@ public class ChapterGenerationPromptCompiler {
                 ? null : allPrevious.get(allPrevious.size() - 1);
         List<SceneGenerationContextFocus.PreviousSceneDraft> previous = allPrevious.isEmpty()
                 ? List.of() : allPrevious.subList(0, allPrevious.size() - 1);
-        ChapterGenerationSceneEntity nextScene = stateStore.nextScene(generation.getId(), scene.getSequenceNo());
-        String nextSceneContent = nextScene == null ? null : scenePlanContent(nextScene.getScenePlanVersionId());
         int contextWindow = provider.capabilities().maxContextTokens() == null
                 ? 16384 : provider.capabilities().maxContextTokens();
         int reserve = Math.min(
@@ -83,9 +69,8 @@ public class ChapterGenerationPromptCompiler {
         StoryContextSnapshot snapshot = contextEngine.build(contextBuildCommand(
                 generation.getWorkId(), generation.getChapterId(), contextWindow, reserve,
                 new SceneGenerationContextFocus(
-                        generation.getChapterPlanVersionId(), plan.getVersion(), plan.getId(), scene.getSceneKey(),
-                        chapterSceneRoute(generation.getId()), promptRenderer.render(planContent), nextSceneContent,
-                        immediatePrevious, previous), wordRange));
+                        brief.content(), brief.fingerprint(), brief.templateVersion(), scene.getSceneKey(),
+                        immediatePrevious, previous), wordRange, scene.getSceneKey()));
         stateStore.markSceneRunning(scene, snapshot.id());
         return snapshot;
     }
@@ -97,6 +82,17 @@ public class ChapterGenerationPromptCompiler {
             int outputReserve,
             SceneGenerationContextFocus focus,
             SceneWordRange wordRange) {
+        return contextBuildCommand(workId, chapterId, contextWindow, outputReserve, focus, wordRange, null);
+    }
+
+    public StoryContextBuildCommand contextBuildCommand(
+            Long workId,
+            Long chapterId,
+            int contextWindow,
+            int outputReserve,
+            SceneGenerationContextFocus focus,
+            SceneWordRange wordRange,
+            String currentSceneKey) {
         return new StoryContextBuildCommand(
                 StoryContextProfile.SCENE_GENERATION,
                 workId,
@@ -104,7 +100,7 @@ public class ChapterGenerationPromptCompiler {
                 null,
                 null,
                 "创作场景候选正文",
-                generationInstruction(wordRange),
+                generationInstruction(wordRange, currentSceneKey),
                 null,
                 contextWindow,
                 outputReserve,
@@ -113,7 +109,13 @@ public class ChapterGenerationPromptCompiler {
     }
 
     public String generationInstruction(SceneWordRange wordRange) {
-        return "请根据已发布的整章场景路线、当前场景、下一场目标和 Story Context 创作本场候选正文。"
+        return generationInstruction(wordRange, null);
+    }
+
+    public String generationInstruction(SceneWordRange wordRange, String currentSceneKey) {
+        String currentScene = currentSceneKey == null ? "" : "当前只创作场景 " + currentSceneKey + "。";
+        return "请根据冻结的 Chapter Generation Brief 和 Story Context 创作本场候选正文。"
+                + currentScene
                 + "若提供上一场完整正文，必须从其最后一个动作和未完成目标自然续写；禁止复述已经发生的事件或台词。"
                 + "持续维护时间、地点、人物位置、伤势、道具和未完成目标的连续性，不得新增或改变权威事实。正文长度必须严格控制在 "
                 + wordRange.minimum() + " 至 " + wordRange.maximum()
@@ -145,30 +147,21 @@ public class ChapterGenerationPromptCompiler {
                 + " 个中文字符之间；只输出修订后的完整整章正文。";
     }
 
-    private String chapterSceneRoute(Long generationId) {
-        return stateStore.scenes(generationId).stream()
-                .map(scene -> scenePlanContent(scene.getScenePlanVersionId()))
-                .collect(Collectors.joining("\n\n"));
-    }
-
-    private String scenePlanContent(Long scenePlanVersionId) {
-        ScenePlanVersionEntity plan = requirePlan(scenePlanVersionId);
-        return promptRenderer.render(read(plan.getContentJson(), ScenePlanContent.class));
-    }
-
-    private ScenePlanVersionEntity requirePlan(Long scenePlanVersionId) {
-        ScenePlanVersionEntity plan = scenePlanMapper.selectById(scenePlanVersionId);
-        if (plan == null || Integer.valueOf(1).equals(plan.getDeleted())) {
-            throw new BusinessException(ErrorCode.SCENE_PLAN_NOT_FOUND, "场景规划叶子节点不存在");
-        }
-        return plan;
-    }
-
-    private <T> T read(String value, Class<T> type) {
+    private FrozenBrief frozenBrief(ChapterGenerationEntity generation) {
         try {
-            return objectMapper.readValue(value, type);
+            JsonNode brief = objectMapper.readTree(generation.getBasisSnapshotJson()).path("chapterGenerationBrief");
+            String content = brief.path("content").asText(null);
+            String fingerprint = brief.path("fingerprint").asText(null);
+            String templateVersion = brief.path("templateVersion").asText(null);
+            if (content == null || fingerprint == null || templateVersion == null) {
+                throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "生成批次缺少冻结的章节正文生成说明");
+            }
+            return new FrozenBrief(content, fingerprint, templateVersion);
         } catch (JsonProcessingException exception) {
             throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "已持久化生成数据无法读取", exception);
         }
+    }
+
+    private record FrozenBrief(String content, String fingerprint, String templateVersion) {
     }
 }

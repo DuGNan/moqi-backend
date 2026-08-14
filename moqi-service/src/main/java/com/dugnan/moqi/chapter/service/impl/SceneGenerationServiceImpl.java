@@ -24,6 +24,7 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.RetryAgentStepCommand;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.StartAgentRunCommand;
 import com.dugnan.moqi.agent.entity.AgentRunStepEntity;
 import com.dugnan.moqi.agent.mapper.AgentRunStepMapper;
+import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneList;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneView;
@@ -35,6 +36,7 @@ import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
+import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy;
@@ -45,10 +47,9 @@ import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.planning.PlanningModels.ChapterPlanView;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanView;
 import com.dugnan.moqi.planning.PublishedScenePlanQueryPort;
+import com.dugnan.moqi.sourcechain.SourcePropagationService;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
-import com.dugnan.moqi.sourcechain.SourcePropagationService;
-import com.dugnan.moqi.planning.ScenePlanConsistencyService;
 
 /**
  * @author dgn
@@ -82,17 +83,12 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
     private final ChapterGenerationLengthPolicy lengthPolicy;
+    private final ChapterGenerationBriefService briefService;
     private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
-    private ScenePlanConsistencyService consistencyService = ScenePlanConsistencyService.noop();
 
     @Autowired
     public void setSourcePropagationService(SourcePropagationService sourcePropagationService) {
         this.sourcePropagationService = sourcePropagationService;
-    }
-
-    @Autowired
-    public void setConsistencyService(ScenePlanConsistencyService consistencyService) {
-        this.consistencyService = consistencyService;
     }
 
     public SceneGenerationServiceImpl(
@@ -106,7 +102,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             AgentRuntime agentRuntime,
             ObjectMapper objectMapper,
             ApplicationEventPublisher eventPublisher,
-            ChapterGenerationLengthPolicy lengthPolicy) {
+            ChapterGenerationLengthPolicy lengthPolicy,
+            ChapterGenerationBriefService briefService) {
         this.chapterMapper = chapterMapper;
         this.generationMapper = generationMapper;
         this.sceneMapper = sceneMapper;
@@ -118,6 +115,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         this.objectMapper = objectMapper;
         this.eventPublisher = eventPublisher;
         this.lengthPolicy = lengthPolicy;
+        this.briefService = briefService;
     }
 
     @Override
@@ -132,7 +130,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         ChapterPlanView chapterPlan = request.scenePlanNo() == null
                 ? scenePlanQueryPort.loadCurrent(chapterId)
                 : scenePlanQueryPort.loadPublished(chapterId, request.scenePlanNo());
-        consistencyService.requireGenerationAllowed(chapterId, chapterPlan.id());
+        ChapterGenerationBrief generationBrief = briefService.compile(chapterId, chapterPlan);
         List<ScenePlanView> plannedScenes = chapterPlan.scenes().stream()
                 .filter(scene -> "planned".equals(scene.content().status()))
                 .sorted(Comparator.comparing(ScenePlanView::sequence))
@@ -142,7 +140,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         }
         LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
         AiTaskEntity task = createTask(chapter);
-        ChapterGenerationEntity generation = createGeneration(chapter, chapterPlan, request, task, executionConfig);
+        ChapterGenerationEntity generation = createGeneration(
+                chapter, chapterPlan, request, task, executionConfig, generationBrief);
         generationMapper.insert(generation);
         sourcePropagationService.generationCreated(chapterId, generation.getId());
 
@@ -297,7 +296,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             ChapterPlanView plan,
             CreateSceneGenerationRequest request,
             AiTaskEntity task,
-            LlmExecutionConfig executionConfig) {
+            LlmExecutionConfig executionConfig,
+            ChapterGenerationBrief generationBrief) {
         ChapterGenerationEntity generation = new ChapterGenerationEntity();
         generation.setWorkId(chapter.getWorkId());
         generation.setChapterId(chapter.getId());
@@ -324,6 +324,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         basisSnapshot.put("lengthPreset", lengthPreset);
         basisSnapshot.put("targetChapterWordCount", targetWordCount);
         basisSnapshot.put("temperature", request.temperature());
+        basisSnapshot.put("chapterGenerationBrief", briefSnapshot(generationBrief));
         generation.setBasisSnapshotJson(json(basisSnapshot));
         generation.setExecutionConfigJson(json(executionConfig.descriptor()));
         generation.setWordCount(0);
@@ -332,6 +333,34 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         generation.setDeleted(0);
         generation.setVersion(0);
         return generation;
+    }
+
+    private Map<String, Object> briefSnapshot(ChapterGenerationBrief brief) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("schemaVersion", brief.schemaVersion());
+        snapshot.put("templateVersion", brief.templateVersion());
+        snapshot.put("workId", brief.workId());
+        snapshot.put("workTitle", brief.workTitle());
+        snapshot.put("chapterId", brief.chapterId());
+        snapshot.put("chapterNo", brief.chapterNo());
+        snapshot.put("chapterTitle", brief.chapterTitle());
+        snapshot.put("chapterPurpose", brief.chapterPurpose());
+        snapshot.put("chapterGoal", brief.chapterGoal());
+        snapshot.put("coreConflict", brief.coreConflict());
+        snapshot.put("openingConditions", brief.openingConditions());
+        snapshot.put("readerKnowledge", brief.readerKnowledge());
+        snapshot.put("eventCausality", brief.eventCausality());
+        snapshot.put("stateChanges", brief.stateChanges());
+        snapshot.put("characterConstraints", brief.characterConstraints());
+        snapshot.put("entityExplanations", brief.entityExplanations());
+        snapshot.put("requiredEndingState", brief.requiredEndingState());
+        snapshot.put("creativeFreedom", brief.creativeFreedom());
+        snapshot.put("prohibitedInventions", brief.prohibitedInventions());
+        snapshot.put("sourceRefs", brief.sourceRefs());
+        snapshot.put("fingerprint", brief.fingerprint());
+        snapshot.put("compiledAt", brief.compiledAt().toString());
+        snapshot.put("content", brief.content());
+        return snapshot;
     }
 
     private void saveScenes(

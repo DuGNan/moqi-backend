@@ -22,6 +22,8 @@ public enum StoryContextSourceType {
     CHAPTER_BRIEF,
     /** 章节大纲。 */
     CHAPTER_OUTLINE,
+    /** 固定来源编译的人类可读章节正文生成说明。 */
+    CHAPTER_GENERATION_BRIEF,
     NARRATIVE_PLAN,
     /** 正式设定。 */
     SETTING_ENTRY,

@@ -6,22 +6,25 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefPreview;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ChapterContent;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ContentSaved;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
-import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
-import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.CreateEvaluationRequest;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationReportView;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.RetryEvaluationRequest;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.RevisionCandidateView;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
+import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
-import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.common.api.ApiResponse;
 
 /**
@@ -34,6 +37,7 @@ import com.dugnan.moqi.common.api.ApiResponse;
 public class ChapterGenerationController {
 
     private final ChapterGenerationService chapterGenerationService;
+    private final ChapterGenerationBriefService briefService;
     private final SceneGenerationService sceneGenerationService;
     private final GenerationEvaluationService evaluationService;
 
@@ -46,10 +50,12 @@ public class ChapterGenerationController {
     public ChapterGenerationController(
             ChapterGenerationService chapterGenerationService,
             SceneGenerationService sceneGenerationService,
-            GenerationEvaluationService evaluationService) {
+            GenerationEvaluationService evaluationService,
+            ChapterGenerationBriefService briefService) {
         this.chapterGenerationService = chapterGenerationService;
         this.sceneGenerationService = sceneGenerationService;
         this.evaluationService = evaluationService;
+        this.briefService = briefService;
     }
 
     /**
@@ -64,6 +70,20 @@ public class ChapterGenerationController {
             @PathVariable Long chapterId,
             @RequestBody CreateSceneGenerationRequest request) {
         return ApiResponse.success(sceneGenerationService.create(chapterId, request));
+    }
+
+    /**
+     * 编译当前或指定已发布场景规划的只读章节正文生成说明。
+     *
+     * @param chapterId 章节 ID
+     * @param scenePlanNo 可选场景规划版本号
+     * @return 人类可读说明及固定来源元数据
+     */
+    @GetMapping("/{chapterId}/generation-brief-preview")
+    public ApiResponse<GenerationBriefPreview> previewGenerationBrief(
+            @PathVariable Long chapterId,
+            @RequestParam(required = false) Integer scenePlanNo) {
+        return ApiResponse.success(briefService.preview(chapterId, scenePlanNo));
     }
 
     @PostMapping("/{chapterId}/generations/{generationId}/evaluation-reports")

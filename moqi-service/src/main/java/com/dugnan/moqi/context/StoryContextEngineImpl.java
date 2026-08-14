@@ -218,11 +218,14 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             add(candidates, StoryContextSourceType.TASK_RULE, "task", "SYSTEM", command.taskInstruction(),
                     true, 990, 1, null, null, Category.STRUCTURE);
         }
-        add(candidates, StoryContextSourceType.WORK_METADATA, id(work.getId()), "SYSTEM",
-                "作品：" + work.getTitle(), false, 900, 10, work.getVersion(), work.getGmtModified(), Category.STRUCTURE);
+        boolean sceneGeneration = command.sceneGenerationFocus() != null;
+        if (!sceneGeneration) {
+            add(candidates, StoryContextSourceType.WORK_METADATA, id(work.getId()), "SYSTEM",
+                    "作品：" + work.getTitle(), false, 900, 10, work.getVersion(), work.getGmtModified(), Category.STRUCTURE);
+        }
         addDiscussionFocus(candidates, command);
         addSceneGenerationFocus(candidates, command);
-        if (chapter != null) {
+        if (chapter != null && !sceneGeneration) {
             if (command.discussionFocus() == null) {
                 addBrief(candidates, command, chapter);
             }
@@ -232,7 +235,9 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                         chapter.getContent(), false, 700, 300, chapter.getVersion(), chapter.getGmtModified(), Category.CURRENT);
             }
         }
-        addKnowledge(candidates, command, chapter);
+        if (!sceneGeneration) {
+            addKnowledge(candidates, command, chapter);
+        }
         if (StringUtils.hasText(command.targetText())) {
             add(candidates, StoryContextSourceType.TARGET_TEXT, "target", "SYSTEM", command.targetText(),
                     command.profile() != StoryContextProfile.CHAPTER_DISCUSSION, 850, 310, null, null, Category.CURRENT);
@@ -321,16 +326,9 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         if (focus == null) {
             return;
         }
-        add(candidates, StoryContextSourceType.SCENE_PLAN, id(focus.chapterPlanVersionId()), "SYSTEM",
-                "整章场景路线：\n" + focus.chapterSceneRoute(), true, 996, 24, focus.chapterPlanNo(), null,
+        add(candidates, StoryContextSourceType.CHAPTER_GENERATION_BRIEF, focus.briefFingerprint(), "SYSTEM",
+                focus.generationBriefContent(), true, 996, 24, focus.briefTemplateVersion(), null,
                 Category.STRUCTURE);
-        add(candidates, StoryContextSourceType.SCENE_PLAN, id(focus.scenePlanVersionId()), "SYSTEM",
-                "当前场景：\n" + focus.sceneContent(), true, 995, 25, focus.chapterPlanNo(), null, Category.STRUCTURE);
-        if (focus.nextSceneContent() != null) {
-            add(candidates, StoryContextSourceType.SCENE_PLAN, "next:" + id(focus.scenePlanVersionId()), "SYSTEM",
-                    "下一场目标：\n" + focus.nextSceneContent(), true, 994, 26, focus.chapterPlanNo(), null,
-                    Category.STRUCTURE);
-        }
         if (focus.immediatePreviousScene() != null) {
             SceneGenerationContextFocus.PreviousSceneDraft previous = focus.immediatePreviousScene();
             add(candidates, StoryContextSourceType.GENERATED_SCENE_DRAFT, id(previous.generationSceneId()), "SYSTEM",
@@ -618,6 +616,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
     private StoryContextAuthorityStatus authorityStatus(StoryContextSourceType sourceType) {
         return switch (sourceType) {
             case SYSTEM_RULE, TASK_RULE, WORK_METADATA, CHAPTER_BRIEF, CHAPTER_OUTLINE,
+                    CHAPTER_GENERATION_BRIEF,
                     SETTING_ENTRY, FORESHADOWING, CHAPTER_SUMMARY, CHAPTER_KEY_EVENT, SCENE_PLAN ->
                     StoryContextAuthorityStatus.CONFIRMED;
             case DECISION_FOCUS -> StoryContextAuthorityStatus.PENDING;
