@@ -23,6 +23,7 @@ import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.SceneWordRange;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationModelInvoker.SceneInvocationContext;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationPromptCompiler.WholeChapterPrompt;
 import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmProvider;
@@ -126,6 +127,35 @@ class SceneNovelGenerationWorkflowDefinitionTest {
     }
 
     @Test
+    void invokesOneShotWholeChapterGenerationFromFrozenPrompt() {
+        ChapterGenerationEntity generation = generation();
+        generation.setContentAssemblyMode("whole_chapter_once");
+        WholeChapterPrompt prompt = new WholeChapterPrompt(List.of(), "source-hash", "whole-chapter-v1");
+        AgentStepExecutionContext context = context("generate_chapter");
+        AgentStepResult expected = AgentStepResult.completed(
+                Map.of("content", "整章正文"), Map.of(), "finalize_generation");
+        when(stateStore.requireGeneration(7L)).thenReturn(generation);
+        when(promptCompiler.compileWholeChapter(generation, 3000)).thenReturn(prompt);
+        when(modelInvoker.generateWholeChapter(generation, prompt, 3000, context)).thenReturn(expected);
+
+        assertThat(workflow.execute("generate_chapter", context)).isSameAs(expected);
+    }
+
+    @Test
+    void skipsProviderWhenWholeChapterResultWasAlreadyPersistedDuringRecovery() {
+        ChapterGenerationEntity generation = generation();
+        generation.setGeneratedContent("已冻结整章正文");
+        generation.setGenerationTemplateVersion("whole-chapter-v1");
+        when(stateStore.requireGeneration(7L)).thenReturn(generation);
+
+        AgentStepResult result = workflow.execute("generate_chapter", context("generate_chapter"));
+
+        assertThat(result.outputSummary()).containsEntry("skipped", true);
+        assertThat(result.nextStepKey()).isEqualTo("finalize_generation");
+        verify(modelInvoker, never()).generateWholeChapter(any(), any(), any(Integer.class), any());
+    }
+
+    @Test
     void persistsAndPublishesEachLifecycleTransition() {
         ChapterGenerationEntity generation = generation();
         ChapterGenerationSceneEntity scene = scene("running");
@@ -142,6 +172,9 @@ class SceneNovelGenerationWorkflowDefinitionTest {
         when(stateStore.finalizeGeneration(7L)).thenReturn(generation);
         workflow.applyResult("finalize_generation", context("finalize_generation"), result);
         verify(completionHandler).generationCompleted(generation);
+
+        workflow.applyResult("generate_chapter", context("generate_chapter"), result);
+        verify(stateStore).applyWholeChapterResult(7L, result);
     }
 
     @Test

@@ -5,6 +5,7 @@ import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRe
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneList;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneView;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.RetrySceneRequest;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.RetryGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 
 /**
@@ -25,6 +26,15 @@ public interface SceneGenerationService {
     AgentRunView cancel(Long generationId);
 
     AgentRunView retryScene(Long generationId, Long sceneId, RetrySceneRequest request);
+
+    /**
+     * 重试失败的整章一次生成步骤，继续使用批次冻结输入。
+     *
+     * @param generationId 生成批次 ID
+     * @param request 重试请求
+     * @return Agent 运行详情
+     */
+    AgentRunView retryGeneration(Long generationId, RetryGenerationRequest request);
 
     /** 重试失败的整章收束步骤，不重新生成已完成的场景。 */
     AgentRunView retryCohesion(Long generationId);

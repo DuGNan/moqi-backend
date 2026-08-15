@@ -97,6 +97,31 @@ class ChapterGenerationStateStoreTest {
                 .contains("generated_content", "word_count", "generation_status", "version");
     }
 
+    @Test
+    void persistsWholeChapterCandidateAndFinalizesWithoutSceneRows() {
+        ChapterGenerationEntity generation = generation("whole_chapter_once", "not_applicable");
+        generation.setGeneratedContent("整章候选正文");
+        when(generationMapper.selectById(7L)).thenReturn(generation);
+        when(generationMapper.update(isNull(), any())).thenReturn(1);
+        AgentStepResult result = AgentStepResult.completed(Map.of(
+                "content", "整章候选正文",
+                "modelCallId", 41L,
+                "templateVersion", "whole-chapter-v1",
+                "finishReason", "stop"), Map.of(), "finalize_generation");
+
+        stateStore.applyWholeChapterResult(7L, result);
+        ChapterGenerationEntity finalized = stateStore.finalizeGeneration(7L);
+
+        assertThat(finalized).isSameAs(generation);
+        verify(sceneMapper, never()).selectList(any());
+        ArgumentCaptor<UpdateWrapper<ChapterGenerationEntity>> captor =
+                ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(generationMapper, org.mockito.Mockito.times(2)).update(isNull(), captor.capture());
+        assertThat(captor.getAllValues().get(0).getSqlSet())
+                .contains("generation_model_call_id", "generation_template_version", "generation_finish_reason");
+        assertThat(captor.getAllValues().get(1).getSqlSet()).contains("generation_status", "version");
+    }
+
     private ChapterGenerationEntity generation(String assemblyMode, String cohesionStatus) {
         ChapterGenerationEntity generation = new ChapterGenerationEntity();
         generation.setId(7L);

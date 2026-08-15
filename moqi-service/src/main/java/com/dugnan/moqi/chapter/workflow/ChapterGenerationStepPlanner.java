@@ -13,6 +13,7 @@ import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
 public class ChapterGenerationStepPlanner {
 
     public static final String GENERATE_PREFIX = "generate_scene:";
+    public static final String GENERATE_CHAPTER = "generate_chapter";
     public static final String COHERE = "cohere_chapter";
     public static final String FINALIZE = "finalize_generation";
 
@@ -23,6 +24,10 @@ public class ChapterGenerationStepPlanner {
     }
 
     public String nextStep(Long generationId, int sequenceNo) {
+        if (ChapterGenerationStateStore.ASSEMBLY_WHOLE_CHAPTER_ONCE.equals(
+                stateStore.requireGeneration(generationId).getContentAssemblyMode())) {
+            return GENERATE_CHAPTER;
+        }
         ChapterGenerationSceneEntity next = stateStore.nextScene(generationId, sequenceNo);
         if (next != null) {
             return GENERATE_PREFIX + next.getSceneKey();

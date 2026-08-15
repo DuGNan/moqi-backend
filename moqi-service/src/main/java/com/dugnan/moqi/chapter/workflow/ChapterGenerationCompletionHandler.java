@@ -46,6 +46,11 @@ public class ChapterGenerationCompletionHandler {
                 scene.getId(), scene.getSceneKey(), "completed"));
     }
 
+    public void generationDelta(ChapterGenerationEntity generation, String delta) {
+        eventPublisher.publishEvent(SceneGenerationEvent.generationDelta(
+                generation.getChapterId(), generation.getId(), delta));
+    }
+
     public void generationFailed(ChapterGenerationEntity generation) {
         eventPublisher.publishEvent(SceneGenerationEvent.generation(
                 "generation.failed", generation.getChapterId(), generation.getId(), "failed"));

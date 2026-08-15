@@ -1,5 +1,8 @@
 package com.dugnan.moqi.chapter.service.impl;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -29,6 +32,7 @@ import com.dugnan.moqi.chapter.capacity.ChapterCapacityAssessmentService;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneList;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneView;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.RetryGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.RetrySceneRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
@@ -41,6 +45,7 @@ import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationPromptCompiler;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
@@ -71,7 +76,13 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private static final String SCENE_PENDING = "pending";
     private static final String SCENE_COPIED = "copied";
     private static final String PROMPT_TEMPLATE_VERSION = "scene-novel-v4";
-    private static final Set<String> SELECTION_MODES = Set.of("all", "continue_from", "rewrite_selected");
+    private static final String ASSEMBLY_WHOLE_CHAPTER_ONCE = "whole_chapter_once";
+    private static final String ASSEMBLY_COHESIVE_CHAPTER = "cohesive_chapter";
+    private static final String SELECTION_ALL = "all";
+    private static final String SELECTION_CONTINUE_FROM = "continue_from";
+    private static final String SELECTION_REWRITE_SELECTED = "rewrite_selected";
+    private static final Set<String> SELECTION_MODES =
+            Set.of(SELECTION_ALL, SELECTION_CONTINUE_FROM, SELECTION_REWRITE_SELECTED);
 
     private final ChapterMapper chapterMapper;
     private final ChapterGenerationMapper generationMapper;
@@ -148,19 +159,20 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
                 chapterPlan, generationBrief, targetWordCount,
                 request.capacityAssessmentId(), request.capacityDecision());
         LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
+        ChapterGenerationEntity baseGeneration = requireBaseGeneration(
+                request.baseGenerationId(), chapter, chapterPlan, request);
         AiTaskEntity task = createTask(chapter);
         ChapterGenerationEntity generation = createGeneration(
                 chapter, chapterPlan, request, task, executionConfig, generationBrief,
-                lengthPreset, targetWordCount, capacitySnapshot);
+                lengthPreset, targetWordCount, capacitySnapshot, baseGeneration);
         generationMapper.insert(generation);
         sourcePropagationService.generationCreated(chapterId, generation.getId());
 
-        ChapterGenerationEntity baseGeneration = requireBaseGeneration(
-                request.baseGenerationId(), chapter, chapterPlan, request);
-        Map<Long, ChapterGenerationSceneEntity> baseScenes = baseGeneration == null
-                ? Map.of() : baseScenes(baseGeneration.getId());
-        Set<Long> selectedSceneIds = selectedSceneIds(plannedScenes, request);
-        saveScenes(generation, plannedScenes, selectedSceneIds, baseScenes);
+        if (!ASSEMBLY_WHOLE_CHAPTER_ONCE.equals(generation.getContentAssemblyMode())) {
+            Map<Long, ChapterGenerationSceneEntity> baseScenes = baseScenes(baseGeneration.getId());
+            Set<Long> selectedSceneIds = selectedSceneIds(plannedScenes, request);
+            saveScenes(generation, plannedScenes, selectedSceneIds, baseScenes);
+        }
 
         AgentRunView run = agentRuntime.start(new StartAgentRunCommand(
                 LOCAL_USER,
@@ -197,7 +209,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     @Override
     public SceneGenerationCreated regenerate(Long generationId, CreateSceneGenerationRequest request) {
         ChapterGenerationEntity source = requireGeneration(generationId);
-        if (!Set.of("continue_from", "rewrite_selected").contains(normalizedMode(request.selectionMode()))) {
+        if (!Set.of(SELECTION_CONTINUE_FROM, SELECTION_REWRITE_SELECTED)
+                .contains(normalizedMode(request.selectionMode()))) {
             throw invalidSelection("重新生成必须使用 continue_from 或 rewrite_selected 选择模式");
         }
         if (request.baseGenerationId() != null && !generationId.equals(request.baseGenerationId())) {
@@ -206,7 +219,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         return create(source.getChapterId(), new CreateSceneGenerationRequest(
                 request.scenePlanNo(), request.selectionMode(), request.fromSceneKey(), request.sceneKeys(),
                 generationId, request.idempotencyKey(), request.lengthPreset(), request.customWordCount(),
-                request.temperature(), request.capacityAssessmentId(), request.capacityDecision()));
+                request.temperature(), request.capacityAssessmentId(), request.capacityDecision(),
+                request.includeCurrentContent()));
     }
 
     @Override
@@ -305,6 +319,38 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         return run;
     }
 
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public AgentRunView retryGeneration(Long generationId, RetryGenerationRequest request) {
+        ChapterGenerationEntity generation = requireGeneration(generationId);
+        if (!STATUS_FAILED.equals(generation.getGenerationStatus())
+                || !ASSEMBLY_WHOLE_CHAPTER_ONCE.equals(generation.getContentAssemblyMode())
+                || generation.getAgentRunId() == null
+                || request == null || request.expectedAttempt() == null) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "当前整章生成不能重试");
+        }
+        AgentRunStepEntity step = latestStep(generation.getAgentRunId(), "generate_chapter");
+        if (step == null || !STATUS_FAILED.equals(step.getStepStatus())
+                || !Integer.valueOf(1).equals(step.getRetryable())
+                || !request.expectedAttempt().equals(step.getAttempt())) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "整章生成状态已变化，请刷新后重试");
+        }
+        AgentRunView run = agentRuntime.retryStep(new RetryAgentStepCommand(
+                generation.getAgentRunId(), "generate_chapter", request.expectedAttempt()));
+        int changed = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
+                .eq("id", generationId).eq("version", generation.getVersion())
+                .eq("generation_status", STATUS_FAILED)
+                .eq("content_assembly_mode", ASSEMBLY_WHOLE_CHAPTER_ONCE)
+                .set("generation_status", STATUS_RUNNING)
+                .set("generated_content", null).set("word_count", 0)
+                .set("generation_model_call_id", null).set("generation_finish_reason", null)
+                .set("version", generation.getVersion() + 1).set("gmt_modified", LocalDateTime.now()));
+        if (changed != 1) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "整章生成状态已变化，请刷新后重试");
+        }
+        return run;
+    }
+
     private ChapterGenerationEntity createGeneration(
             ChapterEntity chapter,
             ChapterPlanView plan,
@@ -314,19 +360,26 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             ChapterGenerationBrief generationBrief,
             String lengthPreset,
             int targetWordCount,
-            Map<String, Object> capacitySnapshot) {
+            Map<String, Object> capacitySnapshot,
+            ChapterGenerationEntity baseGeneration) {
         ChapterGenerationEntity generation = new ChapterGenerationEntity();
         generation.setWorkId(chapter.getWorkId());
         generation.setChapterId(chapter.getId());
         generation.setChapterPlanVersionId(plan.id());
         generation.setOutlineId(plan.outlineId());
         generation.setOutlineRevision(plan.outlineRevision());
+        generation.setBaseGenerationId(baseGeneration == null ? null : baseGeneration.getId());
         generation.setGenerationStatus(STATUS_QUEUED);
         generation.setGenerationMode("scene_novel_generation");
-        generation.setContentAssemblyMode("cohesive_chapter");
-        generation.setCohesionStatus("pending");
-        generation.setCohesionTemplateVersion("chapter-cohesion-v1");
-        generation.setSelectionMode(normalizedMode(request.selectionMode()));
+        String selectionMode = normalizedMode(request.selectionMode());
+        boolean wholeChapter = SELECTION_ALL.equals(selectionMode);
+        generation.setContentAssemblyMode(wholeChapter
+                ? ASSEMBLY_WHOLE_CHAPTER_ONCE : ASSEMBLY_COHESIVE_CHAPTER);
+        generation.setCohesionStatus(wholeChapter ? "not_applicable" : "pending");
+        generation.setCohesionTemplateVersion(wholeChapter ? null : "chapter-cohesion-v1");
+        generation.setGenerationTemplateVersion(wholeChapter
+                ? ChapterGenerationPromptCompiler.WHOLE_CHAPTER_TEMPLATE_VERSION : null);
+        generation.setSelectionMode(selectionMode);
         generation.setIdempotencyKey(request.idempotencyKey());
         generation.setLengthPreset(lengthPreset);
         generation.setCustomWordCount("custom".equals(lengthPreset) ? request.customWordCount() : null);
@@ -340,6 +393,12 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         basisSnapshot.put("temperature", request.temperature());
         basisSnapshot.put("chapterGenerationBrief", briefSnapshot(generationBrief));
         basisSnapshot.put("chapterCapacityAssessment", capacitySnapshot);
+        if (Boolean.TRUE.equals(request.includeCurrentContent())) {
+            basisSnapshot.put("currentProseBasis", currentProseSnapshot(chapter));
+        }
+        if (baseGeneration != null && SELECTION_ALL.equals(selectionMode)) {
+            basisSnapshot.put("baseGeneration", baseGenerationSnapshot(baseGeneration));
+        }
         generation.setBasisSnapshotJson(json(basisSnapshot));
         generation.setExecutionConfigJson(json(executionConfig.descriptor()));
         generation.setWordCount(0);
@@ -348,6 +407,24 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         generation.setDeleted(0);
         generation.setVersion(0);
         return generation;
+    }
+
+    private Map<String, Object> currentProseSnapshot(ChapterEntity chapter) {
+        String content = StringUtils.hasText(chapter.getContent()) ? chapter.getContent() : "";
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("chapterVersion", chapter.getVersion());
+        snapshot.put("contentHash", sha256(content));
+        snapshot.put("content", content);
+        return snapshot;
+    }
+
+    private Map<String, Object> baseGenerationSnapshot(ChapterGenerationEntity baseGeneration) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("generationId", baseGeneration.getId());
+        snapshot.put("contentAssemblyMode", baseGeneration.getContentAssemblyMode());
+        snapshot.put("contentHash", sha256(baseGeneration.getGeneratedContent()));
+        snapshot.put("content", baseGeneration.getGeneratedContent());
+        return snapshot;
     }
 
     private Map<String, Object> briefSnapshot(ChapterGenerationBrief brief) {
@@ -397,8 +474,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
                 scene.setWordCount(0);
             } else {
                 ChapterGenerationSceneEntity source = baseScenes.get(planScene.scenePlanId());
-                if (source == null || !("completed".equals(source.getSceneStatus())
-                        || SCENE_COPIED.equals(source.getSceneStatus()))) {
+                if (!isReusableScene(source)) {
                     throw new BusinessException(ErrorCode.GENERATION_SELECTION_INVALID, "基础批次缺少可复用的场景候选");
                 }
                 scene.setSceneStatus(SCENE_COPIED);
@@ -419,10 +495,10 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
 
     private Set<Long> selectedSceneIds(List<ScenePlanView> scenes, CreateSceneGenerationRequest request) {
         String mode = normalizedMode(request.selectionMode());
-        if ("all".equals(mode)) {
+        if (SELECTION_ALL.equals(mode)) {
             return scenes.stream().map(ScenePlanView::scenePlanId).collect(Collectors.toSet());
         }
-        if ("continue_from".equals(mode)) {
+        if (SELECTION_CONTINUE_FROM.equals(mode)) {
             ScenePlanView first = scenes.stream().filter(scene -> scene.sceneKey().equals(request.fromSceneKey()))
                     .findFirst().orElseThrow(() -> invalidSelection("fromSceneKey 不属于当前场景计划"));
             return scenes.stream().filter(scene -> scene.sequence() >= first.sequence())
@@ -436,21 +512,29 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
                 .map(ScenePlanView::scenePlanId).collect(Collectors.toSet());
     }
 
+    private boolean isReusableScene(ChapterGenerationSceneEntity source) {
+        if (source == null) {
+            return false;
+        }
+        return "completed".equals(source.getSceneStatus()) || SCENE_COPIED.equals(source.getSceneStatus());
+    }
+
     private ChapterGenerationEntity requireBaseGeneration(
             Long baseGenerationId,
             ChapterEntity chapter,
             ChapterPlanView plan,
             CreateSceneGenerationRequest request) {
-        if ("all".equals(normalizedMode(request.selectionMode()))) {
-            if (baseGenerationId != null) {
-                throw invalidSelection("全量生成不接受 baseGenerationId");
-            }
+        boolean wholeChapter = SELECTION_ALL.equals(normalizedMode(request.selectionMode()));
+        if (wholeChapter && baseGenerationId == null) {
             return null;
         }
         ChapterGenerationEntity generation = requireGeneration(baseGenerationId);
         if (!chapter.getId().equals(generation.getChapterId())
                 || !plan.id().equals(generation.getChapterPlanVersionId())) {
             throw invalidSelection("基础生成批次不属于当前章节规划版本");
+        }
+        if (wholeChapter && !StringUtils.hasText(generation.getGeneratedContent())) {
+            throw invalidSelection("基础生成批次没有可参考的候选正文");
         }
         return generation;
     }
@@ -551,6 +635,13 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         if (!SELECTION_MODES.contains(normalizedMode(request.selectionMode()))) {
             throw invalidSelection("selectionMode 不合法");
         }
+        if (Boolean.TRUE.equals(request.includeCurrentContent()) && request.baseGenerationId() != null) {
+            throw invalidSelection("当前正文与基础生成候选不能同时作为生成基稿");
+        }
+        if (Boolean.TRUE.equals(request.includeCurrentContent())
+                && !SELECTION_ALL.equals(normalizedMode(request.selectionMode()))) {
+            throw invalidSelection("只有整章一次生成可以引用当前正文作为基稿");
+        }
         try {
             lengthPolicy.resolveTargetWordCount(
                     request.lengthPreset(), request.customWordCount());
@@ -560,7 +651,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     }
 
     private String normalizedMode(String value) {
-        return StringUtils.hasText(value) ? value.trim() : "all";
+        return StringUtils.hasText(value) ? value.trim() : SELECTION_ALL;
     }
 
     private BusinessException invalidSelection(String message) {
@@ -586,5 +677,19 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             input.put("temperature", request.temperature());
         }
         return input;
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] bytes = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder(bytes.length * 2);
+            for (byte item : bytes) {
+                builder.append(String.format("%02x", item));
+            }
+            return builder.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "SHA-256 不可用", exception);
+        }
     }
 }

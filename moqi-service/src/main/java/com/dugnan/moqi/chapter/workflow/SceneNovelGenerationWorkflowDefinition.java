@@ -85,6 +85,9 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         if (ChapterGenerationStepPlanner.COHERE.equals(stepKey)) {
             return cohereChapter(context, generationId);
         }
+        if (ChapterGenerationStepPlanner.GENERATE_CHAPTER.equals(stepKey)) {
+            return generateWholeChapter(context, generationId);
+        }
         if (!stepKey.startsWith(ChapterGenerationStepPlanner.GENERATE_PREFIX)) {
             throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "场景生成步骤键不合法");
         }
@@ -105,6 +108,10 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         }
         if (ChapterGenerationStepPlanner.COHERE.equals(stepKey)) {
             stateStore.applyCohesionResult(generationId, result);
+            return;
+        }
+        if (ChapterGenerationStepPlanner.GENERATE_CHAPTER.equals(stepKey)) {
+            stateStore.applyWholeChapterResult(generationId, result);
             return;
         }
         ChapterGenerationSceneEntity scene = stateStore.applySceneResult(generationId, result);
@@ -150,6 +157,21 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
         stateStore.markCohesionRunning(generationId);
         return modelInvoker.cohereChapter(generation, scenes,
                 targetChapterWordCount(context.input()), context);
+    }
+
+    private AgentStepResult generateWholeChapter(AgentStepExecutionContext context, Long generationId) {
+        ChapterGenerationEntity generation = stateStore.requireGeneration(generationId);
+        if (org.springframework.util.StringUtils.hasText(generation.getGeneratedContent())
+                && org.springframework.util.StringUtils.hasText(generation.getGenerationTemplateVersion())) {
+            return AgentStepResult.completed(Map.of("skipped", true), Map.of(),
+                    ChapterGenerationStepPlanner.FINALIZE);
+        }
+        int targetWordCount = targetChapterWordCount(context.input());
+        return modelInvoker.generateWholeChapter(
+                generation,
+                promptCompiler.compileWholeChapter(generation, targetWordCount),
+                targetWordCount,
+                context);
     }
 
     private SceneWordRange wordRange(Map<String, Object> input) {

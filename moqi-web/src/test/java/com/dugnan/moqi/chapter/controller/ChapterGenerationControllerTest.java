@@ -28,6 +28,7 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefPreview;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefSourceRef;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
+import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
@@ -124,6 +125,8 @@ class ChapterGenerationControllerTest {
                 7001L,
                 1L,
                 12L,
+                1202L,
+                null,
                 1201L,
                 4,
                 "preview",
@@ -134,8 +137,14 @@ class ChapterGenerationControllerTest {
                 "预览正文",
                 4,
                 9003L,
+                9004L,
+                9005L,
+                "current",
                 "scene_join_legacy",
                 "not_applicable",
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
@@ -146,6 +155,9 @@ class ChapterGenerationControllerTest {
         mvc.perform(get("/api/generations/7001"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.outlineId").value(1201))
+                .andExpect(jsonPath("$.data.chapterPlanVersionId").value(1202))
+                .andExpect(jsonPath("$.data.agentRunId").value(9004))
+                .andExpect(jsonPath("$.data.sourceSnapshotId").value(9005))
                 .andExpect(jsonPath("$.data.basisSnapshot.goal").value("隐藏房间回应林风"));
         mvc.perform(get("/api/chapters/12/generations/latest-preview"))
                 .andExpect(status().isOk())
@@ -167,6 +179,9 @@ class ChapterGenerationControllerTest {
                 .thenReturn(new GenerationRejected(7002L, "rejected", null));
         when(sceneGenerationService.regenerate(Mockito.eq(7001L), Mockito.any()))
                 .thenReturn(new SceneGenerationCreated(7003L, 9006L, 1L, 12L, "queued", null));
+        when(sceneGenerationService.retryGeneration(Mockito.eq(7004L), Mockito.any()))
+                .thenReturn(new AgentRunView(9007L, "scene_novel_generation", "running", 1L, 12L,
+                        9008L, "generate_chapter", 2L, null, null, null, null, null));
 
         mvc.perform(post("/api/generations/7001/accept")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -184,6 +199,11 @@ class ChapterGenerationControllerTest {
                                 + "\"idempotencyKey\":\"rewrite-7001-1\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.generationId").value(7003));
+        mvc.perform(post("/api/generations/7004/retry")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expectedAttempt\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.currentStepKey").value("generate_chapter"));
     }
 
     /**

@@ -80,6 +80,49 @@ class ChapterGenerationPromptCompilerTest {
         assertThat(commandCaptor.getValue().currentInput()).contains("当前只创作场景 alarm");
     }
 
+    @Test
+    void compilesStableHumanReadableWholeChapterPromptFromFrozenInputs() {
+        ChapterGenerationPromptCompiler compiler = new ChapterGenerationPromptCompiler(
+                null, null, null, new ObjectMapper());
+        ChapterGenerationEntity generation = new ChapterGenerationEntity();
+        generation.setBasisSnapshotJson("""
+                {
+                  "chapterGenerationBrief": {
+                    "templateVersion": "chapter-generation-brief-v2-entity-cards",
+                    "fingerprint": "brief-hash",
+                    "content": "# Chapter Generation Brief\\n## 事件因果\\n- 因果前置\\n## 相关实体说明\\n- 林风：禁止推断身世"
+                  },
+                  "chapterCapacityAssessment": {
+                    "inputFingerprint": "capacity-hash",
+                    "result": {
+                      "status": "fits",
+                      "suggestedMinimumWordCount": 2600,
+                      "suggestedMaximumWordCount": 3400,
+                      "reasons": ["事件密度适中"],
+                      "eventWeights": [{"eventKey":"scene-1","weight":"high","reason":"核心转折"}],
+                      "nonCompressibleCausalNodes": ["必须发现密室"]
+                    }
+                  },
+                  "baseGeneration": {
+                    "contentHash": "base-hash",
+                    "content": "林风推开了门。"
+                  }
+                }
+                """);
+
+        var first = compiler.compileWholeChapter(generation, 3000);
+        var second = compiler.compileWholeChapter(generation, 3000);
+
+        assertThat(first.templateVersion()).isEqualTo("whole-chapter-v1");
+        assertThat(first.sourceFingerprint()).isEqualTo(second.sourceFingerprint());
+        assertThat(first.messages()).extracting(message -> message.content()).allSatisfy(content ->
+                assertThat(content).doesNotContain("\"sceneKey\"", "{\""));
+        assertThat(first.messages().get(1).content())
+                .contains("因果前置", "林风：禁止推断身世", "建议区间：2600 至 3400 字",
+                        "scene-1：high（核心转折）", "林风推开了门。")
+                .doesNotContain("ScenePlan");
+    }
+
     private ChapterGenerationEntity generation() {
         ChapterGenerationEntity generation = new ChapterGenerationEntity();
         generation.setId(7L);
