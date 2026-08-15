@@ -36,6 +36,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -90,6 +91,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     private final ChapterContentGenerator contentGenerator;
     private final ApplicationEventPublisher eventPublisher;
     private final GenerationRetryMetadataResolver retryMetadataResolver;
+    private final GenerationEvaluationService evaluationService;
 
     /**
      * 创建章节生成服务。
@@ -103,6 +105,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
      * @param contentGenerator 正文生成器
      * @param eventPublisher 事务提交后的领域事件发布器
      * @param retryMetadataResolver 生成恢复与重试元数据解析器
+     * @param evaluationService 整章质量评价门禁服务
      */
     public ChapterGenerationServiceImpl(
             WorkMapper workMapper,
@@ -113,7 +116,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             AiTaskMapper aiTaskMapper,
             ChapterContentGenerator contentGenerator,
             ApplicationEventPublisher eventPublisher,
-            GenerationRetryMetadataResolver retryMetadataResolver) {
+            GenerationRetryMetadataResolver retryMetadataResolver,
+            GenerationEvaluationService evaluationService) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.outlineMapper = outlineMapper;
@@ -123,6 +127,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         this.contentGenerator = contentGenerator;
         this.eventPublisher = eventPublisher;
         this.retryMetadataResolver = retryMetadataResolver;
+        this.evaluationService = evaluationService;
     }
 
     @Override
@@ -232,6 +237,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             return accepted(generation, requireChapter(generation.getChapterId()));
         }
         requirePreview(generation);
+        requirePassedEvaluation(generation);
         ChapterEntity chapter = requireChapter(generation.getChapterId());
         String applyMode = requiredAllowed(
                 request == null ? null : request.applyMode(),
@@ -617,6 +623,10 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         if (!STATUS_PREVIEW.equals(generation.getGenerationStatus())) {
             throw statusConflict();
         }
+    }
+
+    private void requirePassedEvaluation(ChapterGenerationEntity generation) {
+        evaluationService.requireAdoptable(generation.getChapterId(), generation.getId());
     }
 
     private BusinessException statusConflict() {

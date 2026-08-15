@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -45,6 +46,8 @@ import com.dugnan.moqi.context.mapper.StoryContextSnapshotMapper;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
 import com.dugnan.moqi.planning.entity.ScenePlanVersionEntity;
 import com.dugnan.moqi.planning.mapper.ScenePlanVersionMapper;
+import com.dugnan.moqi.sourcechain.entity.ChapterAssetSourceSnapshotEntity;
+import com.dugnan.moqi.sourcechain.mapper.ChapterAssetSourceSnapshotMapper;
 
 /**
  * @author dgn
@@ -55,11 +58,16 @@ import com.dugnan.moqi.planning.mapper.ScenePlanVersionMapper;
 public class GenerationEvaluationServiceImpl implements GenerationEvaluationService {
 
     public static final String WORKFLOW_TYPE = "chapter_generation_evaluation_v1";
+    public static final String RULESET_VERSION = "whole-chapter-rules-v2";
+    public static final String EVALUATOR_VERSION = "whole-chapter-evaluator-v2";
     private static final String LOCAL_USER = "local-user";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_READY = "ready";
     private static final String STATUS_CANCELED = "canceled";
     private static final String STATUS_STALE = "stale";
+    private static final String GENERATION_PREVIEW = "preview";
+    private static final String CONCLUSION_NEEDS_REVISION = "needs_revision";
+    private static final String CONCLUSION_NEEDS_HUMAN = "needs_human";
 
     private final ChapterGenerationMapper generationMapper;
     private final ChapterGenerationSceneMapper sceneMapper;
@@ -69,12 +77,14 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     private AgentRuntime agentRuntime;
     private final ObjectMapper objectMapper;
     private final StoryContextSnapshotMapper contextSnapshotMapper;
+    private final ChapterAssetSourceSnapshotMapper assetSourceSnapshotMapper;
     private final ScenePlanVersionMapper scenePlanVersionMapper;
 
     public GenerationEvaluationServiceImpl(ChapterGenerationMapper generationMapper,
             ChapterGenerationSceneMapper sceneMapper, ChapterGenerationEvaluationReportMapper reportMapper,
             ChapterGenerationRevisionCandidateMapper revisionMapper, AiTaskMapper taskMapper,
             ObjectMapper objectMapper, StoryContextSnapshotMapper contextSnapshotMapper,
+            ChapterAssetSourceSnapshotMapper assetSourceSnapshotMapper,
             ScenePlanVersionMapper scenePlanVersionMapper) {
         this.generationMapper = generationMapper;
         this.sceneMapper = sceneMapper;
@@ -83,6 +93,7 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
         this.taskMapper = taskMapper;
         this.objectMapper = objectMapper;
         this.contextSnapshotMapper = contextSnapshotMapper;
+        this.assetSourceSnapshotMapper = assetSourceSnapshotMapper;
         this.scenePlanVersionMapper = scenePlanVersionMapper;
     }
 
@@ -99,8 +110,10 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
             throw new BusinessException(ErrorCode.BAD_REQUEST, "评价请求必须提供 idempotencyKey");
         }
         ChapterGenerationSceneEntity scene = requireScene(generationId, request.generationSceneId());
-        String source = snapshot(generation, scene);
-        String fingerprint = hash(source);
+        FrozenEvaluationSource frozenSource = freezeSource(generation, scene);
+        String source = frozenSource.sourceJson();
+        EvaluationBindings bindings = bindings(generation, source);
+        String fingerprint = inputFingerprint(source);
         ChapterGenerationEvaluationReportEntity existing = reportMapper.selectOne(
                 new LambdaQueryWrapper<ChapterGenerationEvaluationReportEntity>()
                         .eq(ChapterGenerationEvaluationReportEntity::getGenerationId, generationId)
@@ -126,14 +139,17 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
         report.setChapterId(chapterId);
         report.setGenerationId(generationId);
         report.setGenerationSceneId(scene == null ? null : scene.getId());
-        report.setContextSnapshotId(scene == null ? generation.getSourceSnapshotId() : scene.getContextSnapshotId());
+        report.setContextSnapshotId(frozenSource.contextSnapshotId());
         report.setAiTaskId(task.getId());
         report.setIdempotencyKey(request.idempotencyKey());
         report.setInputFingerprint(fingerprint);
         report.setSourceSnapshotJson(source);
         report.setReportStatus(STATUS_QUEUED);
-        report.setRulesetVersion("generation-rules-v1");
-        report.setEvaluatorVersion("generation-evaluator-v1");
+        report.setRulesetVersion(RULESET_VERSION);
+        report.setEvaluatorVersion(EVALUATOR_VERSION);
+        report.setContentHash(bindings.contentHash());
+        report.setBriefFingerprint(bindings.briefFingerprint());
+        report.setSourceFingerprint(bindings.sourceFingerprint());
         report.setRevisionAttempt(0);
         report.setDeleted(0);
         report.setVersion(0);
@@ -147,15 +163,45 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     }
 
     @Override
+    public EvaluationReportView createAutomatic(Long chapterId, Long generationId) {
+        ChapterGenerationEntity generation = requireGeneration(chapterId, generationId);
+        if (!GENERATION_PREVIEW.equals(generation.getGenerationStatus())) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "只有已完成正文候选可以进入强制评价");
+        }
+        String contentHash = hash(generation.getGeneratedContent() == null ? "" : generation.getGeneratedContent());
+        return create(chapterId, generationId,
+                new CreateEvaluationRequest(null,
+                        "automatic:" + contentHash + ":" + RULESET_VERSION + ":" + EVALUATOR_VERSION));
+    }
+
+    @Override
     public EvaluationReportView latest(Long chapterId, Long generationId, Long generationSceneId) {
         requireGeneration(chapterId, generationId);
         ChapterGenerationEvaluationReportEntity report = reportMapper.selectOne(
                 new LambdaQueryWrapper<ChapterGenerationEvaluationReportEntity>()
                         .eq(ChapterGenerationEvaluationReportEntity::getGenerationId, generationId)
-                        .eq(generationSceneId != null, ChapterGenerationEvaluationReportEntity::getGenerationSceneId, generationSceneId)
+                        .isNull(generationSceneId == null,
+                                ChapterGenerationEvaluationReportEntity::getGenerationSceneId)
+                        .eq(generationSceneId != null,
+                                ChapterGenerationEvaluationReportEntity::getGenerationSceneId, generationSceneId)
                         .eq(ChapterGenerationEvaluationReportEntity::getDeleted, 0).orderByDesc(ChapterGenerationEvaluationReportEntity::getId)
                         .last("LIMIT 1"));
         return report == null ? null : view(report);
+    }
+
+    @Override
+    public void requireAdoptable(Long chapterId, Long generationId) {
+        requireGeneration(chapterId, generationId);
+        ChapterGenerationEvaluationReportEntity report = reportMapper.selectOne(
+                new LambdaQueryWrapper<ChapterGenerationEvaluationReportEntity>()
+                        .eq(ChapterGenerationEvaluationReportEntity::getGenerationId, generationId)
+                        .isNull(ChapterGenerationEvaluationReportEntity::getGenerationSceneId)
+                        .eq(ChapterGenerationEvaluationReportEntity::getDeleted, 0)
+                        .orderByDesc(ChapterGenerationEvaluationReportEntity::getId).last("LIMIT 1"));
+        if (!isAdoptableReport(report)) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT,
+                    "完整正文候选尚未通过当前独立质量评价，不能采纳");
+        }
     }
 
     @Override
@@ -164,12 +210,18 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     }
 
     @Override
+    @Transactional(rollbackFor = RuntimeException.class)
     public AgentRunView retry(Long chapterId, Long generationId, Long reportId, RetryEvaluationRequest request) {
         ChapterGenerationEvaluationReportEntity report = requireReport(chapterId, generationId, reportId);
         if (report.getAgentRunId() == null || request == null || request.expectedAttempt() == null) {
             throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "当前评价报告不能重试");
         }
-        return agentRuntime.retryStep(new RetryAgentStepCommand(report.getAgentRunId(), "semantic_evaluate", request.expectedAttempt()));
+        reportMapper.update(null, new UpdateWrapper<ChapterGenerationEvaluationReportEntity>()
+                .eq("id", reportId).eq("report_status", "failed").set("report_status", "running")
+                .set("conclusion", null).set("error_code", null).set("error_message", null)
+                .setSql("version = version + 1"));
+        return agentRuntime.retryStep(new RetryAgentStepCommand(
+                report.getAgentRunId(), "semantic_evaluate", request.expectedAttempt()));
     }
 
     @Override
@@ -201,6 +253,16 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
                 .eq("report_status", STATUS_QUEUED).set("report_status", "running").setSql("version = version + 1"));
     }
 
+    /** 绑定本次独立 evaluator 的可观测模型调用。 */
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void recordModelCall(Long reportId, Long modelCallId) {
+        if (modelCallId == null) {
+            return;
+        }
+        reportMapper.update(null, new UpdateWrapper<ChapterGenerationEvaluationReportEntity>()
+                .eq("id", reportId).set("model_call_id", modelCallId).setSql("version = version + 1"));
+    }
+
     public List<EvaluationFinding> deterministicFindings(Long reportId) {
         ChapterGenerationEvaluationReportEntity report = requireReportById(reportId);
         ensureCurrent(report);
@@ -209,9 +271,14 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
             return List.of(new EvaluationFinding("empty-scene", "scene_content", "blocking", 1D, "rule", scene.getId(),
                     "全文", null, "场景候选正文为空，不能进入采纳流程", "重新生成该场景"));
         }
+        ChapterGenerationEntity generation = generationMapper.selectById(report.getGenerationId());
+        if (missingWholeChapter(scene, generation)) {
+            return List.of(new EvaluationFinding("empty-chapter", "content_integrity", "blocking", 1D, "rule", null,
+                    "全文", null, "整章候选正文为空，不能进入采纳流程", "重新生成整章正文",
+                    "完整正文候选", "全文", true, false));
+        }
         if (scene == null) {
-            return List.of(new EvaluationFinding("batch-only-evaluation", "scope", "info", 1D, "rule", null,
-                    null, null, "批次级评价缺少单场景目标和引用范围，结构规则仅能在场景级执行", "选择具体场景后检查"));
+            return List.of();
         }
         ScenePlanVersionEntity plan = scene.getScenePlanVersionId() == null ? null : scenePlanVersionMapper.selectById(scene.getScenePlanVersionId());
         if (plan == null || Integer.valueOf(1).equals(plan.getDeleted())) {
@@ -258,7 +325,14 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
                     || finding.generationSceneId() != null && !belongsToGeneration(report.getGenerationId(), finding.generationSceneId())
                     || finding.storyFactRef() != null && !allowedStoryFactRefs(report).contains(finding.storyFactRef())
                     || finding.summary() == null || finding.summary().length() > 500
-                    || finding.evidenceRange() != null && finding.evidenceRange().length() > 200) {
+                    || finding.evidenceRange() != null && finding.evidenceRange().length() > 200
+                    || finding.violatedSource() != null && finding.violatedSource().length() > 500
+                    || finding.impactScope() != null && finding.impactScope().length() > 200
+                    || finding.blocksAcceptance() == null || finding.suitableForAutoRevision() == null
+                    || "blocking".equals(finding.severity()) != Boolean.TRUE.equals(finding.blocksAcceptance())
+                    || Boolean.TRUE.equals(finding.suitableForAutoRevision())
+                            && !Boolean.TRUE.equals(finding.blocksAcceptance())
+                    || Boolean.TRUE.equals(finding.blocksAcceptance()) && blank(finding.evidenceRange())) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "模型评价 Finding 不符合安全契约");
             }
         }
@@ -276,34 +350,33 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
                     .set("report_status", STATUS_STALE).setSql("version = version + 1"));
             return;
         }
-        String conclusion = findings.stream().anyMatch(item -> "blocking".equals(item.severity())) ? "conflict" : "compatible";
+        String conclusion = aggregate(findings);
         reportMapper.update(null, new UpdateWrapper<ChapterGenerationEvaluationReportEntity>().eq("id", reportId)
                 .set("report_status", STATUS_READY).set("conclusion", conclusion).set("findings_json", json(findings))
+                .set("error_code", null).set("error_message", null)
                 .setSql("version = version + 1"));
-        if (report.getRevisionCandidateId() != null) {
-            revisionMapper.update(null, new UpdateWrapper<ChapterGenerationRevisionCandidateEntity>()
-                    .eq("id", report.getRevisionCandidateId()).set("candidate_status",
-                            "compatible".equals(conclusion) ? "passed" : "needs_user_action")
-                    .setSql("version = version + 1"));
-        }
     }
 
     @Transactional(rollbackFor = RuntimeException.class)
     public void fail(Long reportId) {
+        fail(reportId, "evaluation_failed", "独立正文评价失败或超时，请安全重试或人工处理");
+    }
+
+    /** 记录安全失败摘要并保持正文候选不可采纳。 */
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void fail(Long reportId, String errorCode, String errorMessage) {
         reportMapper.update(null, new UpdateWrapper<ChapterGenerationEvaluationReportEntity>().eq("id", reportId)
                 .notIn("report_status", STATUS_STALE, STATUS_CANCELED).set("report_status", "failed")
+                .set("conclusion", CONCLUSION_NEEDS_HUMAN).set("error_code", errorCode)
+                .set("error_message", errorMessage)
                 .setSql("version = version + 1"));
-        ChapterGenerationEvaluationReportEntity report = requireReportById(reportId);
-        if (report.getRevisionCandidateId() != null) {
-            revisionMapper.update(null, new UpdateWrapper<ChapterGenerationRevisionCandidateEntity>()
-                    .eq("id", report.getRevisionCandidateId()).set("candidate_status", "failed").setSql("version = version + 1"));
-        }
     }
 
     /** 判断本报告是否还能启动唯一的一次局部修订。 */
     public boolean shouldRevise(Long reportId, List<EvaluationFinding> findings) {
         ChapterGenerationEvaluationReportEntity report = requireReportById(reportId);
-        return (report.getRevisionAttempt() == null || report.getRevisionAttempt() == 0)
+        return report.getGenerationSceneId() != null
+                && (report.getRevisionAttempt() == null || report.getRevisionAttempt() == 0)
                 && eligibleFinding(findings) != null && isCurrent(report);
     }
 
@@ -365,21 +438,74 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
                 "evidenceRanges", read(candidate.getEvidenceRangeJson())));
     }
 
-    private String snapshot(ChapterGenerationEntity generation, ChapterGenerationSceneEntity scene) {
+    private FrozenEvaluationSource freezeSource(
+            ChapterGenerationEntity generation,
+            ChapterGenerationSceneEntity scene) {
         Map<String, Object> source = new LinkedHashMap<>();
         source.put("generationId", generation.getId());
         source.put("generationVersion", generation.getVersion());
         source.put("generationContentHash", hash(generation.getGeneratedContent() == null ? "" : generation.getGeneratedContent()));
         source.put("generationContent", generation.getGeneratedContent());
+        source.put("basisSnapshot", basisSnapshot(generation.getBasisSnapshotJson()));
         source.put("sceneId", scene == null ? null : scene.getId());
         source.put("sceneContentHash", scene == null ? null : scene.getContentHash());
         source.put("sceneContent", scene == null ? null : scene.getGeneratedContent());
-        source.put("contextSnapshotId", scene == null ? generation.getSourceSnapshotId() : scene.getContextSnapshotId());
-        Long contextSnapshotId = scene == null ? generation.getSourceSnapshotId() : scene.getContextSnapshotId();
-        StoryContextSnapshotEntity contextSnapshot = contextSnapshotId == null ? null : contextSnapshotMapper.selectById(contextSnapshotId);
+        ChapterAssetSourceSnapshotEntity assetSnapshot = scene == null
+                ? requireAssetSourceSnapshot(generation) : null;
+        source.put("assetSourceSnapshotId", assetSnapshot == null ? null : assetSnapshot.getId());
+        source.put("assetSourceSnapshot", assetSourceSnapshot(assetSnapshot));
+        Long contextSnapshotId = scene == null
+                ? assetSnapshot == null ? null : assetSnapshot.getSourceContextSnapshotId()
+                : scene.getContextSnapshotId();
+        source.put("contextSnapshotId", contextSnapshotId);
+        StoryContextSnapshotEntity contextSnapshot = requireContextSnapshot(contextSnapshotId);
         source.put("contextSnapshotHash", contextSnapshot == null ? null : contextSnapshot.getContentHash());
         source.put("contextSnapshot", contextSnapshot == null ? null : contextSnapshot.getSnapshotJson());
-        return json(source);
+        return new FrozenEvaluationSource(json(source), contextSnapshotId);
+    }
+
+    private ChapterAssetSourceSnapshotEntity requireAssetSourceSnapshot(ChapterGenerationEntity generation) {
+        if (generation.getSourceSnapshotId() == null) {
+            return null;
+        }
+        ChapterAssetSourceSnapshotEntity snapshot = assetSourceSnapshotMapper.selectById(generation.getSourceSnapshotId());
+        if (snapshot == null || Integer.valueOf(1).equals(snapshot.getDeleted())
+                || !Objects.equals(generation.getWorkId(), snapshot.getWorkId())
+                || !Objects.equals(generation.getChapterId(), snapshot.getChapterId())
+                || !"generation".equals(snapshot.getAssetType())
+                || !Objects.equals(generation.getId(), snapshot.getAssetId())) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "正文候选的资产来源快照不存在或不属于当前正文候选");
+        }
+        return snapshot;
+    }
+
+    private StoryContextSnapshotEntity requireContextSnapshot(Long contextSnapshotId) {
+        if (contextSnapshotId == null) {
+            return null;
+        }
+        StoryContextSnapshotEntity snapshot = contextSnapshotMapper.selectById(contextSnapshotId);
+        if (snapshot == null || Integer.valueOf(1).equals(snapshot.getDeleted())) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "正文评价关联的 Story Context 快照不存在");
+        }
+        return snapshot;
+    }
+
+    private Map<String, Object> assetSourceSnapshot(ChapterAssetSourceSnapshotEntity snapshot) {
+        if (snapshot == null) {
+            return null;
+        }
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("assetType", snapshot.getAssetType());
+        value.put("assetId", snapshot.getAssetId());
+        value.put("assetVersion", snapshot.getAssetVersion());
+        value.put("sourceConsensusVersionId", snapshot.getSourceConsensusVersionId());
+        value.put("sourceNarrativePlanVersionId", snapshot.getSourceNarrativePlanVersionId());
+        value.put("sourceOutlineId", snapshot.getSourceOutlineId());
+        value.put("sourceOutlineRevision", snapshot.getSourceOutlineRevision());
+        value.put("sourceScenePlanVersionId", snapshot.getSourceScenePlanVersionId());
+        value.put("sourceContextSnapshotId", snapshot.getSourceContextSnapshotId());
+        value.put("sourceContentHash", snapshot.getSourceContentHash());
+        return value;
     }
 
     private void ensureCurrent(ChapterGenerationEvaluationReportEntity report) {
@@ -399,7 +525,19 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
         if (report.getGenerationSceneId() != null && (scene == null || Integer.valueOf(1).equals(scene.getDeleted()))) {
             return false;
         }
-        return hash(snapshot(generation, scene)).equals(report.getInputFingerprint());
+        FrozenEvaluationSource frozenSource;
+        try {
+            frozenSource = freezeSource(generation, scene);
+        } catch (BusinessException exception) {
+            return false;
+        }
+        if (report.getContentHash() == null || report.getSourceFingerprint() == null) {
+            return inputFingerprint(frozenSource.sourceJson()).equals(report.getInputFingerprint());
+        }
+        EvaluationBindings current = bindings(generation, frozenSource.sourceJson());
+        return Objects.equals(report.getContentHash(), current.contentHash())
+                && Objects.equals(report.getBriefFingerprint(), current.briefFingerprint())
+                && Objects.equals(report.getSourceFingerprint(), current.sourceFingerprint());
     }
 
     private boolean belongsToGeneration(Long generationId, Long sceneId) {
@@ -427,12 +565,7 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
 
     private java.util.Set<String> allowedStoryFactRefs(ChapterGenerationEvaluationReportEntity report) {
         try {
-            JsonNode root = objectMapper.readTree(report.getSourceSnapshotJson());
-            JsonNode snapshot = root.get("contextSnapshot");
-            if (snapshot == null || snapshot.isNull()) {
-                return java.util.Set.of();
-            }
-            JsonNode content = snapshot.isTextual() ? objectMapper.readTree(snapshot.textValue()) : snapshot;
+            JsonNode content = objectMapper.readTree(report.getSourceSnapshotJson());
             java.util.Set<String> result = new LinkedHashSet<>();
             collectSourceIds(content, result);
             return java.util.Set.copyOf(result);
@@ -468,7 +601,9 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     private EvaluationReportView view(ChapterGenerationEvaluationReportEntity report) {
         return new EvaluationReportView(report.getId(), report.getGenerationId(), report.getGenerationSceneId(), report.getContextSnapshotId(),
                 report.getAiTaskId(), report.getAgentRunId(), report.getReportStatus(), report.getConclusion(), findings(report),
-                report.getRulesetVersion(), report.getEvaluatorVersion(), report.getRevisionAttempt(),
+                report.getRulesetVersion(), report.getEvaluatorVersion(), report.getContentHash(),
+                report.getBriefFingerprint(), report.getSourceFingerprint(), report.getModelCallId(),
+                report.getErrorCode(), report.getErrorMessage(), report.getRevisionAttempt(),
                 report.getRevisionCandidateId() == null ? null : revisionCandidate(report.getChapterId(), report.getGenerationId(), report.getId()),
                 report.getVersion(), report.getGmtCreate(), report.getGmtModified());
     }
@@ -550,6 +685,79 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
         } catch (Exception exception) {
             throw new IllegalStateException("无法计算评价输入指纹", exception);
         }
+    }
+
+    private String inputFingerprint(String source) {
+        return hash(RULESET_VERSION + "\n" + EVALUATOR_VERSION + "\n" + source);
+    }
+
+    private boolean isAdoptableReport(ChapterGenerationEvaluationReportEntity report) {
+        if (report == null || !STATUS_READY.equals(report.getReportStatus()) || !isCurrent(report)) {
+            return false;
+        }
+        return "pass".equals(report.getConclusion()) || "warning".equals(report.getConclusion());
+    }
+
+    private boolean missingWholeChapter(
+            ChapterGenerationSceneEntity scene,
+            ChapterGenerationEntity generation) {
+        return scene == null && (generation == null || blank(generation.getGeneratedContent()));
+    }
+
+    private EvaluationBindings bindings(ChapterGenerationEntity generation, String source) {
+        String briefFingerprint = null;
+        try {
+            JsonNode basis = blank(generation.getBasisSnapshotJson())
+                    ? null : objectMapper.readTree(generation.getBasisSnapshotJson());
+            JsonNode brief = basis == null ? null : basis.get("chapterGenerationBrief");
+            briefFingerprint = brief == null ? null : text(brief.get("fingerprint"));
+            if (briefFingerprint == null && basis != null) {
+                briefFingerprint = text(basis.get("briefFingerprint"));
+            }
+        } catch (Exception exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "章节生成依据快照无法读取", exception);
+        }
+        return new EvaluationBindings(
+                hash(generation.getGeneratedContent() == null ? "" : generation.getGeneratedContent()),
+                briefFingerprint,
+                hash(source));
+    }
+
+    private JsonNode basisSnapshot(String value) {
+        if (blank(value)) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(value);
+        } catch (Exception exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "章节生成依据快照无法读取", exception);
+        }
+    }
+
+    private String text(JsonNode node) {
+        return node == null || node.isNull() || !node.isValueNode() ? null : node.asText();
+    }
+
+    private String aggregate(List<EvaluationFinding> findings) {
+        boolean needsHuman = findings.stream().anyMatch(item -> Boolean.TRUE.equals(item.blocksAcceptance())
+                && (item.confidence() < 0.8D || !Boolean.TRUE.equals(item.suitableForAutoRevision())
+                || "source_conflict".equals(item.category()) || "planning_change".equals(item.category())
+                || "authority_change".equals(item.category())));
+        if (needsHuman) {
+            return CONCLUSION_NEEDS_HUMAN;
+        }
+        boolean needsRevision = findings.stream().anyMatch(item -> Boolean.TRUE.equals(item.blocksAcceptance())
+                && item.confidence() >= 0.8D && Boolean.TRUE.equals(item.suitableForAutoRevision()));
+        if (needsRevision) {
+            return CONCLUSION_NEEDS_REVISION;
+        }
+        return findings.stream().anyMatch(item -> "warning".equals(item.severity())) ? "warning" : "pass";
+    }
+
+    private record EvaluationBindings(String contentHash, String briefFingerprint, String sourceFingerprint) {
+    }
+
+    private record FrozenEvaluationSource(String sourceJson, Long contextSnapshotId) {
     }
 
     private boolean blank(String value) {

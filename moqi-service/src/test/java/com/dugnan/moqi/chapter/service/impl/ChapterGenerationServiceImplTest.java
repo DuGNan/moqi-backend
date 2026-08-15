@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,6 +38,7 @@ import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -73,6 +75,8 @@ class ChapterGenerationServiceImplTest {
     private ApplicationEventPublisher eventPublisher;
     @Mock
     private GenerationRetryMetadataResolver retryMetadataResolver;
+    @Mock
+    private GenerationEvaluationService evaluationService;
 
     private ChapterGenerationServiceImpl service;
 
@@ -90,10 +94,17 @@ class ChapterGenerationServiceImplTest {
                 aiTaskMapper,
                 contentGenerator,
                 eventPublisher,
-                retryMetadataResolver);
+                retryMetadataResolver,
+                evaluationService);
         org.mockito.Mockito.lenient()
                 .when(retryMetadataResolver.resolve(nullable(Long.class), anyString()))
                 .thenReturn(new RetryMetadata(null, null, false));
+        com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationReportView report =
+                mock(com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationReportView.class);
+        org.mockito.Mockito.lenient().when(report.reportStatus()).thenReturn("ready");
+        org.mockito.Mockito.lenient().when(report.conclusion()).thenReturn("pass");
+        org.mockito.Mockito.lenient().when(evaluationService.latest(any(), any(), nullable(Long.class)))
+                .thenReturn(report);
     }
 
     /**
@@ -475,6 +486,21 @@ class ChapterGenerationServiceImplTest {
                 new com.dugnan.moqi.chapter.event.ChapterGenerationAcceptedEvent(12L, 7001L));
     }
 
+    @Test
+    void rejectsReadyCandidateWhenCurrentEvaluationGateIsMissing() {
+        when(generationMapper.selectById(7001L))
+                .thenReturn(generation(7001L, "preview", "预览正文"));
+        org.mockito.Mockito.doThrow(new BusinessException(
+                ErrorCode.GENERATION_STATUS_CONFLICT, "质量评价尚未通过"))
+                .when(evaluationService).requireAdoptable(12L, 7001L);
+
+        assertThatThrownBy(() -> service.acceptGeneration(
+                7001L, new AcceptGenerationRequest("replace", 3)))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.GENERATION_STATUS_CONFLICT));
+        verify(chapterMapper, never()).updateContentIfVersion(any(), any(), any());
+    }
+
     /**
      * 验证采纳生成稿支持追加正文。
      */
@@ -556,7 +582,7 @@ class ChapterGenerationServiceImplTest {
      * 验证 preview 可以被拒绝。
      */
     @Test
-    void rejectsPreviewGeneration() {
+    void rejectsUnevaluatedPreviewWithoutConsultingGate() {
         ChapterGenerationEntity preview = generation(7001L, "preview", "预览正文");
         ChapterGenerationEntity rejected = generation(7001L, "rejected", "预览正文");
         when(generationMapper.selectById(7001L)).thenReturn(preview, rejected);
@@ -565,6 +591,7 @@ class ChapterGenerationServiceImplTest {
         var result = service.rejectGeneration(7001L, new RejectGenerationRequest("继续讨论"));
 
         assertThat(result.generationStatus()).isEqualTo("rejected");
+        verify(evaluationService, never()).requireAdoptable(any(), any());
     }
 
     /**

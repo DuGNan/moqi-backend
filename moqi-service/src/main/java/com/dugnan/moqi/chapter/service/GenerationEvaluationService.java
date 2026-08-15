@@ -16,8 +16,25 @@ public interface GenerationEvaluationService {
     /** 创建或按幂等键复用评价报告。 */
     EvaluationReportView create(Long chapterId, Long generationId, CreateEvaluationRequest request);
 
+    /**
+     * 为完整正文候选创建或复用强制评价。
+     *
+     * @param chapterId 章节 ID
+     * @param generationId 正文候选 ID
+     * @return 评价报告
+     */
+    EvaluationReportView createAutomatic(Long chapterId, Long generationId);
+
     /** 查询批次或场景的最新报告。 */
     EvaluationReportView latest(Long chapterId, Long generationId, Long generationSceneId);
+
+    /**
+     * 校验完整正文候选存在当前且通过的整章评价。
+     *
+     * @param chapterId 章节 ID
+     * @param generationId 正文候选 ID
+     */
+    void requireAdoptable(Long chapterId, Long generationId);
 
     /** 查询指定评价报告。 */
     EvaluationReportView get(Long chapterId, Long generationId, Long reportId);

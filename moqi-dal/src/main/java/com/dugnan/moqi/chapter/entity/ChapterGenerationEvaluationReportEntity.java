@@ -29,6 +29,12 @@ public class ChapterGenerationEvaluationReportEntity extends BaseEntity {
     private String findingsJson;
     private String rulesetVersion;
     private String evaluatorVersion;
+    private String contentHash;
+    private String briefFingerprint;
+    private String sourceFingerprint;
+    private Long modelCallId;
+    private String errorCode;
+    private String errorMessage;
     private Integer revisionAttempt;
     private Long revisionCandidateId;
 }

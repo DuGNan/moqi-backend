@@ -70,7 +70,6 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private static final String TASK_TYPE = "scene_novel_generation";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_RUNNING = "running";
-    private static final String STATUS_PREVIEW = "preview";
     private static final String STATUS_FAILED = "failed";
     private static final String STATUS_CANCELED = "canceled";
     private static final String SCENE_PENDING = "pending";
