@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import java.time.LocalDateTime;
@@ -24,6 +25,7 @@ import com.dugnan.moqi.agent.entity.AgentRunStepEntity;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.StartAgentRunCommand;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.RetryGenerationRequest;
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief;
 import com.dugnan.moqi.chapter.capacity.ChapterCapacityAssessmentService;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
@@ -105,8 +107,10 @@ class SceneGenerationServiceImplTest {
     }
 
     @Test
-    void createsAllPlannedScenesAndBindsTheAgentRun() {
+    void createsWholeChapterRunWithoutPendingSceneDrafts() {
         ChapterEntity chapter = chapter();
+        chapter.setContent("当前章节正文");
+        chapter.setVersion(4);
         ChapterPlanView plan = plan();
         when(chapterMapper.selectById(12L)).thenReturn(chapter);
         when(generationMapper.selectOne(any())).thenReturn(null);
@@ -120,7 +124,6 @@ class SceneGenerationServiceImplTest {
             invocation.getArgument(0, ChapterGenerationEntity.class).setId(51L);
             return 1;
         });
-        when(sceneMapper.insert(any(ChapterGenerationSceneEntity.class))).thenReturn(1);
         when(agentRuntime.start(any())).thenReturn(run());
         when(generationMapper.update(any(), any())).thenReturn(1);
         when(taskMapper.update(any(), any())).thenReturn(1);
@@ -135,31 +138,30 @@ class SceneGenerationServiceImplTest {
         });
 
         var result = service.create(12L, new CreateSceneGenerationRequest(
-                null, "all", null, List.of(), null, "scene-all-1", "about_3000", null, 0.7D));
+                null, "all", null, List.of(), null, "scene-all-1", "about_3000", null, 0.7D,
+                null, null, true));
 
-        ArgumentCaptor<ChapterGenerationSceneEntity> scenes = ArgumentCaptor.forClass(
-                ChapterGenerationSceneEntity.class);
         ArgumentCaptor<ChapterGenerationEntity> generation = ArgumentCaptor.forClass(ChapterGenerationEntity.class);
         ArgumentCaptor<StartAgentRunCommand> run = ArgumentCaptor.forClass(StartAgentRunCommand.class);
-        verify(sceneMapper, org.mockito.Mockito.times(2)).insert(scenes.capture());
+        verify(sceneMapper, never()).insert(any(ChapterGenerationSceneEntity.class));
         verify(generationMapper).insert(generation.capture());
         verify(agentRuntime).start(run.capture());
         assertThat(result.generationId()).isEqualTo(51L);
         assertThat(result.agentRunId()).isEqualTo(61L);
         assertThat(generation.getValue().getLengthPreset()).isEqualTo("about_3000");
         assertThat(generation.getValue().getCustomWordCount()).isNull();
+        assertThat(generation.getValue().getContentAssemblyMode()).isEqualTo("whole_chapter_once");
+        assertThat(generation.getValue().getCohesionStatus()).isEqualTo("not_applicable");
+        assertThat(generation.getValue().getGenerationTemplateVersion()).isEqualTo("whole-chapter-v1");
         assertThat(generation.getValue().getBasisSnapshotJson())
                 .contains("chapterGenerationBrief", "chapter-generation-brief-v1", "fingerprint",
-                        "chapterCapacityAssessment", "capacity-hash")
+                        "chapterCapacityAssessment", "capacity-hash", "currentProseBasis",
+                        "chapterVersion", "当前章节正文")
                 .contains("# Chapter Generation Brief");
         assertThat(run.getValue().input())
                 .containsEntry("targetChapterWordCount", 3000)
                 .doesNotContainKey("plannedSceneCount")
                 .doesNotContainKey("maxOutputTokens");
-        assertThat(scenes.getAllValues()).extracting(ChapterGenerationSceneEntity::getSceneStatus)
-                .containsOnly("pending");
-        assertThat(scenes.getAllValues()).extracting(ChapterGenerationSceneEntity::getSceneKey)
-                .containsExactly("scene-1", "scene-2");
     }
 
     @Test
@@ -169,15 +171,6 @@ class SceneGenerationServiceImplTest {
         when(generationMapper.selectOne(any())).thenReturn(null);
         when(scenePlanQueryPort.loadCurrent(12L)).thenReturn(plan());
         when(userConfigService.requireAvailableExecutionConfig()).thenReturn(executionConfig());
-        when(taskMapper.insert(any(AiTaskEntity.class))).thenAnswer(invocation -> {
-            invocation.getArgument(0, AiTaskEntity.class).setId(41L);
-            return 1;
-        });
-        when(generationMapper.insert(any(ChapterGenerationEntity.class))).thenAnswer(invocation -> {
-            invocation.getArgument(0, ChapterGenerationEntity.class).setId(51L);
-            return 1;
-        });
-
         assertThatThrownBy(() -> service.create(12L, new CreateSceneGenerationRequest(
                 null, "rewrite_selected", null, List.of("scene-1"), null, "rewrite-1",
                 "about_3000", null, null)))
@@ -195,6 +188,32 @@ class SceneGenerationServiceImplTest {
                 "custom", 300, 0.7D)))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("customWordCount");
+    }
+
+    @Test
+    void retriesOnlyTheFailedWholeChapterStepWithExpectedAttempt() {
+        ChapterGenerationEntity generation = new ChapterGenerationEntity();
+        generation.setId(51L);
+        generation.setAgentRunId(61L);
+        generation.setGenerationStatus("failed");
+        generation.setContentAssemblyMode("whole_chapter_once");
+        generation.setVersion(3);
+        generation.setDeleted(0);
+        AgentRunStepEntity step = new AgentRunStepEntity();
+        step.setAttempt(2);
+        step.setStepStatus("failed");
+        step.setRetryable(1);
+        when(generationMapper.selectById(51L)).thenReturn(generation);
+        when(agentRunStepMapper.selectOne(any())).thenReturn(step);
+        AgentRunView expected = run();
+        when(agentRuntime.retryStep(any())).thenReturn(expected);
+        when(generationMapper.update(any(), any())).thenReturn(1);
+
+        AgentRunView result = service.retryGeneration(51L, new RetryGenerationRequest(2));
+
+        assertThat(result).isSameAs(expected);
+        verify(agentRuntime).retryStep(any());
+        verify(generationMapper).update(any(), any());
     }
 
     @Test

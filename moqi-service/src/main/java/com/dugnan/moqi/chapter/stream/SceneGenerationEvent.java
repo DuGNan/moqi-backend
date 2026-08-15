@@ -47,4 +47,12 @@ public record SceneGenerationEvent(
         return new SceneGenerationEvent("generation.scene.delta", chapterId, generationId,
                 generationSceneId, sceneKey, null, "running", value, LocalDateTime.now());
     }
+
+    public static SceneGenerationEvent generationDelta(
+            Long chapterId,
+            Long generationId,
+            String value) {
+        return new SceneGenerationEvent("generation.delta", chapterId, generationId,
+                null, null, "running", null, value, LocalDateTime.now());
+    }
 }

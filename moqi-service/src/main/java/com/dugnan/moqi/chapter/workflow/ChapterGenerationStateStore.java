@@ -32,6 +32,7 @@ public class ChapterGenerationStateStore {
     static final String STATUS_RUNNING = "running";
     static final String STATUS_PREVIEW = "preview";
     static final String ASSEMBLY_COHESIVE_CHAPTER = "cohesive_chapter";
+    public static final String ASSEMBLY_WHOLE_CHAPTER_ONCE = "whole_chapter_once";
     static final String COHESION_COMPLETED = "completed";
     static final String SCENE_PENDING = "pending";
     static final String SCENE_RUNNING = "running";
@@ -181,6 +182,27 @@ public class ChapterGenerationStateStore {
         requireSingleUpdate(changed, "整章收束结果已被并发修改");
     }
 
+    public void applyWholeChapterResult(Long generationId, AgentStepResult result) {
+        if (Boolean.TRUE.equals(result.outputSummary().get(RESULT_SKIPPED))) {
+            return;
+        }
+        ChapterGenerationEntity generation = requireGeneration(generationId);
+        String content = stringValue(result.outputSummary().get("content"));
+        if (!StringUtils.hasText(content)) {
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "整章生成正文为空");
+        }
+        int changed = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
+                .eq("id", generationId).eq("version", generation.getVersion())
+                .eq("generation_status", STATUS_RUNNING)
+                .eq("content_assembly_mode", ASSEMBLY_WHOLE_CHAPTER_ONCE)
+                .set("generated_content", content).set("word_count", wordCount(content))
+                .set("generation_model_call_id", longValue(result.outputSummary().get("modelCallId")))
+                .set("generation_template_version", stringValue(result.outputSummary().get("templateVersion")))
+                .set("generation_finish_reason", stringValue(result.outputSummary().get("finishReason")))
+                .set("version", generation.getVersion() + 1).set("gmt_modified", LocalDateTime.now()));
+        requireSingleUpdate(changed, "整章生成结果已被并发修改");
+    }
+
     public ChapterGenerationEntity markFailed(
             Long generationId,
             String stepKey,
@@ -207,6 +229,18 @@ public class ChapterGenerationStateStore {
 
     public ChapterGenerationEntity finalizeGeneration(Long generationId) {
         ChapterGenerationEntity generation = requireGeneration(generationId);
+        if (ASSEMBLY_WHOLE_CHAPTER_ONCE.equals(generation.getContentAssemblyMode())) {
+            if (!StringUtils.hasText(generation.getGeneratedContent())) {
+                throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "整章候选尚未完成");
+            }
+            int changed = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
+                    .eq("id", generationId).eq("version", generation.getVersion())
+                    .eq("generation_status", STATUS_RUNNING)
+                    .set("generation_status", STATUS_PREVIEW).set("version", generation.getVersion() + 1)
+                    .set("gmt_modified", LocalDateTime.now()));
+            requireSingleUpdate(changed, "生成批次已被并发修改");
+            return requireGeneration(generationId);
+        }
         List<ChapterGenerationSceneEntity> scenes = completedScenes(generationId);
         if (scenes.isEmpty()) {
             throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "仍有场景候选未完成");
@@ -223,7 +257,7 @@ public class ChapterGenerationStateStore {
                 .set("generation_status", STATUS_PREVIEW).set("version", generation.getVersion() + 1)
                 .set("gmt_modified", LocalDateTime.now()));
         requireSingleUpdate(changed, "生成批次已被并发修改");
-        return generation;
+        return requireGeneration(generationId);
     }
 
     public String joinScenes(List<ChapterGenerationSceneEntity> scenes) {

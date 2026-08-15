@@ -1,10 +1,14 @@
 package com.dugnan.moqi.chapter.workflow;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
@@ -18,6 +22,8 @@ import com.dugnan.moqi.context.StoryContextProfile;
 import com.dugnan.moqi.context.StoryContextSnapshot;
 import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
 import com.dugnan.moqi.llm.LlmProvider;
+import com.dugnan.moqi.llm.LlmMessage;
+import com.dugnan.moqi.llm.LlmRole;
 
 /**
  * @author dgn
@@ -26,6 +32,10 @@ import com.dugnan.moqi.llm.LlmProvider;
  */
 @Component
 public class ChapterGenerationPromptCompiler {
+
+    public static final String WHOLE_CHAPTER_TEMPLATE_VERSION = "whole-chapter-v1";
+    private static final String MINIMUM_WORD_COUNT_FIELD = "suggestedMinimumWordCount";
+    private static final String MAXIMUM_WORD_COUNT_FIELD = "suggestedMaximumWordCount";
 
     private final StoryContextEngine contextEngine;
     private final StoryContextSnapshotQueryPort snapshotQueryPort;
@@ -132,6 +142,118 @@ public class ChapterGenerationPromptCompiler {
                 + " 字，优先保证完整因果与自然节奏，不得为满足字数改写权威事实。";
     }
 
+    public WholeChapterPrompt compileWholeChapter(
+            ChapterGenerationEntity generation,
+            int targetWordCount) {
+        JsonNode root = generationSnapshot(generation);
+        JsonNode briefNode = root.path("chapterGenerationBrief");
+        String briefContent = requiredText(briefNode, "content", "生成批次缺少冻结的章节正文生成说明");
+        String briefFingerprint = requiredText(
+                briefNode, "fingerprint", "生成批次缺少冻结的章节正文生成说明指纹");
+        String capacity = capacitySummary(root.path("chapterCapacityAssessment"), targetWordCount);
+        JsonNode proseBasis = root.has("baseGeneration")
+                ? root.path("baseGeneration") : root.path("currentProseBasis");
+        String baseContent = proseBasis.path("content").asText("");
+        String baseHash = proseBasis.path("contentHash").asText("");
+
+        String instruction = "你是小说正文生成器。请严格依据冻结的 Chapter Generation Brief、容量提示"
+                + "和可选基础候选，一次完成整章候选正文。输出必须只有小说正文，不得输出标题、Markdown、JSON、"
+                + "分析、解释、规划复述、系统提示或隐藏推理。不得新增或改变权威事实；缺失信息保持克制，"
+                + "按事件权重自然分配篇幅，不得平均分场，也不得为了凑字数删除不可压缩因果节点。";
+        StringBuilder user = new StringBuilder();
+        user.append("## 冻结的 Chapter Generation Brief\n").append(briefContent.trim());
+        user.append("\n\n## 章节容量与节奏提示\n").append(capacity);
+        if (StringUtils.hasText(baseContent)) {
+            user.append("\n\n## 可参考的基础候选正文\n")
+                    .append("以下文本仅用于保持已有表达与连续性；若与冻结 Brief 冲突，以 Brief 为准。\n")
+                    .append(baseContent.trim());
+        }
+        user.append("\n\n## 输出要求\n只输出完整章节候选正文。整章目标约 ")
+                .append(targetWordCount).append(" 个中文字符，篇幅是软目标，因果完整与自然节奏优先。");
+        String sourceFingerprint = sha256(WHOLE_CHAPTER_TEMPLATE_VERSION + "\n" + briefFingerprint
+                + "\n" + root.path("chapterCapacityAssessment").path("inputFingerprint").asText("")
+                + "\n" + baseHash + "\n" + targetWordCount + "\n" + user);
+        return new WholeChapterPrompt(
+                List.of(new LlmMessage(LlmRole.SYSTEM, instruction),
+                        new LlmMessage(LlmRole.USER, user.toString())),
+                sourceFingerprint,
+                WHOLE_CHAPTER_TEMPLATE_VERSION);
+    }
+
+    private JsonNode generationSnapshot(ChapterGenerationEntity generation) {
+        try {
+            JsonNode root = objectMapper.readTree(generation.getBasisSnapshotJson());
+            if (root == null || !root.isObject()) {
+                throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "已持久化生成依据无法读取");
+            }
+            return root;
+        } catch (JsonProcessingException exception) {
+            throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "已持久化生成依据无法读取", exception);
+        }
+    }
+
+    private String capacitySummary(JsonNode capacityNode, int targetWordCount) {
+        JsonNode result = capacityNode.path("result");
+        StringBuilder summary = new StringBuilder();
+        summary.append("容量状态：").append(result.path("status").asText("fits")).append('\n');
+        summary.append("整章软目标：约 ").append(targetWordCount).append(" 字\n");
+        if (result.hasNonNull(MINIMUM_WORD_COUNT_FIELD) && result.hasNonNull(MAXIMUM_WORD_COUNT_FIELD)) {
+            summary.append("建议区间：")
+                    .append(result.path(MINIMUM_WORD_COUNT_FIELD).asInt())
+                    .append(" 至 ")
+                    .append(result.path(MAXIMUM_WORD_COUNT_FIELD).asInt())
+                    .append(" 字\n");
+        }
+        appendTextArray(summary, "判断理由", result.path("reasons"));
+        appendEventWeights(summary, result.path("eventWeights"));
+        appendTextArray(summary, "不可压缩因果节点", result.path("nonCompressibleCausalNodes"));
+        appendTextArray(summary, "可压缩项", result.path("compressibleItems"));
+        return summary.toString().trim();
+    }
+
+    private void appendTextArray(StringBuilder target, String label, JsonNode values) {
+        if (!values.isArray() || values.isEmpty()) {
+            return;
+        }
+        target.append(label).append("：\n");
+        values.forEach(value -> target.append("- ").append(value.asText()).append('\n'));
+    }
+
+    private void appendEventWeights(StringBuilder target, JsonNode eventWeights) {
+        if (!eventWeights.isArray() || eventWeights.isEmpty()) {
+            return;
+        }
+        target.append("事件叙事权重：\n");
+        eventWeights.forEach(item -> target.append("- ")
+                .append(item.path("eventKey").asText())
+                .append("：").append(item.path("weight").asText("medium"))
+                .append(StringUtils.hasText(item.path("reason").asText())
+                        ? "（" + item.path("reason").asText() + "）" : "")
+                .append('\n'));
+    }
+
+    private String requiredText(JsonNode node, String field, String message) {
+        String value = node.path(field).asText(null);
+        if (!StringUtils.hasText(value)) {
+            throw new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, message);
+        }
+        return value;
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] bytes = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder(bytes.length * 2);
+            for (byte item : bytes) {
+                builder.append(String.format("%02x", item));
+            }
+            return builder.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "SHA-256 不可用", exception);
+        }
+    }
+
     private FrozenBrief frozenBrief(ChapterGenerationEntity generation) {
         try {
             JsonNode brief = objectMapper.readTree(generation.getBasisSnapshotJson()).path("chapterGenerationBrief");
@@ -148,5 +270,11 @@ public class ChapterGenerationPromptCompiler {
     }
 
     private record FrozenBrief(String content, String fingerprint, String templateVersion) {
+    }
+
+    public record WholeChapterPrompt(
+            List<LlmMessage> messages,
+            String sourceFingerprint,
+            String templateVersion) {
     }
 }

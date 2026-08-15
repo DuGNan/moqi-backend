@@ -18,6 +18,7 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.SceneWordRange;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationPromptCompiler.WholeChapterPrompt;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
@@ -43,7 +44,7 @@ import com.dugnan.moqi.llm.LlmStreamStatus;
 /**
  * @author dgn
  * @date 2026-08-09
- * @description 统一章节生成 Provider 创建、调用观测、流式终态校验与长度校正。
+ * @description 统一场景及整章生成的 Provider 调用、观测和候选正文校验。
  */
 @Component
 public class ChapterGenerationModelInvoker {
@@ -51,7 +52,13 @@ public class ChapterGenerationModelInvoker {
     static final String WORKFLOW_TYPE = "scene_novel_generation";
     static final String SCENE_TEMPLATE_VERSION = "scene-novel-v4";
     static final String COHESION_TEMPLATE_VERSION = "chapter-cohesion-v1";
-
+    private static final String JSON_OBJECT_PREFIX = "{";
+    private static final String JSON_ARRAY_PREFIX = "[";
+    private static final String MARKDOWN_FENCE_PREFIX = "```";
+    private static final String MARKDOWN_HEADING_PREFIX = "#";
+    private static final String BRIEF_TITLE = "Chapter Generation Brief";
+    private static final String SYSTEM_PROMPT_LABEL = "系统提示";
+    private static final int PROSE_PREFIX_INSPECTION_LENGTH = 160;
     private final UserConfigService userConfigService;
     private final LlmProviderFactory providerFactory;
     private final ChapterGenerationLengthPolicy lengthPolicy;
@@ -153,6 +160,49 @@ public class ChapterGenerationModelInvoker {
                         ? null : String.valueOf(response.metadata().modelCallId()), null);
     }
 
+    public AgentStepResult generateWholeChapter(
+            ChapterGenerationEntity generation,
+            WholeChapterPrompt prompt,
+            int targetWordCount,
+            AgentStepExecutionContext context) {
+        LlmExecutionConfig executionConfig = verifyExecutionConfig(generation);
+        LlmProvider provider = providerFactory.createObserved(
+                executionConfig,
+                LlmCallContext.builder(WORKFLOW_TYPE, "generate_chapter")
+                        .workId(generation.getWorkId()).chapterId(generation.getChapterId())
+                        .agentRunId(context.runId()).agentStepId(context.stepId())
+                        .logicalCallId("agent-step:" + context.stepId() + ":whole-chapter")
+                        .promptTemplateVersion(prompt.templateVersion())
+                        .sourceFingerprint(prompt.sourceFingerprint())
+                        .build());
+        int maximumWordCount = lengthPolicy.chapterWordRange(targetWordCount).maximum();
+        StringBuilder content = new StringBuilder();
+        LlmStreamCall call = null;
+        try {
+            call = provider.stream(new LlmRequest(
+                    prompt.messages(),
+                    options(lengthPolicy.maxOutputTokens(
+                            maximumWordCount, provider.capabilities().maxOutputTokens()), context.input())),
+                    event -> consumeWholeChapterDelta(event, context, generation, content));
+            context.callRegistry().register(context.runId(), call);
+            LlmStreamResult streamResult = requireCompleted(call.await());
+            context.callRegistry().unregister(context.runId(), call);
+            call = null;
+            String generatedContent = requireProse(content.toString());
+            Map<String, Object> output = new LinkedHashMap<>();
+            output.put("content", generatedContent);
+            output.put("templateVersion", prompt.templateVersion());
+            output.put("sourceFingerprint", prompt.sourceFingerprint());
+            Long modelCallId = streamResult.metadata() == null ? null : streamResult.metadata().modelCallId();
+            output.put("modelCallId", modelCallId);
+            putMetadata(output, streamResult.metadata());
+            return new AgentStepResult(output, Map.of(), ChapterGenerationStepPlanner.FINALIZE,
+                    modelCallId == null ? null : String.valueOf(modelCallId), null);
+        } finally {
+            context.callRegistry().unregister(context.runId(), call);
+        }
+    }
+
     private LlmExecutionConfig verifyExecutionConfig(ChapterGenerationEntity generation) {
         LlmExecutionConfigDescriptor expected;
         try {
@@ -208,6 +258,43 @@ public class ChapterGenerationModelInvoker {
             content.append(delta.text());
             completionHandler.sceneDelta(generation, scene, delta.text());
         }
+    }
+
+    private void consumeWholeChapterDelta(
+            LlmStreamEvent event,
+            AgentStepExecutionContext context,
+            ChapterGenerationEntity generation,
+            StringBuilder content) {
+        if (event instanceof LlmStreamEvent.TextDelta delta && StringUtils.hasText(delta.text())
+                && !context.callRegistry().isCancellationRequested(context.runId())) {
+            content.append(delta.text());
+            completionHandler.generationDelta(generation, delta.text());
+        }
+    }
+
+    private String requireProse(String value) {
+        String content = value == null ? "" : value.trim();
+        if (!StringUtils.hasText(content)) {
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "模型未返回整章正文");
+        }
+        String leading = content.substring(0, Math.min(content.length(), PROSE_PREFIX_INSPECTION_LENGTH));
+        if (isNonProsePrefix(content, leading)) {
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "模型输出不是纯小说正文，请重试");
+        }
+        return content;
+    }
+
+    private boolean isNonProsePrefix(String content, String leading) {
+        if (content.startsWith(JSON_OBJECT_PREFIX) || content.startsWith(JSON_ARRAY_PREFIX)) {
+            return true;
+        }
+        if (content.startsWith(MARKDOWN_FENCE_PREFIX) || content.startsWith(MARKDOWN_HEADING_PREFIX)) {
+            return true;
+        }
+        if (leading.contains(BRIEF_TITLE) || leading.contains(SYSTEM_PROMPT_LABEL)) {
+            return true;
+        }
+        return leading.startsWith("分析：") || leading.startsWith("说明：") || leading.startsWith("以下是");
     }
 
     private LlmStreamResult requireCompleted(LlmStreamResult streamResult) {

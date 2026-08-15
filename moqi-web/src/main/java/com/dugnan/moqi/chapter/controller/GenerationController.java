@@ -15,6 +15,7 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RejectGenerationReque
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneList;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneView;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.RetrySceneRequest;
+import com.dugnan.moqi.chapter.dto.SceneGenerationModels.RetryGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
@@ -123,6 +124,14 @@ public class GenerationController {
             @PathVariable Long sceneId,
             @RequestBody RetrySceneRequest request) {
         return ApiResponse.success(sceneGenerationService.retryScene(generationId, sceneId, request));
+    }
+
+    /** 重试失败的整章一次生成步骤，不重新读取当前来源。 */
+    @PostMapping("/{generationId}/retry")
+    public ApiResponse<AgentRunView> retryGeneration(
+            @PathVariable Long generationId,
+            @RequestBody RetryGenerationRequest request) {
+        return ApiResponse.success(sceneGenerationService.retryGeneration(generationId, request));
     }
 
     /** 重试失败的整章收束，不重新调用已完成的逐场景生成。 */

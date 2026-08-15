@@ -26,6 +26,7 @@ import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.SceneWordRange;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationModelInvoker.SceneInvocationContext;
+import com.dugnan.moqi.chapter.workflow.ChapterGenerationPromptCompiler.WholeChapterPrompt;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextSnapshot;
@@ -82,6 +83,7 @@ class ChapterGenerationModelInvokerTest {
         lenient().when(snapshot.contentHash()).thenReturn("snapshot-hash");
         lenient().when(snapshot.toMessages()).thenReturn(List.of(new LlmMessage(LlmRole.SYSTEM, "上下文")));
         lenient().when(providerFactory.createObserved(any(), any())).thenReturn(provider);
+        lenient().when(userConfigService.requireAvailableExecutionConfig()).thenReturn(executionConfig);
     }
 
     @Test
@@ -155,8 +157,54 @@ class ChapterGenerationModelInvokerTest {
                 .hasMessageContaining("模型配置或凭据已变化");
     }
 
+    @Test
+    void streamsOneShotWholeChapterAndKeepsModelMetadata() throws Exception {
+        ChapterGenerationEntity generation = generation();
+        LlmResponseMetadata metadata = new LlmResponseMetadata(
+                "fake", "fake-model", "stop", 100, 800, 900, "request-whole", 41L);
+        LlmStreamCall call = completedCall(metadata);
+        when(provider.stream(any(), any())).thenAnswer(invocation -> {
+            Consumer<LlmStreamEvent> consumer = invocation.getArgument(1);
+            consumer.accept(new LlmStreamEvent.TextDelta("夜雨落在窗沿。"));
+            return call;
+        });
+        WholeChapterPrompt prompt = new WholeChapterPrompt(
+                List.of(new LlmMessage(LlmRole.SYSTEM, "只输出正文")), "source-hash", "whole-chapter-v1");
+
+        AgentStepResult result = invoker.generateWholeChapter(generation, prompt, 3000, nullSafeContext());
+
+        assertThat(result.outputSummary())
+                .containsEntry("content", "夜雨落在窗沿。")
+                .containsEntry("modelCallId", 41L)
+                .containsEntry("finishReason", "stop")
+                .containsEntry("templateVersion", "whole-chapter-v1");
+        verify(completionHandler).generationDelta(generation, "夜雨落在窗沿。");
+    }
+
+    @Test
+    void rejectsJsonOrPromptEchoAsWholeChapterProse() throws Exception {
+        ChapterGenerationEntity generation = generation();
+        LlmStreamCall call = completedCall(null);
+        when(provider.stream(any(), any())).thenAnswer(invocation -> {
+            Consumer<LlmStreamEvent> consumer = invocation.getArgument(1);
+            consumer.accept(new LlmStreamEvent.TextDelta("{\"content\":\"正文\"}"));
+            return call;
+        });
+        WholeChapterPrompt prompt = new WholeChapterPrompt(
+                List.of(new LlmMessage(LlmRole.SYSTEM, "只输出正文")), "source-hash", "whole-chapter-v1");
+
+        assertThatThrownBy(() -> invoker.generateWholeChapter(generation, prompt, 3000, nullSafeContext()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("不是纯小说正文");
+    }
+
     private AgentStepExecutionContext context() {
         return new AgentStepExecutionContext(11L, 12L, "generate_scene:s1", 1, "effect",
+                Map.of("generationId", 7L), Map.of(), Map.of(), new AgentRunCallRegistry());
+    }
+
+    private AgentStepExecutionContext nullSafeContext() {
+        return new AgentStepExecutionContext(11L, 12L, "generate_chapter", 1, "effect",
                 Map.of("generationId", 7L), Map.of(), Map.of(), new AgentRunCallRegistry());
     }
 

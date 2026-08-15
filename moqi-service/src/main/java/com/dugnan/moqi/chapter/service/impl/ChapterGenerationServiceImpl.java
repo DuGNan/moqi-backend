@@ -515,6 +515,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 generation.getId(),
                 generation.getWorkId(),
                 generation.getChapterId(),
+                generation.getChapterPlanVersionId(),
+                generation.getBaseGenerationId(),
                 generation.getOutlineId(),
                 generation.getOutlineRevision(),
                 generation.getGenerationStatus(),
@@ -525,12 +527,18 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 generation.getGeneratedContent(),
                 generation.getWordCount(),
                 generation.getAiTaskId(),
+                generation.getAgentRunId(),
+                generation.getSourceSnapshotId(),
+                generation.getValidityStatus(),
                 StringUtils.hasText(generation.getContentAssemblyMode())
                         ? generation.getContentAssemblyMode() : "scene_join_legacy",
                 StringUtils.hasText(generation.getCohesionStatus())
                         ? generation.getCohesionStatus() : "not_applicable",
                 generation.getCohesionModelCallId(),
                 generation.getCohesionTemplateVersion(),
+                generation.getGenerationModelCallId(),
+                generation.getGenerationTemplateVersion(),
+                generation.getGenerationFinishReason(),
                 generation.getGmtCreate(),
                 generation.getGmtModified());
     }
