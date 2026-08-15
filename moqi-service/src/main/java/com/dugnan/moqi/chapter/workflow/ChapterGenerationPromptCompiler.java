@@ -8,7 +8,6 @@ import org.springframework.stereotype.Component;
 
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
-import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.ChapterWordRange;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.SceneWordRange;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -117,34 +116,20 @@ public class ChapterGenerationPromptCompiler {
         return "请根据冻结的 Chapter Generation Brief 和 Story Context 创作本场候选正文。"
                 + currentScene
                 + "若提供上一场完整正文，必须从其最后一个动作和未完成目标自然续写；禁止复述已经发生的事件或台词。"
-                + "持续维护时间、地点、人物位置、伤势、道具和未完成目标的连续性，不得新增或改变权威事实。正文长度必须严格控制在 "
+                + "持续维护时间、地点、人物位置、伤势、道具和未完成目标的连续性，不得新增或改变权威事实。整章目标篇幅为软区间 "
                 + wordRange.minimum() + " 至 " + wordRange.maximum()
-                + " 个中文字符（含标点）之间，建议约 " + wordRange.target()
-                + " 个中文字符。若尚未达到 " + wordRange.minimum()
-                + " 个中文字符，不得提前收束；完成前自行核对长度，且不得超过 "
-                + wordRange.maximum() + " 个中文字符。"
+                + " 个中文字符（含标点），建议约 " + wordRange.target()
+                + " 字；请按当前事件的叙事权重自然分配篇幅，不得把整章目标平均摊到每个场景，"
+                + "也不得为了凑字数扩写或删减不可省略的因果节点。"
                 + "不得改写已确认设定，不得输出分析、标题或隐藏推理。";
-    }
-
-    public String correctionInstruction(SceneWordRange wordRange, int actualWordCount) {
-        String action = actualWordCount < wordRange.minimum() ? "扩写" : "压缩";
-        return "上一稿共 " + actualWordCount + " 个中文字符，不符合篇幅要求。请在不改变事件、设定和结局的前提下"
-                + action + "为完整正文，严格控制在 " + wordRange.minimum() + " 至 "
-                + wordRange.maximum() + " 个中文字符（含标点）之间。只输出修订后的完整正文。";
     }
 
     public String cohesionInstruction(int targetWordCount) {
         return "你是整章小说编辑。以下是按场景生成的原始正文。请只输出一篇完整的整章正文，"
                 + "仅允许补足场景间过渡、消除重复、统一节奏并修复时间、地点、人物位置、伤势、道具和未完成目标的连续性。"
                 + "不得删除、改写或新增场景规划中的关键事件，也不得改变任何权威事实。"
-                + "不要输出分析、标题或分场景标记；目标篇幅约 " + targetWordCount + " 字。";
-    }
-
-    public String cohesionCorrectionInstruction(ChapterWordRange wordRange, int actualWordCount) {
-        String action = actualWordCount < wordRange.minimum() ? "扩写" : "压缩";
-        return "上一稿共 " + actualWordCount + " 个中文字符。请在不改变场景规划、关键事件和权威事实的前提下"
-                + action + "，严格控制在 " + wordRange.minimum() + " 至 " + wordRange.maximum()
-                + " 个中文字符之间；只输出修订后的完整整章正文。";
+                + "不要输出分析、标题或分场景标记；整章软目标篇幅约 " + targetWordCount
+                + " 字，优先保证完整因果与自然节奏，不得为满足字数改写权威事实。";
     }
 
     private FrozenBrief frozenBrief(ChapterGenerationEntity generation) {

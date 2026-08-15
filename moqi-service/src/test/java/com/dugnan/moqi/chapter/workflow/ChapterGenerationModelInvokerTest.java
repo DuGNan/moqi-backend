@@ -10,7 +10,6 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -112,14 +111,13 @@ class ChapterGenerationModelInvokerTest {
     }
 
     @Test
-    void retriesOnceWithLengthCorrectionAndReturnsOnlyTheCorrectedDraft() throws Exception {
+    void keepsACompleteDraftOutsideTheSoftRangeWithoutAutomaticLengthCorrection() throws Exception {
         ChapterGenerationEntity generation = generation();
         ChapterGenerationSceneEntity scene = scene();
-        AtomicInteger callNo = new AtomicInteger();
         LlmStreamCall call = completedCall(null);
         when(provider.stream(any(), any())).thenAnswer(invocation -> {
             Consumer<LlmStreamEvent> consumer = invocation.getArgument(1);
-            consumer.accept(new LlmStreamEvent.TextDelta(callNo.getAndIncrement() == 0 ? "短" : "修订正文"));
+            consumer.accept(new LlmStreamEvent.TextDelta("短"));
             return call;
         });
 
@@ -127,8 +125,8 @@ class ChapterGenerationModelInvokerTest {
                 generation, scene, snapshot, new SceneWordRange(3, 4, 5),
                 new SceneInvocationContext(executionConfig, provider), context(), "cohere_chapter");
 
-        assertThat(result.outputSummary()).containsEntry("content", "修订正文");
-        assertThat(callNo).hasValue(2);
+        assertThat(result.outputSummary()).containsEntry("content", "短");
+        verify(provider).stream(any(), any());
     }
 
     @Test

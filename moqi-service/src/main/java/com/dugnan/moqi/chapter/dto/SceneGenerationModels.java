@@ -22,10 +22,27 @@ public final class SceneGenerationModels {
             String idempotencyKey,
             String lengthPreset,
             Integer customWordCount,
-            Double temperature) {
+            Double temperature,
+            Long capacityAssessmentId,
+            String capacityDecision) {
 
         public CreateSceneGenerationRequest {
             sceneKeys = sceneKeys == null ? List.of() : List.copyOf(sceneKeys);
+        }
+
+        /** 兼容容量评估契约发布前的服务端调用。 */
+        public CreateSceneGenerationRequest(
+                Integer scenePlanNo,
+                String selectionMode,
+                String fromSceneKey,
+                List<String> sceneKeys,
+                Long baseGenerationId,
+                String idempotencyKey,
+                String lengthPreset,
+                Integer customWordCount,
+                Double temperature) {
+            this(scenePlanNo, selectionMode, fromSceneKey, sceneKeys, baseGenerationId, idempotencyKey,
+                    lengthPreset, customWordCount, temperature, null, null);
         }
     }
 

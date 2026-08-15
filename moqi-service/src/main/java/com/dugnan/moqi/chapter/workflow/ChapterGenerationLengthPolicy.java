@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 /**
  * @author dgn
  * @date 2026-08-09
- * @description 封装章节目标字数、场景区间与模型输出上限的现有计算规则。
+ * @description 封装章节软篇幅区间与 Provider 输出安全上限，避免按场景平均分配硬指标。
  */
 @Component
 public class ChapterGenerationLengthPolicy {
@@ -55,6 +55,17 @@ public class ChapterGenerationLengthPolicy {
         int minimum = (int) Math.floor(target * LOWER_BOUND_RATIO);
         int maximum = (int) Math.ceil(target * UPPER_BOUND_RATIO);
         return new SceneWordRange(minimum, target, maximum);
+    }
+
+    /**
+     * 返回整章级软篇幅提示。该提示不会按场景数量拆分，也不用于判定单场景生成失败。
+     *
+     * @param targetChapterWordCount 章节目标字数
+     * @return 供场景生成理解整章节奏的软区间
+     */
+    public SceneWordRange sceneSoftRange(int targetChapterWordCount) {
+        ChapterWordRange range = chapterWordRange(targetChapterWordCount);
+        return new SceneWordRange(range.minimum(), range.target(), range.maximum());
     }
 
     public int maxOutputTokens(int maximumWordCount, Integer providerMaximum) {

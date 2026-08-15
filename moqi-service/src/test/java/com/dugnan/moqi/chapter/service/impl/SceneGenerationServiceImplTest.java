@@ -3,6 +3,7 @@ package com.dugnan.moqi.chapter.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -24,6 +25,7 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.StartAgentRunCommand;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief;
+import com.dugnan.moqi.chapter.capacity.ChapterCapacityAssessmentService;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
@@ -74,6 +76,8 @@ class SceneGenerationServiceImplTest {
     private ApplicationEventPublisher eventPublisher;
     @Mock
     private ChapterGenerationBriefService briefService;
+    @Mock
+    private ChapterCapacityAssessmentService capacityAssessmentService;
 
     private SceneGenerationServiceImpl service;
 
@@ -91,8 +95,13 @@ class SceneGenerationServiceImplTest {
                 new ObjectMapper(),
                 eventPublisher,
                 new com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy(),
-                briefService);
+                briefService,
+                capacityAssessmentService);
         org.mockito.Mockito.lenient().when(briefService.compile(any(), any())).thenReturn(brief());
+        org.mockito.Mockito.lenient().when(capacityAssessmentService.resolveForGeneration(
+                any(), any(), anyInt(), any(), any())).thenReturn(java.util.Map.of(
+                        "inputFingerprint", "capacity-hash",
+                        "result", java.util.Map.of("status", "fits")));
     }
 
     @Test
@@ -128,7 +137,8 @@ class SceneGenerationServiceImplTest {
         var result = service.create(12L, new CreateSceneGenerationRequest(
                 null, "all", null, List.of(), null, "scene-all-1", "about_3000", null, 0.7D));
 
-        ArgumentCaptor<ChapterGenerationSceneEntity> scenes = ArgumentCaptor.forClass(ChapterGenerationSceneEntity.class);
+        ArgumentCaptor<ChapterGenerationSceneEntity> scenes = ArgumentCaptor.forClass(
+                ChapterGenerationSceneEntity.class);
         ArgumentCaptor<ChapterGenerationEntity> generation = ArgumentCaptor.forClass(ChapterGenerationEntity.class);
         ArgumentCaptor<StartAgentRunCommand> run = ArgumentCaptor.forClass(StartAgentRunCommand.class);
         verify(sceneMapper, org.mockito.Mockito.times(2)).insert(scenes.capture());
@@ -139,11 +149,12 @@ class SceneGenerationServiceImplTest {
         assertThat(generation.getValue().getLengthPreset()).isEqualTo("about_3000");
         assertThat(generation.getValue().getCustomWordCount()).isNull();
         assertThat(generation.getValue().getBasisSnapshotJson())
-                .contains("chapterGenerationBrief", "chapter-generation-brief-v1", "fingerprint")
+                .contains("chapterGenerationBrief", "chapter-generation-brief-v1", "fingerprint",
+                        "chapterCapacityAssessment", "capacity-hash")
                 .contains("# Chapter Generation Brief");
         assertThat(run.getValue().input())
                 .containsEntry("targetChapterWordCount", 3000)
-                .containsEntry("plannedSceneCount", 2)
+                .doesNotContainKey("plannedSceneCount")
                 .doesNotContainKey("maxOutputTokens");
         assertThat(scenes.getAllValues()).extracting(ChapterGenerationSceneEntity::getSceneStatus)
                 .containsOnly("pending");
