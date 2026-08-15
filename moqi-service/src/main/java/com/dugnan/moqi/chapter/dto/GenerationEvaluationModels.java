@@ -29,7 +29,28 @@ public final class GenerationEvaluationModels {
             String evidenceRange,
             String storyFactRef,
             String summary,
-            String suggestedAction) {
+            String suggestedAction,
+            String violatedSource,
+            String impactScope,
+            Boolean blocksAcceptance,
+            Boolean suitableForAutoRevision) {
+
+        /** 兼容既有场景级评价 Finding。 */
+        public EvaluationFinding(
+                String issueKey,
+                String category,
+                String severity,
+                Double confidence,
+                String source,
+                Long generationSceneId,
+                String evidenceRange,
+                String storyFactRef,
+                String summary,
+                String suggestedAction) {
+            this(issueKey, category, severity, confidence, source, generationSceneId, evidenceRange,
+                    storyFactRef, summary, suggestedAction, storyFactRef, null,
+                    "blocking".equals(severity), false);
+        }
     }
 
     public record RevisionCandidateView(
@@ -55,6 +76,12 @@ public final class GenerationEvaluationModels {
             List<EvaluationFinding> findings,
             String rulesetVersion,
             String evaluatorVersion,
+            String contentHash,
+            String briefFingerprint,
+            String sourceFingerprint,
+            Long modelCallId,
+            String errorCode,
+            String errorMessage,
             Integer revisionAttempt,
             RevisionCandidateView revisionCandidate,
             Integer version,

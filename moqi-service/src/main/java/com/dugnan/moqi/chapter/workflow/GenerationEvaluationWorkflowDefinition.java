@@ -70,7 +70,8 @@ public class GenerationEvaluationWorkflowDefinition implements AgentWorkflowDefi
 
     @Override
     public int maxAttempts(String stepKey) {
-        return SEMANTIC_EVALUATE.equals(stepKey) || REVISE_CANDIDATE.equals(stepKey) || RE_EVALUATE.equals(stepKey) ? 2 : 1;
+        return SEMANTIC_EVALUATE.equals(stepKey) || REVISE_CANDIDATE.equals(stepKey)
+                || RE_EVALUATE.equals(stepKey) ? 2 : 1;
     }
 
     @Override
@@ -95,12 +96,14 @@ public class GenerationEvaluationWorkflowDefinition implements AgentWorkflowDefi
                     evaluationService.shouldRevise(reportId, merged) ? REVISE_CANDIDATE : FINALIZE);
         }
         if (REVISE_CANDIDATE.equals(stepKey)) {
-            List<EvaluationFinding> findings = objectMapper.convertValue(context.state().get("findings"), new TypeReference<>() { });
+            List<EvaluationFinding> findings = objectMapper.convertValue(
+                    context.state().get("findings"), new TypeReference<>() { });
             evaluationService.persistRevision(reportId, findings, revise(reportId, findings, context));
             return AgentStepResult.completed(Map.of("revisionCreated", true), context.state(), RE_EVALUATE);
         }
         if (RE_EVALUATE.equals(stepKey)) {
-            List<EvaluationFinding> findings = evaluateSource(reportId, context, evaluationService.revisedSemanticSource(reportId));
+            List<EvaluationFinding> findings = evaluateSource(
+                    reportId, context, evaluationService.revisedSemanticSource(reportId));
             return AgentStepResult.completed(Map.of("reEvaluationFindingCount", findings.size()),
                     Map.of("reportId", reportId, "findings", findings), FINALIZE);
         }
@@ -115,7 +118,8 @@ public class GenerationEvaluationWorkflowDefinition implements AgentWorkflowDefi
 
     @Override
     public void applyFailure(String stepKey, AgentStepExecutionContext context, Exception exception) {
-        evaluationService.fail(reportId(context));
+        evaluationService.fail(reportId(context), "evaluation_failed",
+                "评价步骤 " + stepKey + " 失败或超时，候选保持不可采纳");
     }
 
     private Long reportId(AgentStepExecutionContext context) {
@@ -137,11 +141,25 @@ public class GenerationEvaluationWorkflowDefinition implements AgentWorkflowDefi
                     .workId(context.input().get("workId") instanceof Number number ? number.longValue() : null)
                     .aiTaskId(context.input().get("aiTaskId") instanceof Number number ? number.longValue() : null)
                     .agentRunId(context.runId()).agentStepId(context.stepId()).logicalCallId("agent-step:" + context.stepId() + ":evaluation")
-                    .promptTemplateVersion("generation-evaluator-v1").sourceFingerprint(evaluationService.sourceFingerprint(reportId)).build());
+                    .promptTemplateVersion(GenerationEvaluationServiceImpl.EVALUATOR_VERSION)
+                    .sourceFingerprint(evaluationService.sourceFingerprint(reportId)).build());
             LlmResponse response = provider.generate(new LlmRequest(List.of(
-                    new LlmMessage(LlmRole.SYSTEM, "仅输出 JSON 对象 {\"findings\":[]}。Finding 只能描述评价，不得生成或确认正文。"),
+                    new LlmMessage(LlmRole.SYSTEM, """
+                            你是只读的整章质量评价器，不得修改、续写或确认正文，也不得输出隐藏推理。
+                            仅输出 JSON 对象 {"findings":[]}。每条 finding 必须包含 issueKey、category、severity、
+                            confidence、source、generationSceneId、evidenceRange、storyFactRef、summary、suggestedAction、
+                            violatedSource、impactScope、blocksAcceptance、suitableForAutoRevision。
+                            confidence 必须是 0.0 到 1.0 之间的 JSON 数字，例如 0.35；禁止输出 low、medium、high 等文本。
+                            generationSceneId 没有对应场景时必须为 null；blocksAcceptance 和 suitableForAutoRevision 必须是 JSON 布尔值。
+                            逻辑、事实、连续性、视角越权、必需事件遗漏可阻塞；低置信或审美意见只能是 warning，
+                            来源冲突、需要修改规划或权威设定的问题必须 blocksAcceptance=true 且 suitableForAutoRevision=false。
+                            重点检查开场承接、重复事件、完整因果、人物主动性、时空路线、伤势/道具/设备状态、
+                            信息获得顺序、敌方行动合理性、专名首次介绍、伪技术解释、事件压缩、描写/对话有效性和结尾兑现。
+                            """),
                     new LlmMessage(LlmRole.USER, source)),
                     new LlmOptions(2048, null, List.of(), LlmResponseFormat.JSON_OBJECT)));
+            evaluationService.recordModelCall(reportId,
+                    response == null || response.metadata() == null ? null : response.metadata().modelCallId());
             JsonNode content = response == null ? null : response.structuredContent();
             if (content == null || !content.isObject() || content.size() != 1 || !content.has("findings") || !content.get("findings").isArray()) {
                 throw new IllegalArgumentException("模型评价未返回合法结构化 Finding");
@@ -158,16 +176,21 @@ public class GenerationEvaluationWorkflowDefinition implements AgentWorkflowDefi
     private String revise(Long reportId, List<EvaluationFinding> findings, AgentStepExecutionContext context) {
         try {
             LlmExecutionConfig config = userConfigService.requireAvailableExecutionConfig();
-            LlmProvider provider = providerFactory.createObserved(config, LlmCallContext.builder(workflowType(), REVISE_CANDIDATE)
-                    .agentRunId(context.runId()).agentStepId(context.stepId()).logicalCallId("agent-step:" + context.stepId() + ":revision")
-                    .promptTemplateVersion("generation-revision-v1").sourceFingerprint(evaluationService.sourceFingerprint(reportId)).build());
+            LlmProvider provider = providerFactory.createObserved(config,
+                    LlmCallContext.builder(workflowType(), REVISE_CANDIDATE)
+                            .agentRunId(context.runId()).agentStepId(context.stepId())
+                            .logicalCallId("agent-step:" + context.stepId() + ":revision")
+                            .promptTemplateVersion("generation-revision-v1")
+                            .sourceFingerprint(evaluationService.sourceFingerprint(reportId)).build());
             LlmResponse response = provider.generate(new LlmRequest(List.of(
-                    new LlmMessage(LlmRole.SYSTEM, "仅输出 JSON 对象 {\"revisionContent\":\"...\"}，只改写给定证据范围，不确认或修改故事事实。"),
-                    new LlmMessage(LlmRole.USER, objectMapper.writeValueAsString(evaluationService.revisionInput(reportId, findings)))),
+                    new LlmMessage(LlmRole.SYSTEM,
+                            "仅输出 JSON 对象 {\"revisionContent\":\"...\"}，只改写给定证据范围，不确认或修改故事事实。"),
+                    new LlmMessage(LlmRole.USER,
+                            objectMapper.writeValueAsString(evaluationService.revisionInput(reportId, findings)))),
                     new LlmOptions(2048, null, List.of(), LlmResponseFormat.JSON_OBJECT)));
             JsonNode output = response == null ? null : response.structuredContent();
-            if (output == null || !output.isObject() || output.size() != 1 || !output.has("revisionContent")
-                    || !output.get("revisionContent").isTextual()) {
+            if (output == null || !output.isObject() || output.size() != 1
+                    || !output.has("revisionContent") || !output.get("revisionContent").isTextual()) {
                 throw new IllegalArgumentException("模型修订未返回合法结构化正文片段");
             }
             return output.get("revisionContent").textValue();
@@ -177,4 +200,5 @@ public class GenerationEvaluationWorkflowDefinition implements AgentWorkflowDefi
             throw new IllegalStateException("正文局部修订 Provider 调用失败", exception);
         }
     }
+
 }

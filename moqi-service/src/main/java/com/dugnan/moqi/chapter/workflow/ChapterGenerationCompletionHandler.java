@@ -1,10 +1,13 @@
 package com.dugnan.moqi.chapter.workflow;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
+import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
 
 /**
@@ -15,10 +18,15 @@ import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
 @Component
 public class ChapterGenerationCompletionHandler {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(ChapterGenerationCompletionHandler.class);
     private final ApplicationEventPublisher eventPublisher;
+    private final GenerationEvaluationService evaluationService;
 
-    public ChapterGenerationCompletionHandler(ApplicationEventPublisher eventPublisher) {
+    public ChapterGenerationCompletionHandler(
+            ApplicationEventPublisher eventPublisher,
+            GenerationEvaluationService evaluationService) {
         this.eventPublisher = eventPublisher;
+        this.evaluationService = evaluationService;
     }
 
     public void generationStarted(ChapterGenerationEntity generation) {
@@ -59,5 +67,10 @@ public class ChapterGenerationCompletionHandler {
     public void generationCompleted(ChapterGenerationEntity generation) {
         eventPublisher.publishEvent(SceneGenerationEvent.generation(
                 "generation.completed", generation.getChapterId(), generation.getId(), "preview"));
+        try {
+            evaluationService.createAutomatic(generation.getChapterId(), generation.getId());
+        } catch (RuntimeException exception) {
+            LOGGER.error("整章候选自动评价启动失败，generationId={}", generation.getId(), exception);
+        }
     }
 }
