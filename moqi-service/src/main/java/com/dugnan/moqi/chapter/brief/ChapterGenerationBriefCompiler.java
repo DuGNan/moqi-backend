@@ -20,7 +20,7 @@ import com.dugnan.moqi.planning.PlanningModels.ScenePlanView;
 public class ChapterGenerationBriefCompiler {
 
     public static final int SCHEMA_VERSION = 1;
-    public static final String TEMPLATE_VERSION = "chapter-generation-brief-v1";
+    public static final String TEMPLATE_VERSION = "chapter-generation-brief-v2-entity-cards";
 
     private final ChapterGenerationBriefFingerprint fingerprint;
     private final ChapterGenerationBriefRenderer renderer;

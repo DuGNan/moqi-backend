@@ -11,6 +11,8 @@ import org.junit.jupiter.api.Test;
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief.EntityExplanation;
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief.SourceRef;
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBriefSource.ConsensusSource;
+import com.dugnan.moqi.chapter.entitycard.GenerationEntityCard;
+import com.dugnan.moqi.chapter.entitycard.GenerationEntityCardRenderer;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Beat;
 import com.dugnan.moqi.planning.PlanningModels.PlanReference;
@@ -37,8 +39,10 @@ class ChapterGenerationBriefCompilerTest {
         assertThat(first.fingerprint()).isEqualTo(second.fingerprint());
         assertThat(first.content()).isEqualTo(second.content())
                 .contains("P0｜章节身份与任务", "读者必须知道", "人物目标与认知边界", "禁止发明")
-                .contains("林风（人物）：舰桥值班员，只知道备用电源失效")
+                .contains("林风（人物）：舰桥值班员，只知道备用电源失效", "当前状态：受伤",
+                        "角色认知边界：不知道内鬼身份", "禁止推断：不得补造军衔")
                 .doesNotContain("\"sceneKey\"", "{");
+        assertThat(first.templateVersion()).isEqualTo("chapter-generation-brief-v2-entity-cards");
         assertThat(first.compiledAt()).isNotEqualTo(second.compiledAt());
     }
 
@@ -65,11 +69,17 @@ class ChapterGenerationBriefCompilerTest {
                 List.of("beat-1"), List.of("敌方已经潜入"), List.of("备用电源失效"), "从舰桥进入机舱",
                 List.of("主角取得控制权"), List.of("林风不知道内鬼身份"), "core", List.of("动作细节"),
                 List.of("不得新增援军"));
+        GenerationEntityCard card = new GenerationEntityCard(
+                101L, "人物", "林风", List.of("阿风"), "长夜号", "视角人物", "受伤",
+                "不知道内鬼身份", "首次说明值班职责", "不得补造军衔", false,
+                "舰桥值班员，只知道备用电源失效", "3");
         return new ChapterGenerationBriefSource(
                 1L, "长夜号", 2L, 2, "失控舰桥", consensus, outline,
                 List.of(new ScenePlanView(301L, "alarm", 1, 2, scene)), "舱门在身后锁死。", "警报响起",
                 List.of("备用电源被切断"),
-                List.of(new EntityExplanation(101L, "人物", "林风", "舰桥值班员，只知道备用电源失效")),
+                List.of(card),
+                List.of(new EntityExplanation(
+                        101L, "人物", "林风", new GenerationEntityCardRenderer().render(card))),
                 List.of(new SourceRef("CHAPTER_OUTLINE", "201", "3:1")));
     }
 }

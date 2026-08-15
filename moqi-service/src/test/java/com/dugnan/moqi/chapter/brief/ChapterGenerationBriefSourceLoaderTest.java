@@ -11,12 +11,15 @@ import static org.mockito.Mockito.when;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import com.dugnan.moqi.chapter.consensus.ChapterConsensusCodec;
 import com.dugnan.moqi.chapter.consensus.ChapterConsensusDocument;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
+import com.dugnan.moqi.chapter.entitycard.GenerationEntityCardRenderer;
+import com.dugnan.moqi.chapter.entitycard.GenerationEntityCardSelector;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent.Beat;
@@ -61,8 +64,11 @@ class ChapterGenerationBriefSourceLoaderTest {
     @BeforeEach
     void setUp() {
         loader = new ChapterGenerationBriefSourceLoader(
-                workMapper, chapterMapper, briefMapper, outlineMapper, settingMapper, foreshadowingMapper,
-                summaryMapper, eventMapper, consensusCodec, outlineCodec);
+                workMapper, chapterMapper, briefMapper, outlineMapper, foreshadowingMapper,
+                summaryMapper, eventMapper, consensusCodec, outlineCodec,
+                new GenerationEntityCardSelector(settingMapper, new ObjectMapper()),
+                new GenerationEntityCardRenderer());
+        when(settingMapper.selectList(any())).thenReturn(List.of());
     }
 
     @Test
@@ -78,6 +84,10 @@ class ChapterGenerationBriefSourceLoaderTest {
         assertThat(source.entityExplanations()).singleElement().satisfies(entity -> {
             assertThat(entity.name()).isEqualTo("林风");
             assertThat(entity.explanation()).contains("不得补造");
+        });
+        assertThat(source.entityCards()).singleElement().satisfies(card -> {
+            assertThat(card.entityId()).isNull();
+            assertThat(card.firstEstablishedInChapter()).isFalse();
         });
         verify(summaryMapper, never()).selectOne(any());
         verify(eventMapper, never()).selectList(any());

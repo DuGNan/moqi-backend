@@ -2,6 +2,7 @@ package com.dugnan.moqi.chapter.service;
 
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefPreview;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationEntityCardModels.EntityCardPreview;
 import com.dugnan.moqi.planning.PlanningModels.ChapterPlanView;
 
 /**
@@ -28,4 +29,13 @@ public interface ChapterGenerationBriefService {
      * @return 生成说明预览
      */
     GenerationBriefPreview preview(Long chapterId, Integer scenePlanNo);
+
+    /**
+     * 只读预览当前或指定发布规划选择出的结构化实体卡。
+     *
+     * @param chapterId 章节 ID
+     * @param scenePlanNo 可选发布规划版本号
+     * @return 稳定实体卡、来源与指纹
+     */
+    EntityCardPreview previewEntityCards(Long chapterId, Integer scenePlanNo);
 }
