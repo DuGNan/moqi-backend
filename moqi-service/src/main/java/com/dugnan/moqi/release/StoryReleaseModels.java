@@ -2,6 +2,7 @@ package com.dugnan.moqi.release;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import com.dugnan.moqi.impact.ProseImpactModels.WorkspaceImpactSummary;
 
 /**
  * @author dgn
@@ -91,6 +92,7 @@ public final class StoryReleaseModels {
             Integer baselineWorkVersion,
             String workspaceStatus,
             List<String> blockingItems,
+            WorkspaceImpactSummary impactSummary,
             List<WorkspaceChapterView> chapters,
             Integer version,
             LocalDateTime gmtCreate,
