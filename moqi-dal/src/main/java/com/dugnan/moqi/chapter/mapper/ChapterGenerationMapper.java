@@ -37,6 +37,29 @@ public interface ChapterGenerationMapper extends BaseMapper<ChapterGenerationEnt
     ChapterGenerationEntity findLatestPreview(@Param("chapterId") Long chapterId);
 
     /**
+     * 查询章节最新仍需前端恢复的生成记录，仅读取恢复摘要字段。
+     *
+     * @param chapterId 章节 ID
+     * @return 最新活动生成，不存在时返回 null
+     */
+    @Select("""
+            SELECT id,
+                   chapter_id,
+                   generation_status,
+                   content_assembly_mode,
+                   ai_task_id,
+                   agent_run_id,
+                   gmt_modified
+            FROM chapter_generations
+            WHERE chapter_id = #{chapterId}
+              AND generation_status IN ('queued', 'running', 'failed', 'preview')
+              AND deleted = 0
+            ORDER BY gmt_modified DESC, id DESC
+            LIMIT 1
+            """)
+    ChapterGenerationEntity findLatestActive(@Param("chapterId") Long chapterId);
+
+    /**
      * 按当前状态条件流转生成记录。
      *
      * @param generationId 生成记录 ID

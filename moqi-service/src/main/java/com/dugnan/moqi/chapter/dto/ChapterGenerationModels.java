@@ -80,8 +80,46 @@ public final class ChapterGenerationModels {
             Long generationModelCallId,
             String generationTemplateVersion,
             String generationFinishReason,
+            Integer currentAttempt,
+            Boolean retryable,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
+
+        /** 兼容恢复元数据发布前的内部构造调用。 */
+        public GenerationDetail(
+                Long id,
+                Long workId,
+                Long chapterId,
+                Long chapterPlanVersionId,
+                Long baseGenerationId,
+                Long outlineId,
+                Integer outlineRevision,
+                String generationStatus,
+                String generationMode,
+                String lengthPreset,
+                Integer customWordCount,
+                Map<String, Object> basisSnapshot,
+                String generatedContent,
+                Integer wordCount,
+                Long aiTaskId,
+                Long agentRunId,
+                Long sourceSnapshotId,
+                String validityStatus,
+                String contentAssemblyMode,
+                String cohesionStatus,
+                Long cohesionModelCallId,
+                String cohesionTemplateVersion,
+                Long generationModelCallId,
+                String generationTemplateVersion,
+                String generationFinishReason,
+                LocalDateTime gmtCreate,
+                LocalDateTime gmtModified) {
+            this(id, workId, chapterId, chapterPlanVersionId, baseGenerationId, outlineId, outlineRevision,
+                    generationStatus, generationMode, lengthPreset, customWordCount, basisSnapshot, generatedContent,
+                    wordCount, aiTaskId, agentRunId, sourceSnapshotId, validityStatus, contentAssemblyMode,
+                    cohesionStatus, cohesionModelCallId, cohesionTemplateVersion, generationModelCallId,
+                    generationTemplateVersion, generationFinishReason, null, false, gmtCreate, gmtModified);
+        }
     }
 
     @JsonInclude(JsonInclude.Include.ALWAYS)
@@ -92,6 +130,20 @@ public final class ChapterGenerationModels {
             String generationMode,
             Integer wordCount,
             LocalDateTime gmtCreate) {
+    }
+
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    public record LatestActiveGeneration(
+            Long generationId,
+            Long chapterId,
+            String generationStatus,
+            String contentAssemblyMode,
+            Long aiTaskId,
+            Long agentRunId,
+            String currentStepKey,
+            Integer currentAttempt,
+            Boolean retryable,
+            LocalDateTime gmtModified) {
     }
 
     public record AcceptGenerationRequest(String applyMode, Integer baseVersion) {

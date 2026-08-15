@@ -22,6 +22,7 @@ import com.dugnan.moqi.agent.mapper.AgentRunStepMapper;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterCapacityAssessmentMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextEngine;
@@ -90,6 +91,7 @@ class ChapterCapacityApplicationContextTest {
             ChapterCapacityAssessmentWorkflowDefinition.class,
             ChapterCapacityAssessmentServiceImpl.class,
             ChapterCapacityCompiler.class,
+            GenerationRetryMetadataResolver.class,
             ChapterGenerationLengthPolicy.class,
             StoryPlanningServiceImpl.class,
             PlanningContentCodec.class

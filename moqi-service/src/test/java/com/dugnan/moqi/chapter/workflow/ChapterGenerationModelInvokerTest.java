@@ -34,6 +34,8 @@ import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmExecutionConfigDescriptor;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderCapabilities;
+import com.dugnan.moqi.llm.LlmProviderError;
+import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 import com.dugnan.moqi.llm.LlmResponseMetadata;
@@ -196,6 +198,21 @@ class ChapterGenerationModelInvokerTest {
         assertThatThrownBy(() -> invoker.generateWholeChapter(generation, prompt, 3000, nullSafeContext()))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("不是纯小说正文");
+    }
+
+    @Test
+    void exposesControlledProviderFailureToAgentRuntimeForRetry() throws Exception {
+        ChapterGenerationEntity generation = generation();
+        when(provider.stream(any(), any()))
+                .thenThrow(new LlmProviderException(LlmProviderError.SERVICE_UNAVAILABLE));
+        WholeChapterPrompt prompt = new WholeChapterPrompt(
+                List.of(new LlmMessage(LlmRole.SYSTEM, "只输出正文")),
+                "source-hash",
+                "whole-chapter-v1");
+
+        assertThatThrownBy(() -> invoker.generateWholeChapter(generation, prompt, 3000, nullSafeContext()))
+                .isInstanceOf(LlmProviderException.class)
+                .hasMessageContaining("暂不可用");
     }
 
     private AgentStepExecutionContext context() {

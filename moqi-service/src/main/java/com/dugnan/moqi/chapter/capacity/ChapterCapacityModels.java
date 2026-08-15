@@ -78,8 +78,36 @@ public final class ChapterCapacityModels {
             Long modelCallId,
             String errorCode,
             String errorMessage,
+            Integer currentAttempt,
+            Boolean retryable,
             Integer version,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
+
+        /** 兼容恢复元数据发布前的内部构造调用。 */
+        public CapacityAssessmentView(
+                Long id,
+                Long workId,
+                Long chapterId,
+                Long chapterPlanVersionId,
+                Integer scenePlanNo,
+                Integer targetWordCount,
+                String status,
+                CapacityResult result,
+                String briefTemplateVersion,
+                String briefFingerprint,
+                String inputFingerprint,
+                Long aiTaskId,
+                Long agentRunId,
+                Long modelCallId,
+                String errorCode,
+                String errorMessage,
+                Integer version,
+                LocalDateTime gmtCreate,
+                LocalDateTime gmtModified) {
+            this(id, workId, chapterId, chapterPlanVersionId, scenePlanNo, targetWordCount, status, result,
+                    briefTemplateVersion, briefFingerprint, inputFingerprint, aiTaskId, agentRunId, modelCallId,
+                    errorCode, errorMessage, null, false, version, gmtCreate, gmtModified);
+        }
     }
 }

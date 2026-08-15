@@ -25,6 +25,7 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationCreated;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationDetail;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationRejected;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestActiveGeneration;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefPreview;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefSourceRef;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
@@ -164,6 +165,22 @@ class ChapterGenerationControllerTest {
                 .andExpect(jsonPath("$.data.generationId").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.data.chapterId").value(12))
                 .andExpect(jsonPath("$.data.generationStatus").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    /** 验证章节活动生成恢复接口公开步骤尝试元数据。 */
+    @Test
+    void getsLatestActiveGeneration() throws Exception {
+        when(chapterGenerationService.getLatestActiveGeneration(12L))
+                .thenReturn(new LatestActiveGeneration(
+                        7004L, 12L, "failed", "whole_chapter_once", 9003L, 9004L,
+                        "generate_chapter", 2, true, LocalDateTime.of(2026, 8, 15, 12, 0)));
+
+        mvc.perform(get("/api/chapters/12/generations/latest-active"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.generationId").value(7004))
+                .andExpect(jsonPath("$.data.contentAssemblyMode").value("whole_chapter_once"))
+                .andExpect(jsonPath("$.data.currentAttempt").value(2))
+                .andExpect(jsonPath("$.data.retryable").value(true));
     }
 
     /**

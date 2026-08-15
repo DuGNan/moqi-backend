@@ -9,6 +9,7 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationCreated;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationDetail;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationRejected;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestActiveGeneration;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RegenerateRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RejectGenerationRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
@@ -44,6 +45,14 @@ public interface ChapterGenerationService {
      * @return 最近预览或显式空态
      */
     LatestPreview getLatestPreview(Long chapterId);
+
+    /**
+     * 查询章节最新仍需恢复处理的生成记录。
+     *
+     * @param chapterId 章节 ID
+     * @return 最新活动生成或显式空态
+     */
+    LatestActiveGeneration getLatestActiveGeneration(Long chapterId);
 
     /**
      * 将生成预览采纳到章节正文。
