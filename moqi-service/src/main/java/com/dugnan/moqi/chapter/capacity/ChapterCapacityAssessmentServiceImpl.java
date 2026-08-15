@@ -31,6 +31,8 @@ import com.dugnan.moqi.chapter.entity.ChapterCapacityAssessmentEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterCapacityAssessmentMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -70,6 +72,7 @@ public class ChapterCapacityAssessmentServiceImpl implements ChapterCapacityAsse
     private final ChapterCapacityCompiler compiler;
     private final ObjectMapper objectMapper;
     private final AgentRuntime agentRuntime;
+    private final GenerationRetryMetadataResolver retryMetadataResolver;
 
     public ChapterCapacityAssessmentServiceImpl(
             ChapterMapper chapterMapper,
@@ -80,7 +83,8 @@ public class ChapterCapacityAssessmentServiceImpl implements ChapterCapacityAsse
             ChapterGenerationLengthPolicy lengthPolicy,
             ChapterCapacityCompiler compiler,
             ObjectMapper objectMapper,
-            @Lazy AgentRuntime agentRuntime) {
+            @Lazy AgentRuntime agentRuntime,
+            GenerationRetryMetadataResolver retryMetadataResolver) {
         this.chapterMapper = chapterMapper;
         this.assessmentMapper = assessmentMapper;
         this.taskMapper = taskMapper;
@@ -90,6 +94,7 @@ public class ChapterCapacityAssessmentServiceImpl implements ChapterCapacityAsse
         this.compiler = compiler;
         this.objectMapper = objectMapper;
         this.agentRuntime = agentRuntime;
+        this.retryMetadataResolver = retryMetadataResolver;
     }
 
     @Override
@@ -379,12 +384,14 @@ public class ChapterCapacityAssessmentServiceImpl implements ChapterCapacityAsse
     }
 
     private CapacityAssessmentView view(ChapterCapacityAssessmentEntity entity) {
+        RetryMetadata metadata = retryMetadataResolver.resolve(entity.getAgentRunId(), SEMANTIC_STEP);
         return new CapacityAssessmentView(entity.getId(), entity.getWorkId(), entity.getChapterId(),
                 entity.getChapterPlanVersionId(), entity.getScenePlanNo(), entity.getTargetWordCount(),
                 entity.getAssessmentStatus(), result(entity), entity.getBriefTemplateVersion(),
                 entity.getBriefFingerprint(), entity.getInputFingerprint(), entity.getAiTaskId(),
                 entity.getAgentRunId(), entity.getModelCallId(), entity.getErrorCode(), entity.getErrorMessage(),
-                entity.getVersion(), entity.getGmtCreate(), entity.getGmtModified());
+                metadata.currentAttempt(), metadata.retryable(), entity.getVersion(), entity.getGmtCreate(),
+                entity.getGmtModified());
     }
 
     private CapacityResult result(ChapterCapacityAssessmentEntity entity) {

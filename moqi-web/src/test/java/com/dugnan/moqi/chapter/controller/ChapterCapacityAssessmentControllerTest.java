@@ -47,7 +47,7 @@ class ChapterCapacityAssessmentControllerTest {
                 List.of("continue_long_chapter"), "model", null, false);
         CapacityAssessmentView view = new CapacityAssessmentView(8L, 2L, 12L, 31L, 4, 1500,
                 "ready", result, "chapter-generation-brief-v1", "brief-hash", "input-hash",
-                41L, 51L, 61L, null, null, 2, LocalDateTime.now(), LocalDateTime.now());
+                41L, 51L, 61L, null, null, 2, true, 2, LocalDateTime.now(), LocalDateTime.now());
         when(service.create(Mockito.eq(12L), Mockito.any())).thenReturn(view);
         when(service.get(8L)).thenReturn(view);
 
@@ -59,7 +59,9 @@ class ChapterCapacityAssessmentControllerTest {
                 .andExpect(jsonPath("$.data.result.status").value("too_dense"));
         mvc.perform(get("/api/chapter-capacity-assessments/8"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.inputFingerprint").value("input-hash"));
+                .andExpect(jsonPath("$.data.inputFingerprint").value("input-hash"))
+                .andExpect(jsonPath("$.data.currentAttempt").value(2))
+                .andExpect(jsonPath("$.data.retryable").value(true));
     }
 
     @Test

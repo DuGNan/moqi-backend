@@ -21,6 +21,7 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationCreated;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationDetail;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationRejected;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestActiveGeneration;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RegenerateRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.RejectGenerationRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
@@ -34,6 +35,8 @@ import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
@@ -86,6 +89,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     private final AiTaskMapper aiTaskMapper;
     private final ChapterContentGenerator contentGenerator;
     private final ApplicationEventPublisher eventPublisher;
+    private final GenerationRetryMetadataResolver retryMetadataResolver;
 
     /**
      * 创建章节生成服务。
@@ -98,6 +102,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
      * @param aiTaskMapper AI 任务数据访问对象
      * @param contentGenerator 正文生成器
      * @param eventPublisher 事务提交后的领域事件发布器
+     * @param retryMetadataResolver 生成恢复与重试元数据解析器
      */
     public ChapterGenerationServiceImpl(
             WorkMapper workMapper,
@@ -107,7 +112,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             ChapterGenerationMapper generationMapper,
             AiTaskMapper aiTaskMapper,
             ChapterContentGenerator contentGenerator,
-            ApplicationEventPublisher eventPublisher) {
+            ApplicationEventPublisher eventPublisher,
+            GenerationRetryMetadataResolver retryMetadataResolver) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.outlineMapper = outlineMapper;
@@ -116,6 +122,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         this.aiTaskMapper = aiTaskMapper;
         this.contentGenerator = contentGenerator;
         this.eventPublisher = eventPublisher;
+        this.retryMetadataResolver = retryMetadataResolver;
     }
 
     @Override
@@ -189,6 +196,30 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 preview.getGenerationMode(),
                 preview.getWordCount(),
                 preview.getGmtCreate());
+    }
+
+    @Override
+    public LatestActiveGeneration getLatestActiveGeneration(Long chapterId) {
+        requireChapter(chapterId);
+        ChapterGenerationEntity generation = generationMapper.findLatestActive(chapterId);
+        if (generation == null) {
+            return new LatestActiveGeneration(
+                    null, chapterId, null, null, null, null, null, null, false, null);
+        }
+        RetryMetadata metadata = retryMetadataResolver.resolve(
+                generation.getAgentRunId(), "generate_chapter");
+        return new LatestActiveGeneration(
+                generation.getId(),
+                generation.getChapterId(),
+                generation.getGenerationStatus(),
+                StringUtils.hasText(generation.getContentAssemblyMode())
+                        ? generation.getContentAssemblyMode() : "scene_join_legacy",
+                generation.getAiTaskId(),
+                generation.getAgentRunId(),
+                metadata.currentStepKey(),
+                metadata.currentAttempt(),
+                metadata.retryable(),
+                generation.getGmtModified());
     }
 
     @Override
@@ -511,6 +542,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     }
 
     private GenerationDetail generationDetail(ChapterGenerationEntity generation) {
+        RetryMetadata metadata = retryMetadataResolver.resolve(
+                generation.getAgentRunId(), "generate_chapter");
         return new GenerationDetail(
                 generation.getId(),
                 generation.getWorkId(),
@@ -539,6 +572,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 generation.getGenerationModelCallId(),
                 generation.getGenerationTemplateVersion(),
                 generation.getGenerationFinishReason(),
+                metadata.currentAttempt(),
+                metadata.retryable(),
                 generation.getGmtCreate(),
                 generation.getGmtModified());
     }

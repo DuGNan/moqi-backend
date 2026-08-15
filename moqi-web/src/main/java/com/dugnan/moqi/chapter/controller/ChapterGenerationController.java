@@ -14,6 +14,7 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefP
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ChapterContent;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ContentSaved;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
+import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestActiveGeneration;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.CreateEvaluationRequest;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationReportView;
@@ -131,6 +132,17 @@ public class ChapterGenerationController {
     @GetMapping("/{chapterId}/generations/latest-preview")
     public ApiResponse<LatestPreview> getLatestPreview(@PathVariable Long chapterId) {
         return ApiResponse.success(chapterGenerationService.getLatestPreview(chapterId));
+    }
+
+    /**
+     * 查询章节最新仍需前端恢复的生成记录。
+     *
+     * @param chapterId 章节 ID
+     * @return 最新活动生成或显式空态
+     */
+    @GetMapping("/{chapterId}/generations/latest-active")
+    public ApiResponse<LatestActiveGeneration> getLatestActiveGeneration(@PathVariable Long chapterId) {
+        return ApiResponse.success(chapterGenerationService.getLatestActiveGeneration(chapterId));
     }
 
     /**

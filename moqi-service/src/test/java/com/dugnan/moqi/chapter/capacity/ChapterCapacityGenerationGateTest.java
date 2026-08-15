@@ -25,6 +25,7 @@ import com.dugnan.moqi.chapter.entity.ChapterCapacityAssessmentEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterCapacityAssessmentMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -55,6 +56,8 @@ class ChapterCapacityGenerationGateTest {
     private ChapterCapacityCompiler compiler;
     @Mock
     private AgentRuntime agentRuntime;
+    @Mock
+    private GenerationRetryMetadataResolver retryMetadataResolver;
     private ObjectMapper objectMapper;
     private ChapterCapacityAssessmentServiceImpl service;
 
@@ -62,7 +65,8 @@ class ChapterCapacityGenerationGateTest {
     void setUp() {
         objectMapper = new ObjectMapper();
         service = new ChapterCapacityAssessmentServiceImpl(chapterMapper, assessmentMapper, taskMapper,
-                planQueryPort, briefService, new ChapterGenerationLengthPolicy(), compiler, objectMapper, agentRuntime);
+                planQueryPort, briefService, new ChapterGenerationLengthPolicy(), compiler, objectMapper, agentRuntime,
+                retryMetadataResolver);
     }
 
     @Test

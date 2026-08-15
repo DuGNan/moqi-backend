@@ -3,6 +3,8 @@ package com.dugnan.moqi.chapter.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -34,6 +36,8 @@ import com.dugnan.moqi.chapter.generator.ChapterContentGenerator;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
@@ -67,6 +71,8 @@ class ChapterGenerationServiceImplTest {
     private ChapterContentGenerator contentGenerator;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private GenerationRetryMetadataResolver retryMetadataResolver;
 
     private ChapterGenerationServiceImpl service;
 
@@ -83,7 +89,11 @@ class ChapterGenerationServiceImplTest {
                 generationMapper,
                 aiTaskMapper,
                 contentGenerator,
-                eventPublisher);
+                eventPublisher,
+                retryMetadataResolver);
+        org.mockito.Mockito.lenient()
+                .when(retryMetadataResolver.resolve(nullable(Long.class), anyString()))
+                .thenReturn(new RetryMetadata(null, null, false));
     }
 
     /**
@@ -391,6 +401,54 @@ class ChapterGenerationServiceImplTest {
 
         assertThat(sql)
                 .contains("ORDER BY gmt_create DESC, id DESC")
+                .contains("LIMIT 1")
+                .doesNotContain("generated_content", "basis_snapshot_json");
+    }
+
+    /** 验证章节最新失败整章生成返回真实重试尝试元数据。 */
+    @Test
+    void returnsLatestActiveGenerationWithRetryMetadata() {
+        when(chapterMapper.selectById(12L)).thenReturn(chapter(12L, "", 3));
+        ChapterGenerationEntity generation = generation(7004L, "failed", null);
+        generation.setChapterId(12L);
+        generation.setContentAssemblyMode("whole_chapter_once");
+        generation.setAiTaskId(9003L);
+        generation.setAgentRunId(9004L);
+        when(generationMapper.findLatestActive(12L)).thenReturn(generation);
+        when(retryMetadataResolver.resolve(9004L, "generate_chapter"))
+                .thenReturn(new RetryMetadata("generate_chapter", 2, true));
+
+        var result = service.getLatestActiveGeneration(12L);
+
+        assertThat(result.generationId()).isEqualTo(7004L);
+        assertThat(result.currentAttempt()).isEqualTo(2);
+        assertThat(result.retryable()).isTrue();
+    }
+
+    /** 验证章节不存在活动生成时返回显式空态。 */
+    @Test
+    void returnsEmptyLatestActiveGeneration() {
+        when(chapterMapper.selectById(12L)).thenReturn(chapter(12L, "", 3));
+        when(generationMapper.findLatestActive(12L)).thenReturn(null);
+
+        var result = service.getLatestActiveGeneration(12L);
+
+        assertThat(result.generationId()).isNull();
+        assertThat(result.chapterId()).isEqualTo(12L);
+        assertThat(result.retryable()).isFalse();
+    }
+
+    /** 验证活动生成查询按状态、更新时间和 ID 稳定选择且不读取正文。 */
+    @Test
+    void latestActiveQueryFiltersAndLimitsAtDatabase() throws NoSuchMethodException {
+        Select select = ChapterGenerationMapper.class
+                .getMethod("findLatestActive", Long.class)
+                .getAnnotation(Select.class);
+        String sql = String.join(" ", select.value()).replaceAll("\\s+", " ").trim();
+
+        assertThat(sql)
+                .contains("generation_status IN ('queued', 'running', 'failed', 'preview')")
+                .contains("ORDER BY gmt_modified DESC, id DESC")
                 .contains("LIMIT 1")
                 .doesNotContain("generated_content", "basis_snapshot_json");
     }
