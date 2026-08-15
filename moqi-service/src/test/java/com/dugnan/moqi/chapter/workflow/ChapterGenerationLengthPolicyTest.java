@@ -19,31 +19,26 @@ class ChapterGenerationLengthPolicyTest {
             new ChapterGenerationPromptCompiler(null, null, null, null);
 
     @Test
-    void resolvesPresetAndDistributesTheChapterTargetAcrossAllScenes() {
+    void resolvesPresetAndUsesAChapterLevelSoftRangeWithoutSceneDivision() {
         assertThat(lengthPolicy.resolveTargetWordCount("about_3000", null)).isEqualTo(3000);
+        assertThat(lengthPolicy.resolveTargetWordCount(null, null)).isEqualTo(3000);
 
-        SceneWordRange first = lengthPolicy.sceneWordRange(3000, 7, 1);
-        SceneWordRange last = lengthPolicy.sceneWordRange(3000, 7, 7);
+        SceneWordRange first = lengthPolicy.sceneSoftRange(3000);
+        SceneWordRange last = lengthPolicy.sceneSoftRange(3000);
 
-        assertThat(first).isEqualTo(new SceneWordRange(386, 429, 472));
-        assertThat(last).isEqualTo(new SceneWordRange(385, 428, 471));
+        assertThat(first).isEqualTo(new SceneWordRange(2700, 3000, 3301));
+        assertThat(last).isEqualTo(first);
         assertThat(promptCompiler.generationInstruction(first))
-                .contains("严格控制在 386 至 472 个中文字符", "建议约 429 个中文字符");
+                .contains("整章目标篇幅为软区间", "不得把整章目标平均摊到每个场景")
+                .doesNotContain("严格控制");
         assertThat(promptCompiler.contextBuildCommand(1L, 2L, 16384, 4096, null, first).currentInput())
-                .contains("严格控制在 386 至 472 个中文字符", "建议约 429 个中文字符");
-        assertThat(first.contains(386)).isTrue();
-        assertThat(first.contains(472)).isTrue();
-        assertThat(first.contains(385)).isFalse();
-        assertThat(promptCompiler.correctionInstruction(first, 300))
-                .contains("扩写", "386 至 472 个中文字符", "只输出修订后的完整正文");
-        assertThat(promptCompiler.correctionInstruction(first, 500))
-                .contains("压缩", "386 至 472 个中文字符");
+                .contains("整章目标篇幅为软区间", "不得把整章目标平均摊到每个场景");
     }
 
     @Test
     void derivesAProviderLimitFromTheWordRangeAndHonorsProviderCapabilities() {
-        assertThat(lengthPolicy.maxOutputTokens(472, null)).isEqualTo(472);
-        assertThat(lengthPolicy.maxOutputTokens(472, 300)).isEqualTo(300);
+        assertThat(lengthPolicy.maxOutputTokens(3301, null)).isEqualTo(3301);
+        assertThat(lengthPolicy.maxOutputTokens(3301, 3000)).isEqualTo(3000);
     }
 
     @Test

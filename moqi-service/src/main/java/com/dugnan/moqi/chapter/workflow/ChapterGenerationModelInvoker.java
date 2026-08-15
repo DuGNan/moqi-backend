@@ -4,7 +4,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,7 +17,6 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
-import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.ChapterWordRange;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy.SceneWordRange;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -111,19 +109,6 @@ public class ChapterGenerationModelInvoker {
             LlmStreamResult streamResult = requireCompleted(call.await());
             context.callRegistry().unregister(context.runId(), call);
             call = null;
-            int actualWordCount = wordCount(content.toString());
-            if (!wordRange.contains(actualWordCount)) {
-                List<LlmMessage> messages = new ArrayList<>(snapshot.toMessages());
-                messages.add(new LlmMessage(LlmRole.ASSISTANT, content.toString()));
-                messages.add(new LlmMessage(LlmRole.USER,
-                        promptCompiler.correctionInstruction(wordRange, actualWordCount)));
-                content.setLength(0);
-                call = provider.stream(new LlmRequest(messages, options(
-                        lengthPolicy.maxOutputTokens(wordRange.maximum(), provider.capabilities().maxOutputTokens()),
-                        context.input())), event -> consumeCorrectionDelta(event, context, content));
-                context.callRegistry().register(context.runId(), call);
-                streamResult = requireCompleted(call.await());
-            }
             if (!StringUtils.hasText(content)) {
                 throw new BusinessException(ErrorCode.BUSINESS_ERROR, "模型未返回场景正文");
             }
@@ -151,7 +136,6 @@ public class ChapterGenerationModelInvoker {
                         .promptTemplateVersion(COHESION_TEMPLATE_VERSION)
                         .sourceFingerprint(sha256(joined))
                         .build());
-        ChapterWordRange wordRange = lengthPolicy.chapterWordRange(targetWordCount);
         LlmResponse response = provider.generate(new LlmRequest(List.of(
                 new LlmMessage(LlmRole.SYSTEM, promptCompiler.cohesionInstruction(targetWordCount)),
                 new LlmMessage(LlmRole.USER, joined)), options(lengthPolicy.maxOutputTokens(
@@ -160,20 +144,6 @@ public class ChapterGenerationModelInvoker {
         String content = response.content();
         if (!StringUtils.hasText(content)) {
             throw new BusinessException(ErrorCode.BUSINESS_ERROR, "整章收束未返回正文");
-        }
-        if (!wordRange.contains(wordCount(content))) {
-            response = provider.generate(new LlmRequest(List.of(
-                    new LlmMessage(LlmRole.SYSTEM, promptCompiler.cohesionInstruction(targetWordCount)),
-                    new LlmMessage(LlmRole.ASSISTANT, content),
-                    new LlmMessage(LlmRole.USER,
-                            promptCompiler.cohesionCorrectionInstruction(wordRange, wordCount(content)))),
-                    options(lengthPolicy.maxOutputTokens(
-                            wordRange.maximum(), provider.capabilities().maxOutputTokens()),
-                            context.input())));
-            content = response.content();
-        }
-        if (!StringUtils.hasText(content) || !wordRange.contains(wordCount(content))) {
-            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "整章收束字数未满足目标范围");
         }
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("content", content);
@@ -237,16 +207,6 @@ public class ChapterGenerationModelInvoker {
                 && !context.callRegistry().isCancellationRequested(context.runId())) {
             content.append(delta.text());
             completionHandler.sceneDelta(generation, scene, delta.text());
-        }
-    }
-
-    private void consumeCorrectionDelta(
-            LlmStreamEvent event,
-            AgentStepExecutionContext context,
-            StringBuilder content) {
-        if (event instanceof LlmStreamEvent.TextDelta delta && StringUtils.hasText(delta.text())
-                && !context.callRegistry().isCancellationRequested(context.runId())) {
-            content.append(delta.text());
         }
     }
 

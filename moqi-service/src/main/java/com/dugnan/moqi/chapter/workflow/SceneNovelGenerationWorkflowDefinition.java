@@ -133,7 +133,7 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
                 || ChapterGenerationStateStore.SCENE_COPIED.equals(scene.getSceneStatus())) {
             return AgentStepResult.completed(Map.of("sceneId", scene.getId(), "skipped", true), Map.of(), nextStep);
         }
-        SceneWordRange wordRange = wordRange(context.input(), generationId, scene.getSequenceNo());
+        SceneWordRange wordRange = wordRange(context.input());
         SceneInvocationContext invocationContext = modelInvoker.prepareScene(generation);
         StoryContextSnapshot snapshot = promptCompiler.compileSnapshot(
                 generation, scene, invocationContext.contextProvider(), wordRange);
@@ -152,16 +152,12 @@ public class SceneNovelGenerationWorkflowDefinition implements AgentWorkflowDefi
                 targetChapterWordCount(context.input()), context);
     }
 
-    private SceneWordRange wordRange(Map<String, Object> input, Long generationId, int sequenceNo) {
+    private SceneWordRange wordRange(Map<String, Object> input) {
         Integer targetWordCount = integerValue(input.get("targetChapterWordCount"));
         if (targetWordCount == null || targetWordCount <= 0) {
             targetWordCount = lengthPolicy.resolveTargetWordCount(ChapterGenerationLengthPolicy.DEFAULT_PRESET, null);
         }
-        Integer sceneCount = integerValue(input.get("plannedSceneCount"));
-        if (sceneCount == null || sceneCount <= 0) {
-            sceneCount = stateStore.sceneCount(generationId);
-        }
-        return lengthPolicy.sceneWordRange(targetWordCount, sceneCount, sequenceNo);
+        return lengthPolicy.sceneSoftRange(targetWordCount);
     }
 
     private int targetChapterWordCount(Map<String, Object> input) {

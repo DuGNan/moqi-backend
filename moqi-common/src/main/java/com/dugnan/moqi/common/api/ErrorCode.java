@@ -114,6 +114,18 @@ public enum ErrorCode {
     GENERATION_SELECTION_INVALID,
     /** 章节生成绑定的模型配置或凭据已变化。 */
     GENERATION_CONFIG_STALE,
+    /** 章节容量评估不存在。 */
+    CHAPTER_CAPACITY_ASSESSMENT_NOT_FOUND,
+    /** 章节容量评估状态不允许当前操作。 */
+    CHAPTER_CAPACITY_STATE_CONFLICT,
+    /** 当前输入需要先完成容量评估。 */
+    CHAPTER_CAPACITY_ASSESSMENT_REQUIRED,
+    /** 容量评估与当前生成来源不一致。 */
+    CHAPTER_CAPACITY_ASSESSMENT_STALE,
+    /** 过密章节等待作者显式决定。 */
+    CHAPTER_CAPACITY_DECISION_REQUIRED,
+    /** 当前 Provider 无法容纳生成上下文。 */
+    CHAPTER_CAPACITY_LONG_CONTEXT_REQUIRED,
     /** 故事知识提取批次或候选不存在。 */
     KNOWLEDGE_EXTRACTION_NOT_FOUND,
     /** 故事知识提取输入、状态或候选确认版本冲突。 */
