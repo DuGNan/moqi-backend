@@ -2,7 +2,6 @@ package com.dugnan.moqi.chapter.brief;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -27,14 +26,15 @@ import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.knowledge.entity.ChapterKeyEventEntity;
 import com.dugnan.moqi.knowledge.entity.ChapterSummaryEntity;
 import com.dugnan.moqi.knowledge.entity.ForeshadowingItemEntity;
-import com.dugnan.moqi.knowledge.entity.SettingEntryEntity;
+import com.dugnan.moqi.chapter.entitycard.GenerationEntityCard;
+import com.dugnan.moqi.chapter.entitycard.GenerationEntityCardRenderer;
+import com.dugnan.moqi.chapter.entitycard.GenerationEntityCardSelector;
+import com.dugnan.moqi.chapter.entitycard.GenerationEntityCardSelector.Selection;
 import com.dugnan.moqi.knowledge.mapper.ChapterKeyEventMapper;
 import com.dugnan.moqi.knowledge.mapper.ChapterSummaryMapper;
 import com.dugnan.moqi.knowledge.mapper.ForeshadowingItemMapper;
-import com.dugnan.moqi.knowledge.mapper.SettingEntryMapper;
 import com.dugnan.moqi.planning.PlanningModels.ChapterPlanView;
 import com.dugnan.moqi.planning.PlanningModels.ForeshadowingAction;
-import com.dugnan.moqi.planning.PlanningModels.PlanReference;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanView;
 import com.dugnan.moqi.work.entity.ChapterEntity;
@@ -62,34 +62,37 @@ public class ChapterGenerationBriefSourceLoader {
     private final ChapterMapper chapterMapper;
     private final ChapterBriefMapper briefMapper;
     private final ChapterOutlineQueryMapper outlineMapper;
-    private final SettingEntryMapper settingMapper;
     private final ForeshadowingItemMapper foreshadowingMapper;
     private final ChapterSummaryMapper summaryMapper;
     private final ChapterKeyEventMapper eventMapper;
     private final ChapterConsensusCodec consensusCodec;
     private final OutlineCandidateContentCodec outlineCodec;
+    private final GenerationEntityCardSelector entityCardSelector;
+    private final GenerationEntityCardRenderer entityCardRenderer;
 
     public ChapterGenerationBriefSourceLoader(
             WorkMapper workMapper,
             ChapterMapper chapterMapper,
             ChapterBriefMapper briefMapper,
             ChapterOutlineQueryMapper outlineMapper,
-            SettingEntryMapper settingMapper,
             ForeshadowingItemMapper foreshadowingMapper,
             ChapterSummaryMapper summaryMapper,
             ChapterKeyEventMapper eventMapper,
             ChapterConsensusCodec consensusCodec,
-            OutlineCandidateContentCodec outlineCodec) {
+            OutlineCandidateContentCodec outlineCodec,
+            GenerationEntityCardSelector entityCardSelector,
+            GenerationEntityCardRenderer entityCardRenderer) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.briefMapper = briefMapper;
         this.outlineMapper = outlineMapper;
-        this.settingMapper = settingMapper;
         this.foreshadowingMapper = foreshadowingMapper;
         this.summaryMapper = summaryMapper;
         this.eventMapper = eventMapper;
         this.consensusCodec = consensusCodec;
         this.outlineCodec = outlineCodec;
+        this.entityCardSelector = entityCardSelector;
+        this.entityCardRenderer = entityCardRenderer;
     }
 
     public ChapterGenerationBriefSource load(Long chapterId, ChapterPlanView plan) {
@@ -100,14 +103,17 @@ public class ChapterGenerationBriefSourceLoader {
         ChapterBriefEntity brief = requireConfirmedBrief(chapter, outline);
         ChapterEntity previous = previousChapter(chapter);
         PreviousKnowledge previousKnowledge = previousKnowledge(chapter.getWorkId(), previous);
-        EntitySelection selection = entities(chapter.getWorkId(), plan.scenes());
+        ConsensusSource consensus = consensus(brief);
+        OutlineCandidateContent outlineContent = outlineCodec.read(outline.getOutlineContent());
+        EntitySelection selection = entities(
+                chapter, consensus, outlineContent, plan.scenes(), previousKnowledge);
         List<SourceRef> sourceRefs = sourceRefs(
                 work, chapter, brief, outline, plan, previous, previousKnowledge, selection);
         return new ChapterGenerationBriefSource(
                 work.getId(), work.getTitle(), chapter.getId(), chapter.getChapterNo(), chapter.getTitle(),
-                consensus(brief), outlineCodec.read(outline.getOutlineContent()), orderedScenes(plan.scenes()),
+                consensus, outlineContent, orderedScenes(plan.scenes()),
                 previousEnding(previous), previousKnowledge.summary(), previousKnowledge.events(),
-                selection.explanations(), sourceRefs);
+                selection.cards(), selection.explanations(), sourceRefs);
     }
 
     private WorkEntity requireWork(Long workId) {
@@ -213,65 +219,82 @@ public class ChapterGenerationBriefSourceLoader {
         return new PreviousKnowledge(summary == null ? null : summary.getSummary(), summary, contents, events);
     }
 
-    private EntitySelection entities(Long workId, List<ScenePlanView> scenes) {
-        Map<Long, String> settingNames = new LinkedHashMap<>();
-        Map<String, EntityExplanation> nameOnly = new LinkedHashMap<>();
+    private EntitySelection entities(
+            ChapterEntity chapter,
+            ConsensusSource consensus,
+            OutlineCandidateContent outline,
+            List<ScenePlanView> scenes,
+            PreviousKnowledge previousKnowledge) {
+        Selection cardSelection = entityCardSelector.select(
+                chapter.getWorkId(), chapter.getId(), chapter.getChapterNo(), scenes,
+                entityChapterTexts(consensus, outline, scenes),
+                previousStateTexts(previousKnowledge));
         Set<Long> foreshadowingIds = new LinkedHashSet<>();
         for (ScenePlanView scene : orderedScenes(scenes)) {
             ScenePlanContent content = scene.content();
-            collectReference(content.viewpointCharacter(), "人物", settingNames, nameOnly);
-            collectReference(content.location(), "地点", settingNames, nameOnly);
-            content.participants().forEach(item -> collectReference(item, "人物", settingNames, nameOnly));
-            content.requiredSettings().forEach(item -> collectReference(item, "设定", settingNames, nameOnly));
             content.foreshadowingActions().stream().map(ForeshadowingAction::foreshadowingItemId)
                     .filter(java.util.Objects::nonNull).forEach(foreshadowingIds::add);
         }
-        List<SettingEntryEntity> settings = settingNames.isEmpty()
-                ? List.of() : settingMapper.selectBatchIds(settingNames.keySet()).stream()
-                        .sorted(Comparator.comparing(SettingEntryEntity::getId)).toList();
-        validateSettings(workId, settingNames.keySet(), settings);
         List<ForeshadowingItemEntity> foreshadowings = foreshadowingIds.isEmpty()
                 ? List.of() : foreshadowingMapper.selectBatchIds(foreshadowingIds).stream()
                         .sorted(Comparator.comparing(ForeshadowingItemEntity::getId)).toList();
-        validateForeshadowings(workId, foreshadowingIds, foreshadowings);
+        validateForeshadowings(chapter.getWorkId(), foreshadowingIds, foreshadowings);
         List<EntityExplanation> explanations = new ArrayList<>();
-        settings.forEach(item -> explanations.add(new EntityExplanation(
-                item.getId(), item.getSettingType(), item.getName(), item.getContent())));
-        explanations.addAll(nameOnly.values());
+        cardSelection.cards().forEach(card -> explanations.add(new EntityExplanation(
+                card.entityId(), card.type(), card.name(), entityCardRenderer.render(card))));
         foreshadowings.forEach(item -> explanations.add(new EntityExplanation(
                 item.getId(), "伏笔", item.getTitle(), item.getDescription())));
         explanations.sort(Comparator.comparing(EntityExplanation::type)
                 .thenComparing(item -> item.sourceId() == null ? Long.MAX_VALUE : item.sourceId())
                 .thenComparing(EntityExplanation::name));
-        return new EntitySelection(explanations, settings, foreshadowings);
+        return new EntitySelection(cardSelection.cards(), explanations, cardSelection.sourceRefs(), foreshadowings);
     }
 
-    private void collectReference(
-            PlanReference reference,
-            String fallbackType,
-            Map<Long, String> settingNames,
-            Map<String, EntityExplanation> nameOnly) {
-        if (reference == null || !StringUtils.hasText(reference.name())) {
-            return;
+    private List<String> entityChapterTexts(
+            ConsensusSource consensus,
+            OutlineCandidateContent outline,
+            List<ScenePlanView> scenes) {
+        List<String> values = new ArrayList<>();
+        add(values, consensus.chapterTask());
+        add(values, consensus.openingState());
+        add(values, consensus.endingState());
+        add(values, consensus.keyPush());
+        add(values, consensus.readerPayoff());
+        add(values, consensus.openQuestion());
+        values.addAll(consensus.writingBoundaries());
+        values.addAll(consensus.confirmedDecisions());
+        add(values, outline.chapterPurpose());
+        add(values, outline.chapterGoal());
+        add(values, outline.coreConflict());
+        add(values, outline.openingState());
+        add(values, outline.endingState());
+        add(values, outline.endingHook());
+        outline.beats().forEach(beat -> add(values, beat.summary()));
+        for (ScenePlanView scene : orderedScenes(scenes)) {
+            ScenePlanContent content = scene.content();
+            add(values, content.title());
+            add(values, content.goal());
+            add(values, content.conflict());
+            add(values, content.expectedOutcome());
+            values.addAll(content.readerMustKnow());
+            values.addAll(content.causalPreconditions());
+            values.addAll(content.stateChanges());
+            values.addAll(content.continuityConstraints());
+            values.addAll(content.doNotInvent());
         }
-        String name = reference.name().trim();
-        if (reference.settingEntryId() != null) {
-            settingNames.putIfAbsent(reference.settingEntryId(), name);
-            return;
-        }
-        nameOnly.putIfAbsent(fallbackType + ":" + name,
-                new EntityExplanation(null, fallbackType, name, "规划仅提供名称；不得补造未确认背景、能力或关系。"));
+        return values;
     }
 
-    private void validateSettings(Long workId, Set<Long> expectedIds, List<SettingEntryEntity> settings) {
-        Map<Long, SettingEntryEntity> actual = settings.stream()
-                .collect(java.util.stream.Collectors.toMap(SettingEntryEntity::getId, item -> item));
-        for (Long id : expectedIds) {
-            SettingEntryEntity setting = actual.get(id);
-            if (setting == null || Integer.valueOf(1).equals(setting.getDeleted())
-                    || !workId.equals(setting.getWorkId()) || !"active".equals(setting.getEntryStatus())) {
-                throw new BusinessException(ErrorCode.SCENE_PLAN_SOURCE_STALE, "场景规划引用了无效或跨作品设定：" + id);
-            }
+    private List<String> previousStateTexts(PreviousKnowledge previousKnowledge) {
+        List<String> values = new ArrayList<>();
+        add(values, previousKnowledge.summary());
+        values.addAll(previousKnowledge.events());
+        return values;
+    }
+
+    private void add(List<String> values, String value) {
+        if (StringUtils.hasText(value)) {
+            values.add(value.trim());
         }
     }
 
@@ -317,7 +340,7 @@ public class ChapterGenerationBriefSourceLoader {
         }
         previousKnowledge.eventEntities().forEach(item -> refs.add(
                 ref("CHAPTER_KEY_EVENT", item.getId(), item.getVersion())));
-        selection.settings().forEach(item -> refs.add(ref("SETTING_ENTRY", item.getId(), item.getVersion())));
+        refs.addAll(selection.sourceRefs());
         selection.foreshadowings().forEach(item -> refs.add(ref("FORESHADOWING", item.getId(), item.getVersion())));
         refs.sort(Comparator.comparing(SourceRef::sourceType).thenComparing(SourceRef::sourceId));
         return List.copyOf(refs);
@@ -351,8 +374,9 @@ public class ChapterGenerationBriefSourceLoader {
     }
 
     private record EntitySelection(
+            List<GenerationEntityCard> cards,
             List<EntityExplanation> explanations,
-            List<SettingEntryEntity> settings,
+            List<SourceRef> sourceRefs,
             List<ForeshadowingItemEntity> foreshadowings) {
     }
 }

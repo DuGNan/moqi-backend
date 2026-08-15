@@ -4,6 +4,7 @@ import java.util.List;
 
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief.EntityExplanation;
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief.SourceRef;
+import com.dugnan.moqi.chapter.entitycard.GenerationEntityCard;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContent;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanView;
 
@@ -24,12 +25,14 @@ public record ChapterGenerationBriefSource(
         String previousChapterEnding,
         String previousChapterSummary,
         List<String> previousKeyEvents,
+        List<GenerationEntityCard> entityCards,
         List<EntityExplanation> entityExplanations,
         List<SourceRef> sourceRefs) {
 
     public ChapterGenerationBriefSource {
         scenes = scenes == null ? List.of() : List.copyOf(scenes);
         previousKeyEvents = previousKeyEvents == null ? List.of() : List.copyOf(previousKeyEvents);
+        entityCards = entityCards == null ? List.of() : List.copyOf(entityCards);
         entityExplanations = entityExplanations == null ? List.of() : List.copyOf(entityExplanations);
         sourceRefs = sourceRefs == null ? List.of() : List.copyOf(sourceRefs);
     }
