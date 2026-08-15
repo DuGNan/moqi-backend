@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "sampleNumber": null,
+  "generationId": null,
+  "structuralBlockers": [],
+  "dimensions": [
+    { "name": "开场定位", "codexDraftScore": null, "userScore": null, "note": "" },
+    { "name": "因果链", "codexDraftScore": null, "userScore": null, "note": "" },
+    { "name": "人物主动性", "codexDraftScore": null, "userScore": null, "note": "" },
+    { "name": "技术过程", "codexDraftScore": null, "userScore": null, "note": "" },
+    { "name": "冲突推进", "codexDraftScore": null, "userScore": null, "note": "" },
+    { "name": "名词介绍", "codexDraftScore": null, "userScore": null, "note": "" },
+    { "name": "连续性", "codexDraftScore": null, "userScore": null, "note": "" },
+    { "name": "场景描写", "codexDraftScore": null, "userScore": null, "note": "" },
+    { "name": "对话质量", "codexDraftScore": null, "userScore": null, "note": "" },
+    { "name": "结尾牵引", "codexDraftScore": null, "userScore": null, "note": "" }
+  ],
+  "codexDraftCompleted": false,
+  "userConfirmed": false,
+  "userConfirmedAt": null
+}
