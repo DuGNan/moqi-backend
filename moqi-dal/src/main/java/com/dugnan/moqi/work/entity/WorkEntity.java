@@ -17,4 +17,6 @@ public class WorkEntity extends BaseEntity {
     private String title;
 
     private String status;
+
+    private Long currentStoryReleaseId;
 }

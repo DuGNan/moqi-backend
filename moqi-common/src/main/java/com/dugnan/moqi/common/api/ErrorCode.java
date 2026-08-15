@@ -126,6 +126,18 @@ public enum ErrorCode {
     CHAPTER_CAPACITY_DECISION_REQUIRED,
     /** 当前 Provider 无法容纳生成上下文。 */
     CHAPTER_CAPACITY_LONG_CONTEXT_REQUIRED,
+    /** 章节正文 revision 不存在。 */
+    PROSE_REVISION_NOT_FOUND,
+    /** 章节正文 revision 状态、版本或来源不允许当前操作。 */
+    PROSE_REVISION_CONFLICT,
+    /** 作品修订工作区不存在。 */
+    REVISION_WORKSPACE_NOT_FOUND,
+    /** 作品修订工作区状态、版本或基线不允许当前操作。 */
+    REVISION_WORKSPACE_CONFLICT,
+    /** Story Release 不存在。 */
+    STORY_RELEASE_NOT_FOUND,
+    /** Story Release 状态、版本或原子切换条件冲突。 */
+    STORY_RELEASE_CONFLICT,
     /** 故事知识提取批次或候选不存在。 */
     KNOWLEDGE_EXTRACTION_NOT_FOUND,
     /** 故事知识提取输入、状态或候选确认版本冲突。 */
