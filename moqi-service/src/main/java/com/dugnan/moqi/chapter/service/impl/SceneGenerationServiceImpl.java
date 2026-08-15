@@ -25,6 +25,7 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.StartAgentRunCommand;
 import com.dugnan.moqi.agent.entity.AgentRunStepEntity;
 import com.dugnan.moqi.agent.mapper.AgentRunStepMapper;
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief;
+import com.dugnan.moqi.chapter.capacity.ChapterCapacityAssessmentService;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneList;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.GenerationSceneView;
@@ -84,6 +85,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private final ApplicationEventPublisher eventPublisher;
     private final ChapterGenerationLengthPolicy lengthPolicy;
     private final ChapterGenerationBriefService briefService;
+    private final ChapterCapacityAssessmentService capacityAssessmentService;
     private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
 
     @Autowired
@@ -103,7 +105,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             ObjectMapper objectMapper,
             ApplicationEventPublisher eventPublisher,
             ChapterGenerationLengthPolicy lengthPolicy,
-            ChapterGenerationBriefService briefService) {
+            ChapterGenerationBriefService briefService,
+            ChapterCapacityAssessmentService capacityAssessmentService) {
         this.chapterMapper = chapterMapper;
         this.generationMapper = generationMapper;
         this.sceneMapper = sceneMapper;
@@ -116,6 +119,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         this.eventPublisher = eventPublisher;
         this.lengthPolicy = lengthPolicy;
         this.briefService = briefService;
+        this.capacityAssessmentService = capacityAssessmentService;
     }
 
     @Override
@@ -138,15 +142,23 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         if (plannedScenes.isEmpty()) {
             throw new BusinessException(ErrorCode.GENERATION_SELECTION_INVALID, "章节没有可生成的已发布场景");
         }
+        String lengthPreset = lengthPolicy.normalizePreset(request.lengthPreset());
+        int targetWordCount = lengthPolicy.resolveTargetWordCount(lengthPreset, request.customWordCount());
+        Map<String, Object> capacitySnapshot = capacityAssessmentService.resolveForGeneration(
+                chapterPlan, generationBrief, targetWordCount,
+                request.capacityAssessmentId(), request.capacityDecision());
         LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
         AiTaskEntity task = createTask(chapter);
         ChapterGenerationEntity generation = createGeneration(
-                chapter, chapterPlan, request, task, executionConfig, generationBrief);
+                chapter, chapterPlan, request, task, executionConfig, generationBrief,
+                lengthPreset, targetWordCount, capacitySnapshot);
         generationMapper.insert(generation);
         sourcePropagationService.generationCreated(chapterId, generation.getId());
 
-        ChapterGenerationEntity baseGeneration = requireBaseGeneration(request.baseGenerationId(), chapter, chapterPlan, request);
-        Map<Long, ChapterGenerationSceneEntity> baseScenes = baseGeneration == null ? Map.of() : baseScenes(baseGeneration.getId());
+        ChapterGenerationEntity baseGeneration = requireBaseGeneration(
+                request.baseGenerationId(), chapter, chapterPlan, request);
+        Map<Long, ChapterGenerationSceneEntity> baseScenes = baseGeneration == null
+                ? Map.of() : baseScenes(baseGeneration.getId());
         Set<Long> selectedSceneIds = selectedSceneIds(plannedScenes, request);
         saveScenes(generation, plannedScenes, selectedSceneIds, baseScenes);
 
@@ -157,7 +169,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
                 WORKFLOW_TYPE,
                 request.idempotencyKey(),
                 chapterPlan.planNo().longValue(),
-                runInput(generation.getId(), request, plannedScenes.size()),
+                runInput(generation.getId(), request, targetWordCount),
                 task.getId()));
         int generationUpdated = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
                 .eq("id", generation.getId()).eq("version", generation.getVersion())
@@ -194,13 +206,14 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         return create(source.getChapterId(), new CreateSceneGenerationRequest(
                 request.scenePlanNo(), request.selectionMode(), request.fromSceneKey(), request.sceneKeys(),
                 generationId, request.idempotencyKey(), request.lengthPreset(), request.customWordCount(),
-                request.temperature()));
+                request.temperature(), request.capacityAssessmentId(), request.capacityDecision()));
     }
 
     @Override
     public GenerationSceneList listScenes(Long generationId) {
         ChapterGenerationEntity generation = requireGeneration(generationId);
-        return new GenerationSceneList(generationId, sceneMapper.selectList(new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
+        return new GenerationSceneList(generationId, sceneMapper.selectList(
+                new LambdaQueryWrapper<ChapterGenerationSceneEntity>()
                 .eq(ChapterGenerationSceneEntity::getGenerationId, generationId)
                 .eq(ChapterGenerationSceneEntity::getDeleted, 0)
                 .orderByAsc(ChapterGenerationSceneEntity::getSequenceNo))
@@ -277,7 +290,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "当前整章收束不能重试");
         }
         AgentRunStepEntity step = latestStep(generation.getAgentRunId(), "cohere_chapter");
-        if (step == null || !STATUS_FAILED.equals(step.getStepStatus()) || !Integer.valueOf(1).equals(step.getRetryable())) {
+        if (step == null || !STATUS_FAILED.equals(step.getStepStatus())
+                || !Integer.valueOf(1).equals(step.getRetryable())) {
             throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "当前整章收束不能重试");
         }
         AgentRunView run = agentRuntime.retryStep(new RetryAgentStepCommand(
@@ -297,7 +311,10 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
             CreateSceneGenerationRequest request,
             AiTaskEntity task,
             LlmExecutionConfig executionConfig,
-            ChapterGenerationBrief generationBrief) {
+            ChapterGenerationBrief generationBrief,
+            String lengthPreset,
+            int targetWordCount,
+            Map<String, Object> capacitySnapshot) {
         ChapterGenerationEntity generation = new ChapterGenerationEntity();
         generation.setWorkId(chapter.getWorkId());
         generation.setChapterId(chapter.getId());
@@ -311,9 +328,6 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         generation.setCohesionTemplateVersion("chapter-cohesion-v1");
         generation.setSelectionMode(normalizedMode(request.selectionMode()));
         generation.setIdempotencyKey(request.idempotencyKey());
-        String lengthPreset = lengthPolicy.normalizePreset(request.lengthPreset());
-        int targetWordCount = lengthPolicy.resolveTargetWordCount(
-                lengthPreset, request.customWordCount());
         generation.setLengthPreset(lengthPreset);
         generation.setCustomWordCount("custom".equals(lengthPreset) ? request.customWordCount() : null);
         Map<String, Object> basisSnapshot = new LinkedHashMap<>();
@@ -325,6 +339,7 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         basisSnapshot.put("targetChapterWordCount", targetWordCount);
         basisSnapshot.put("temperature", request.temperature());
         basisSnapshot.put("chapterGenerationBrief", briefSnapshot(generationBrief));
+        basisSnapshot.put("chapterCapacityAssessment", capacitySnapshot);
         generation.setBasisSnapshotJson(json(basisSnapshot));
         generation.setExecutionConfigJson(json(executionConfig.descriptor()));
         generation.setWordCount(0);
@@ -563,12 +578,10 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private Map<String, Object> runInput(
             Long generationId,
             CreateSceneGenerationRequest request,
-            int plannedSceneCount) {
+            int targetWordCount) {
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("generationId", generationId);
-        input.put("targetChapterWordCount", lengthPolicy.resolveTargetWordCount(
-                request.lengthPreset(), request.customWordCount()));
-        input.put("plannedSceneCount", plannedSceneCount);
+        input.put("targetChapterWordCount", targetWordCount);
         if (request.temperature() != null) {
             input.put("temperature", request.temperature());
         }
