@@ -24,5 +24,7 @@ public class ChapterEntity extends BaseEntity {
 
     private String content;
 
+    private Long currentProseRevisionId;
+
     private String workflowStatus;
 }

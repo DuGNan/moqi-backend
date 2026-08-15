@@ -29,11 +29,13 @@ import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationReportVi
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.RetryEvaluationRequest;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.RevisionCandidateView;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
+import com.dugnan.moqi.chapter.entity.BoundedChapterRevisionEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEvaluationReportEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationRevisionCandidateEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.BoundedChapterRevisionMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationEvaluationReportMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationRevisionCandidateMapper;
@@ -68,11 +70,15 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     private static final String GENERATION_PREVIEW = "preview";
     private static final String CONCLUSION_NEEDS_REVISION = "needs_revision";
     private static final String CONCLUSION_NEEDS_HUMAN = "needs_human";
+    private static final String ASSEMBLY_BOUNDED_REVISION = "bounded_revision";
+    private static final String BOUNDED_CANDIDATE_READY = "candidate_ready";
+    private static final String BOUNDED_RE_EVALUATING = "re_evaluating";
 
     private final ChapterGenerationMapper generationMapper;
     private final ChapterGenerationSceneMapper sceneMapper;
     private final ChapterGenerationEvaluationReportMapper reportMapper;
     private final ChapterGenerationRevisionCandidateMapper revisionMapper;
+    private final BoundedChapterRevisionMapper boundedRevisionMapper;
     private final AiTaskMapper taskMapper;
     private AgentRuntime agentRuntime;
     private final ObjectMapper objectMapper;
@@ -82,7 +88,8 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
 
     public GenerationEvaluationServiceImpl(ChapterGenerationMapper generationMapper,
             ChapterGenerationSceneMapper sceneMapper, ChapterGenerationEvaluationReportMapper reportMapper,
-            ChapterGenerationRevisionCandidateMapper revisionMapper, AiTaskMapper taskMapper,
+            ChapterGenerationRevisionCandidateMapper revisionMapper,
+            BoundedChapterRevisionMapper boundedRevisionMapper, AiTaskMapper taskMapper,
             ObjectMapper objectMapper, StoryContextSnapshotMapper contextSnapshotMapper,
             ChapterAssetSourceSnapshotMapper assetSourceSnapshotMapper,
             ScenePlanVersionMapper scenePlanVersionMapper) {
@@ -90,6 +97,7 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
         this.sceneMapper = sceneMapper;
         this.reportMapper = reportMapper;
         this.revisionMapper = revisionMapper;
+        this.boundedRevisionMapper = boundedRevisionMapper;
         this.taskMapper = taskMapper;
         this.objectMapper = objectMapper;
         this.contextSnapshotMapper = contextSnapshotMapper;
@@ -191,7 +199,7 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
 
     @Override
     public void requireAdoptable(Long chapterId, Long generationId) {
-        requireGeneration(chapterId, generationId);
+        ChapterGenerationEntity generation = requireGeneration(chapterId, generationId);
         ChapterGenerationEvaluationReportEntity report = reportMapper.selectOne(
                 new LambdaQueryWrapper<ChapterGenerationEvaluationReportEntity>()
                         .eq(ChapterGenerationEvaluationReportEntity::getGenerationId, generationId)
@@ -202,6 +210,46 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
             throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT,
                     "完整正文候选尚未通过当前独立质量评价，不能采纳");
         }
+        if (ASSEMBLY_BOUNDED_REVISION.equals(generation.getContentAssemblyMode())) {
+            requireAdoptableBoundedRevision(generation, report);
+        }
+    }
+
+    private void requireAdoptableBoundedRevision(
+            ChapterGenerationEntity generation,
+            ChapterGenerationEvaluationReportEntity latestReport) {
+        List<BoundedChapterRevisionEntity> matches = boundedRevisionMapper.selectList(
+                new LambdaQueryWrapper<BoundedChapterRevisionEntity>()
+                        .eq(BoundedChapterRevisionEntity::getResultGenerationId, generation.getId())
+                        .eq(BoundedChapterRevisionEntity::getDeleted, 0));
+        if (matches.size() != 1) {
+            throw boundedRevisionNotAdoptable();
+        }
+        BoundedChapterRevisionEntity bounded = matches.get(0);
+        boolean allowedStatus = BOUNDED_CANDIDATE_READY.equals(bounded.getRevisionStatus())
+                || BOUNDED_RE_EVALUATING.equals(bounded.getRevisionStatus());
+        boolean exactResult = allowedStatus
+                && Integer.valueOf(0).equals(bounded.getDeleted())
+                && Objects.equals(bounded.getWorkId(), generation.getWorkId())
+                && Objects.equals(bounded.getChapterId(), generation.getChapterId())
+                && Objects.equals(bounded.getResultGenerationId(), generation.getId())
+                && Objects.equals(bounded.getResultReportId(), latestReport.getId())
+                && Objects.equals(bounded.getResultContentHash(), latestReport.getContentHash())
+                && Objects.equals(latestReport.getWorkId(), generation.getWorkId())
+                && Objects.equals(latestReport.getChapterId(), generation.getChapterId())
+                && Objects.equals(latestReport.getGenerationId(), generation.getId())
+                && latestReport.getGenerationSceneId() == null
+                && STATUS_READY.equals(latestReport.getReportStatus())
+                && ("pass".equals(latestReport.getConclusion())
+                        || "warning".equals(latestReport.getConclusion()));
+        if (!exactResult) {
+            throw boundedRevisionNotAdoptable();
+        }
+    }
+
+    private BusinessException boundedRevisionNotAdoptable() {
+        return new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT,
+                "#106 有界修订任务或精确重新评价报告尚未达到 candidate_ready，不能采纳");
     }
 
     @Override

@@ -44,12 +44,66 @@ public interface ChapterMapper extends BaseMapper<ChapterEntity> {
                 gmt_modified = CURRENT_TIMESTAMP
             WHERE id = #{chapterId}
               AND version = #{baseVersion}
+              AND current_prose_revision_id IS NULL
               AND deleted = 0
             """)
     int updateContentIfVersion(
             @Param("chapterId") Long chapterId,
             @Param("content") String content,
             @Param("baseVersion") Integer baseVersion);
+
+    /**
+     * 原子切换章节当前发布正文指针及其兼容读取内容。
+     *
+     * @param chapterId 章节 ID
+     * @param proseRevisionId 新正文 revision ID
+     * @param content 新发布正文
+     * @param baseVersion 章节乐观锁版本
+     * @param expectedCurrentRevisionId 预期当前正文 revision ID
+     * @return 更新行数
+     */
+    @Update("""
+            UPDATE chapters
+            SET current_prose_revision_id = #{proseRevisionId},
+                content = #{content},
+                version = version + 1,
+                gmt_modified = CURRENT_TIMESTAMP
+            WHERE id = #{chapterId}
+              AND version = #{baseVersion}
+              AND deleted = 0
+              AND ((#{expectedCurrentRevisionId} IS NULL AND current_prose_revision_id IS NULL)
+                   OR current_prose_revision_id = #{expectedCurrentRevisionId})
+            """)
+    int updatePublishedRevisionIfVersion(
+            @Param("chapterId") Long chapterId,
+            @Param("proseRevisionId") Long proseRevisionId,
+            @Param("content") String content,
+            @Param("baseVersion") Integer baseVersion,
+            @Param("expectedCurrentRevisionId") Long expectedCurrentRevisionId);
+
+    /**
+     * 将目标 Story Release 完整快照中缺席的章节从公开正文下线。
+     *
+     * @param chapterId 章节 ID
+     * @param baseVersion 章节乐观锁版本
+     * @param expectedCurrentRevisionId 预期当前正文 revision ID
+     * @return 更新行数
+     */
+    @Update("""
+            UPDATE chapters
+            SET current_prose_revision_id = NULL,
+                content = NULL,
+                version = version + 1,
+                gmt_modified = CURRENT_TIMESTAMP
+            WHERE id = #{chapterId}
+              AND version = #{baseVersion}
+              AND deleted = 0
+              AND current_prose_revision_id = #{expectedCurrentRevisionId}
+            """)
+    int clearPublishedRevisionIfVersion(
+            @Param("chapterId") Long chapterId,
+            @Param("baseVersion") Integer baseVersion,
+            @Param("expectedCurrentRevisionId") Long expectedCurrentRevisionId);
 
     /** 按版本条件更新章节标题。 */
     @Update("""

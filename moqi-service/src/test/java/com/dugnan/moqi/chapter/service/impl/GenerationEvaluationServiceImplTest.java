@@ -18,7 +18,9 @@ import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.CreateEvaluationRe
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEvaluationReportEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
+import com.dugnan.moqi.chapter.entity.BoundedChapterRevisionEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.BoundedChapterRevisionMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationEvaluationReportMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationRevisionCandidateMapper;
@@ -216,6 +218,162 @@ class GenerationEvaluationServiceImplTest {
     }
 
     @Test
+    void legacyAcceptGateRejectsBoundedGenerationWhoseTaskNeedsHuman() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("bounded_revision");
+        ChapterGenerationEvaluationReportEntity report = fixture.adoptableBatchReport(9L);
+        BoundedChapterRevisionEntity bounded = fixture.boundedRevision("needs_human", 9L);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(report);
+        when(fixture.boundedRevisionMapper.selectList(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(bounded));
+
+        assertThatThrownBy(() -> fixture.service.requireAdoptable(12L, 3L))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void legacyAcceptGateRejectsAlternateLatestReportForBoundedGeneration() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("bounded_revision");
+        ChapterGenerationEvaluationReportEntity alternateLatest = fixture.adoptableBatchReport(10L);
+        BoundedChapterRevisionEntity bounded = fixture.boundedRevision("candidate_ready", 9L);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(alternateLatest);
+        when(fixture.boundedRevisionMapper.selectList(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(bounded));
+
+        assertThatThrownBy(() -> fixture.service.requireAdoptable(12L, 3L))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void legacyAcceptGateRejectsBoundedGenerationWithoutTask() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("bounded_revision");
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(fixture.adoptableBatchReport(9L));
+        when(fixture.boundedRevisionMapper.selectList(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of());
+
+        assertThatThrownBy(() -> fixture.service.requireAdoptable(12L, 3L))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void legacyAcceptGateRejectsDeletedBoundedTaskEvenIfMapperReturnsIt() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("bounded_revision");
+        ChapterGenerationEvaluationReportEntity report = fixture.adoptableBatchReport(9L);
+        BoundedChapterRevisionEntity bounded = fixture.boundedRevision("candidate_ready", 9L);
+        bounded.setDeleted(1);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(report);
+        when(fixture.boundedRevisionMapper.selectList(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(bounded));
+
+        assertThatThrownBy(() -> fixture.service.requireAdoptable(12L, 3L))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void legacyAcceptGateAllowsExactReevaluatedBoundedResult() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("bounded_revision");
+        ChapterGenerationEvaluationReportEntity report = fixture.adoptableBatchReport(9L);
+        BoundedChapterRevisionEntity bounded = fixture.boundedRevision("re_evaluating", 9L);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(report);
+        when(fixture.boundedRevisionMapper.selectList(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(bounded));
+
+        fixture.service.requireAdoptable(12L, 3L);
+    }
+
+    @Test
+    void legacyAcceptGateAllowsExactCandidateReadyBoundedResult() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("bounded_revision");
+        ChapterGenerationEvaluationReportEntity report = fixture.adoptableBatchReport(9L);
+        BoundedChapterRevisionEntity bounded = fixture.boundedRevision("candidate_ready", 9L);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(report);
+        when(fixture.boundedRevisionMapper.selectList(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(bounded));
+
+        fixture.service.requireAdoptable(12L, 3L);
+    }
+
+    @Test
+    void legacyAcceptGateRejectsRunningBoundedResultReport() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("bounded_revision");
+        ChapterGenerationEvaluationReportEntity report = fixture.adoptableBatchReport(9L);
+        report.setReportStatus("running");
+        report.setConclusion(null);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(report);
+
+        assertThatThrownBy(() -> fixture.service.requireAdoptable(12L, 3L))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void legacyAcceptGateRejectsFailedBoundedResultReport() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("bounded_revision");
+        ChapterGenerationEvaluationReportEntity report = fixture.adoptableBatchReport(9L);
+        report.setReportStatus("failed");
+        report.setConclusion("needs_human");
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(report);
+
+        assertThatThrownBy(() -> fixture.service.requireAdoptable(12L, 3L))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void legacyAcceptGateRejectsBoundedTaskWithMismatchedResultHash() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("bounded_revision");
+        ChapterGenerationEvaluationReportEntity report = fixture.adoptableBatchReport(9L);
+        BoundedChapterRevisionEntity bounded = fixture.boundedRevision("candidate_ready", 9L);
+        bounded.setResultContentHash(fixture.hash("其他正文"));
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(report);
+        when(fixture.boundedRevisionMapper.selectList(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(bounded));
+
+        assertThatThrownBy(() -> fixture.service.requireAdoptable(12L, 3L))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void ordinaryWholeChapterAcceptGateDoesNotRequireBoundedTask() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEntity generation = fixture.generation();
+        generation.setContentAssemblyMode("whole_chapter_once");
+        when(fixture.generationMapper.selectById(3L)).thenReturn(generation);
+        when(fixture.reportMapper.selectOne(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(fixture.adoptableBatchReport(9L));
+
+        fixture.service.requireAdoptable(12L, 3L);
+
+        verify(fixture.boundedRevisionMapper, never()).selectList(
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void rejectsStoryFactOutsideFrozenSnapshot() {
         Fixture fixture = new Fixture();
         ChapterGenerationEvaluationReportEntity report = fixture.report();
@@ -298,6 +456,7 @@ class GenerationEvaluationServiceImplTest {
         private final ChapterGenerationSceneMapper sceneMapper = mock(ChapterGenerationSceneMapper.class);
         private final ChapterGenerationEvaluationReportMapper reportMapper = mock(ChapterGenerationEvaluationReportMapper.class);
         private final ChapterGenerationRevisionCandidateMapper revisionMapper = mock(ChapterGenerationRevisionCandidateMapper.class);
+        private final BoundedChapterRevisionMapper boundedRevisionMapper = mock(BoundedChapterRevisionMapper.class);
         private final ScenePlanVersionMapper planMapper = mock(ScenePlanVersionMapper.class);
         private final AiTaskMapper taskMapper = mock(AiTaskMapper.class);
         private final StoryContextSnapshotMapper contextSnapshotMapper = mock(StoryContextSnapshotMapper.class);
@@ -305,7 +464,7 @@ class GenerationEvaluationServiceImplTest {
                 mock(ChapterAssetSourceSnapshotMapper.class);
         private ChapterGenerationEntity currentGeneration;
         private final GenerationEvaluationServiceImpl service = new GenerationEvaluationServiceImpl(generationMapper, sceneMapper,
-                reportMapper, revisionMapper, taskMapper, new ObjectMapper(),
+                reportMapper, revisionMapper, boundedRevisionMapper, taskMapper, new ObjectMapper(),
                 contextSnapshotMapper, assetSourceSnapshotMapper, planMapper);
 
         private ChapterGenerationEvaluationReportEntity createReport(
@@ -400,6 +559,32 @@ class GenerationEvaluationServiceImplTest {
             report.setVersion(0);
             report.setDeleted(0);
             return report;
+        }
+
+        private ChapterGenerationEvaluationReportEntity adoptableBatchReport(Long id) {
+            ChapterGenerationEvaluationReportEntity report = batchReport();
+            report.setId(id);
+            report.setWorkId(1L);
+            report.setChapterId(12L);
+            report.setReportStatus("ready");
+            report.setConclusion("pass");
+            report.setContentHash(hash("原正文"));
+            report.setSourceFingerprint(null);
+            return report;
+        }
+
+        private BoundedChapterRevisionEntity boundedRevision(String status, Long resultReportId) {
+            BoundedChapterRevisionEntity bounded = new BoundedChapterRevisionEntity();
+            bounded.setId(30L);
+            bounded.setWorkId(1L);
+            bounded.setChapterId(12L);
+            bounded.setResultGenerationId(3L);
+            bounded.setResultReportId(resultReportId);
+            bounded.setRevisionStatus(status);
+            bounded.setResultContentHash(hash("原正文"));
+            bounded.setDeleted(0);
+            bounded.setVersion(0);
+            return bounded;
         }
 
         private ChapterGenerationEntity generation() {

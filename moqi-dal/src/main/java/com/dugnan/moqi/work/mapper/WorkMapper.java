@@ -38,4 +38,30 @@ public interface WorkMapper extends BaseMapper<WorkEntity> {
     int softDeleteIfVersion(
             @Param("workId") Long workId,
             @Param("baseVersion") Integer baseVersion);
+
+    /**
+     * 按乐观锁和当前指针条件切换作品的 Story Release。
+     *
+     * @param workId 作品 ID
+     * @param storyReleaseId 新 Story Release ID
+     * @param baseVersion 作品乐观锁版本
+     * @param expectedCurrentReleaseId 预期当前 Story Release ID
+     * @return 更新行数
+     */
+    @Update("""
+            UPDATE works
+            SET current_story_release_id = #{storyReleaseId},
+                version = version + 1,
+                gmt_modified = CURRENT_TIMESTAMP
+            WHERE id = #{workId}
+              AND version = #{baseVersion}
+              AND deleted = 0
+              AND ((#{expectedCurrentReleaseId} IS NULL AND current_story_release_id IS NULL)
+                   OR current_story_release_id = #{expectedCurrentReleaseId})
+            """)
+    int updateCurrentStoryReleaseIfVersion(
+            @Param("workId") Long workId,
+            @Param("storyReleaseId") Long storyReleaseId,
+            @Param("baseVersion") Integer baseVersion,
+            @Param("expectedCurrentReleaseId") Long expectedCurrentReleaseId);
 }
