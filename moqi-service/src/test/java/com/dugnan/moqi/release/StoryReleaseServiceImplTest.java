@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,6 +38,8 @@ import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 import com.dugnan.moqi.work.mapper.WorkMapper;
+import com.dugnan.moqi.impact.ProseImpactReleaseHook;
+import com.dugnan.moqi.impact.ProseImpactModels.WorkspaceImpactSummary;
 
 /**
  * @author dgn
@@ -315,6 +318,29 @@ class StoryReleaseServiceImplTest {
     }
 
     @Test
+    void workspacePrepareIncludesStructuredImpactGate() {
+        Fixture fixture = new Fixture();
+        ProseImpactReleaseHook hook = mock(ProseImpactReleaseHook.class);
+        fixture.service.setProseImpactHook(hook);
+        WorkRevisionWorkspaceEntity draft = fixture.workspace("draft", 0);
+        WorkRevisionWorkspaceEntity blocked = fixture.workspace("draft", 1);
+        blocked.setBlockingItemsJson("[\"workspace_has_no_revision\",\"impact_report_missing:6\"]");
+        when(fixture.workspaceMapper.selectById(10L)).thenReturn(draft, blocked);
+        when(fixture.workspaceChapterMapper.selectList(any())).thenReturn(java.util.List.of());
+        when(fixture.chapterMapper.selectList(any())).thenReturn(java.util.List.of());
+        when(fixture.workspaceMapper.update(any(), any())).thenReturn(1);
+        when(hook.workspaceBlockingItems(1L, 10L)).thenReturn(java.util.List.of("impact_report_missing:6"));
+        when(hook.workspaceSummary(1L, 10L)).thenReturn(
+                new WorkspaceImpactSummary(0, 0, 0, 0, 0,
+                        java.util.List.of(), java.util.List.of(), java.util.List.of()));
+
+        var view = fixture.service.prepareWorkspace(1L, 10L, new PrepareWorkspaceRequest(0));
+
+        assertThat(view.blockingItems()).contains("impact_report_missing:6");
+        assertThat(view.impactSummary()).isNotNull();
+    }
+
+    @Test
     void workspaceBlocksExistingChapterMissingFromReleaseBaseline() {
         Fixture fixture = new Fixture();
         WorkRevisionWorkspaceEntity draft = fixture.workspace("draft", 0);
@@ -474,6 +500,46 @@ class StoryReleaseServiceImplTest {
                 "2:5:" + targetRevision.getContentHash() + "\n"));
         assertThat(laterChapter.getCurrentProseRevisionId()).isNull();
         assertThat(laterChapter.getContent()).isNull();
+    }
+
+    @Test
+    void knowledgePropagationFailureKeepsOldReleasePointerDuringRollback() {
+        Fixture fixture = new Fixture();
+        fixture.work.setCurrentStoryReleaseId(9L);
+        fixture.work.setVersion(3);
+        fixture.chapter.setCurrentProseRevisionId(5L);
+        ChapterProseRevisionEntity revision = fixture.revision(5L, "published", "旧快照正文");
+        fixture.chapter.setContent(revision.getContent());
+        StoryReleaseEntity targetRelease = fixture.release(7L, null, null);
+        StoryReleaseEntity currentRelease = fixture.release(9L, 7L, null);
+        currentRelease.setCurrentMarker(1);
+        StoryReleaseChapterEntity targetChapter = fixture.mapping(7L, 2L, 5L, 1, revision.getContentHash());
+        StoryReleaseChapterEntity currentChapter = fixture.mapping(9L, 2L, 5L, 1, revision.getContentHash());
+        ProseImpactReleaseHook hook = mock(ProseImpactReleaseHook.class);
+        fixture.service.setProseImpactHook(hook);
+
+        when(fixture.storyReleaseMapper.selectOne(any())).thenReturn(null, currentRelease);
+        when(fixture.storyReleaseMapper.selectById(7L)).thenReturn(targetRelease);
+        when(fixture.storyReleaseMapper.selectById(9L)).thenReturn(currentRelease);
+        when(fixture.releaseChapterMapper.selectList(any())).thenReturn(
+                java.util.List.of(currentChapter), java.util.List.of(targetChapter),
+                java.util.List.of(currentChapter), java.util.List.of(targetChapter));
+        when(fixture.workMapper.selectByIdForUpdate(1L)).thenReturn(fixture.work);
+        when(fixture.chapterMapper.selectByIdForUpdate(2L)).thenReturn(fixture.chapter);
+        when(fixture.proseRevisionMapper.selectById(5L)).thenReturn(revision);
+        doAnswer(invocation -> {
+            StoryReleaseEntity item = invocation.getArgument(0); item.setId(10L); return 1;
+        }).when(fixture.storyReleaseMapper).insert(any(StoryReleaseEntity.class));
+        org.mockito.Mockito.doThrow(new IllegalStateException("knowledge mapping failed"))
+                .when(hook).activateRelease(1L, 10L, 9L, 7L);
+
+        assertThatThrownBy(() -> fixture.service.rollback(1L, 7L,
+                new RollbackReleaseRequest(9L, 3, "rollback-knowledge-failed", true)))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("knowledge mapping failed");
+
+        assertThat(fixture.work.getCurrentStoryReleaseId()).isEqualTo(9L);
+        verify(fixture.workMapper, never()).updateCurrentStoryReleaseIfVersion(any(), any(), any(), any());
+        verify(fixture.storyReleaseMapper, never()).update(any(), any());
     }
 
     @Test

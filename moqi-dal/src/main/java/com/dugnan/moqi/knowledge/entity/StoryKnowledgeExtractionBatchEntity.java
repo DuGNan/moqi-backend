@@ -17,6 +17,8 @@ public class StoryKnowledgeExtractionBatchEntity extends BaseEntity {
     private Long workId;
     private Long chapterId;
     private Long generationId;
+    private Long sourceProseRevisionId;
+    private Long sourceStoryReleaseId;
     private Long aiTaskId;
     private Long agentRunId;
     private String extractorVersion;

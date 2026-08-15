@@ -17,6 +17,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -60,6 +61,7 @@ import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 import com.dugnan.moqi.work.mapper.WorkMapper;
+import com.dugnan.moqi.impact.ProseImpactReleaseHook;
 
 /**
  * @author dgn
@@ -98,6 +100,7 @@ public class StoryReleaseServiceImpl implements StoryReleaseService {
     private final WorkRevisionWorkspaceChapterMapper workspaceChapterMapper;
     private final GenerationEvaluationService evaluationService;
     private final ObjectMapper objectMapper;
+    private ProseImpactReleaseHook proseImpactHook = ProseImpactReleaseHook.noop();
 
     public StoryReleaseServiceImpl(
             WorkMapper workMapper,
@@ -124,6 +127,11 @@ public class StoryReleaseServiceImpl implements StoryReleaseService {
         this.workspaceChapterMapper = workspaceChapterMapper;
         this.evaluationService = evaluationService;
         this.objectMapper = objectMapper;
+    }
+
+    @Autowired
+    public void setProseImpactHook(ProseImpactReleaseHook proseImpactHook) {
+        this.proseImpactHook = proseImpactHook;
     }
 
     @Override
@@ -373,7 +381,8 @@ public class StoryReleaseServiceImpl implements StoryReleaseService {
             throw conflict(ErrorCode.REVISION_WORKSPACE_CONFLICT, "准备发布必须提交草稿工作区当前版本");
         }
         List<WorkRevisionWorkspaceChapterEntity> entries = workspaceEntries(workspaceId);
-        List<String> blocking = workspaceBlockingItems(workspace, entries);
+        List<String> blocking = new ArrayList<>(workspaceBlockingItems(workspace, entries));
+        blocking.addAll(proseImpactHook.workspaceBlockingItems(workId, workspaceId));
         String nextStatus = blocking.isEmpty() ? WORKSPACE_READY : STATUS_DRAFT;
         int updated = workspaceMapper.update(null, new UpdateWrapper<WorkRevisionWorkspaceEntity>()
                 .eq("id", workspaceId).eq("version", request.expectedVersion()).eq("workspace_status", STATUS_DRAFT)
@@ -531,6 +540,7 @@ public class StoryReleaseServiceImpl implements StoryReleaseService {
             }
             switchChapterIfChanged(selection);
         }
+        proseImpactHook.activateRelease(work.getId(), release.getId(), currentReleaseId, rollbackOfReleaseId);
         if (workMapper.updateCurrentStoryReleaseIfVersion(
                 work.getId(), release.getId(), work.getVersion(), currentReleaseId) != 1) {
             throw conflict(ErrorCode.STORY_RELEASE_CONFLICT, "作品发布指针并发切换失败");
@@ -1087,7 +1097,8 @@ public class StoryReleaseServiceImpl implements StoryReleaseService {
                         entry.getVersion())).toList();
         return new WorkspaceView(item.getId(), item.getWorkId(), item.getBaselineReleaseId(),
                 item.getPublishedReleaseId(), item.getBaselineWorkVersion(), item.getWorkspaceStatus(),
-                readList(item.getBlockingItemsJson()), chapters, item.getVersion(), item.getGmtCreate(),
+                readList(item.getBlockingItemsJson()), proseImpactHook.workspaceSummary(item.getWorkId(), item.getId()),
+                chapters, item.getVersion(), item.getGmtCreate(),
                 item.getGmtModified());
     }
 

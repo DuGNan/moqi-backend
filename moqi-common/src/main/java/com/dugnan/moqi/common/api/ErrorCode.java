@@ -138,6 +138,12 @@ public enum ErrorCode {
     STORY_RELEASE_NOT_FOUND,
     /** Story Release 状态、版本或原子切换条件冲突。 */
     STORY_RELEASE_CONFLICT,
+    /** 正文事实影响报告不存在。 */
+    PROSE_IMPACT_REPORT_NOT_FOUND,
+    /** 正文事实影响报告状态、证据或来源不允许当前操作。 */
+    PROSE_IMPACT_REPORT_CONFLICT,
+    /** 正文事实影响模型输出未通过确定性证据校验。 */
+    PROSE_IMPACT_REPORT_INVALID,
     /** 故事知识提取批次或候选不存在。 */
     KNOWLEDGE_EXTRACTION_NOT_FOUND,
     /** 故事知识提取输入、状态或候选确认版本冲突。 */
