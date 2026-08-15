@@ -19,6 +19,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ChapterContent;
+import com.dugnan.moqi.chapter.dto.BoundedChapterRevisionModels.BoundedRevisionView;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ContentSaved;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationAccepted;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.GenerationCreated;
@@ -32,6 +33,7 @@ import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
+import com.dugnan.moqi.chapter.service.BoundedChapterRevisionService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
 import com.dugnan.moqi.common.api.ErrorCode;
@@ -49,6 +51,7 @@ class ChapterGenerationControllerTest {
     private SceneGenerationService sceneGenerationService;
     private GenerationEvaluationService evaluationService;
     private ChapterGenerationBriefService briefService;
+    private BoundedChapterRevisionService boundedRevisionService;
     private MockMvc mvc;
 
     /**
@@ -60,10 +63,12 @@ class ChapterGenerationControllerTest {
         sceneGenerationService = Mockito.mock(SceneGenerationService.class);
         evaluationService = Mockito.mock(GenerationEvaluationService.class);
         briefService = Mockito.mock(ChapterGenerationBriefService.class);
+        boundedRevisionService = Mockito.mock(BoundedChapterRevisionService.class);
         mvc = MockMvcBuilders
                 .standaloneSetup(
                         new ChapterGenerationController(
-                                chapterGenerationService, sceneGenerationService, evaluationService, briefService),
+                                chapterGenerationService, sceneGenerationService, evaluationService, briefService,
+                                boundedRevisionService),
                         new GenerationController(chapterGenerationService, sceneGenerationService))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -92,6 +97,21 @@ class ChapterGenerationControllerTest {
                 .andExpect(jsonPath("$.data.generationId").value(7001))
                 .andExpect(jsonPath("$.data.agentRunId").value(9004))
                 .andExpect(jsonPath("$.data.generationStatus").value("queued"));
+    }
+
+    @Test
+    void createsBoundedRevisionAsCandidateOnly() throws Exception {
+        when(boundedRevisionService.create(Mockito.eq(12L), Mockito.eq(3L), Mockito.any()))
+                .thenReturn(new BoundedRevisionView(7L, 3L, 9L, null, null, 8L, 6L,
+                        "queued", null, List.of("cause-1"), Map.of("maxAutomaticRounds", 1),
+                        "source-hash", null, null, 0, null, null, 1, null, null));
+
+        mvc.perform(post("/api/chapters/12/generations/3/bounded-revisions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"evaluationReportId\":9,\"idempotencyKey\":\"bounded-1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.revisionStatus").value("queued"))
+                .andExpect(jsonPath("$.data.resultGenerationId").doesNotExist());
     }
 
     @Test

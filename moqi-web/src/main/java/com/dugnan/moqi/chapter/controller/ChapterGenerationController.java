@@ -11,6 +11,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefPreview;
+import com.dugnan.moqi.chapter.dto.BoundedChapterRevisionModels.BoundedRevisionView;
+import com.dugnan.moqi.chapter.dto.BoundedChapterRevisionModels.CreateBoundedRevisionRequest;
+import com.dugnan.moqi.chapter.dto.BoundedChapterRevisionModels.RetryBoundedRevisionRequest;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ChapterContent;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.ContentSaved;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.LatestPreview;
@@ -23,6 +26,7 @@ import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.RevisionCandidateV
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.CreateSceneGenerationRequest;
 import com.dugnan.moqi.chapter.dto.SceneGenerationModels.SceneGenerationCreated;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
+import com.dugnan.moqi.chapter.service.BoundedChapterRevisionService;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.SceneGenerationService;
@@ -41,6 +45,7 @@ public class ChapterGenerationController {
     private final ChapterGenerationBriefService briefService;
     private final SceneGenerationService sceneGenerationService;
     private final GenerationEvaluationService evaluationService;
+    private final BoundedChapterRevisionService boundedRevisionService;
 
     /**
      * 创建章节生成控制器。
@@ -52,11 +57,13 @@ public class ChapterGenerationController {
             ChapterGenerationService chapterGenerationService,
             SceneGenerationService sceneGenerationService,
             GenerationEvaluationService evaluationService,
-            ChapterGenerationBriefService briefService) {
+            ChapterGenerationBriefService briefService,
+            BoundedChapterRevisionService boundedRevisionService) {
         this.chapterGenerationService = chapterGenerationService;
         this.sceneGenerationService = sceneGenerationService;
         this.evaluationService = evaluationService;
         this.briefService = briefService;
+        this.boundedRevisionService = boundedRevisionService;
     }
 
     /**
@@ -121,6 +128,43 @@ public class ChapterGenerationController {
     public ApiResponse<RevisionCandidateView> revisionCandidate(@PathVariable Long chapterId, @PathVariable Long generationId,
             @PathVariable Long reportId) {
         return ApiResponse.success(evaluationService.revisionCandidate(chapterId, generationId, reportId));
+    }
+
+    /** 根据整章评价创建一次有界修订任务，结果始终是新的未采纳候选。 */
+    @PostMapping("/{chapterId}/generations/{generationId}/bounded-revisions")
+    public ApiResponse<BoundedRevisionView> createBoundedRevision(
+            @PathVariable Long chapterId,
+            @PathVariable Long generationId,
+            @RequestBody CreateBoundedRevisionRequest request) {
+        return ApiResponse.success(boundedRevisionService.create(chapterId, generationId, request));
+    }
+
+    /** 查询有界修订及其重新评价恢复状态。 */
+    @GetMapping("/{chapterId}/generations/{generationId}/bounded-revisions/{revisionId}")
+    public ApiResponse<BoundedRevisionView> boundedRevision(
+            @PathVariable Long chapterId,
+            @PathVariable Long generationId,
+            @PathVariable Long revisionId) {
+        return ApiResponse.success(boundedRevisionService.get(chapterId, generationId, revisionId));
+    }
+
+    /** 重试失败的唯一修订模型步骤。 */
+    @PostMapping("/{chapterId}/generations/{generationId}/bounded-revisions/{revisionId}/retry")
+    public ApiResponse<AgentRunView> retryBoundedRevision(
+            @PathVariable Long chapterId,
+            @PathVariable Long generationId,
+            @PathVariable Long revisionId,
+            @RequestBody RetryBoundedRevisionRequest request) {
+        return ApiResponse.success(boundedRevisionService.retry(chapterId, generationId, revisionId, request));
+    }
+
+    /** 放弃尚未终结的有界修订，不改变任一正文。 */
+    @PostMapping("/{chapterId}/generations/{generationId}/bounded-revisions/{revisionId}/cancel")
+    public ApiResponse<AgentRunView> cancelBoundedRevision(
+            @PathVariable Long chapterId,
+            @PathVariable Long generationId,
+            @PathVariable Long revisionId) {
+        return ApiResponse.success(boundedRevisionService.cancel(chapterId, generationId, revisionId));
     }
 
     /**
