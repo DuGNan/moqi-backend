@@ -1,0 +1,41 @@
+CREATE TABLE bounded_chapter_revisions (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    work_id BIGINT NOT NULL,
+    chapter_id BIGINT NOT NULL,
+    source_generation_id BIGINT NOT NULL,
+    source_report_id BIGINT NOT NULL,
+    result_generation_id BIGINT NULL,
+    result_report_id BIGINT NULL,
+    ai_task_id BIGINT NULL,
+    agent_run_id BIGINT NULL,
+    idempotency_key VARCHAR(128) NOT NULL,
+    revision_status VARCHAR(32) NOT NULL,
+    stop_reason VARCHAR(64) NULL,
+    finding_keys_json JSON NOT NULL,
+    revision_brief_json JSON NOT NULL,
+    source_content_hash CHAR(64) NOT NULL,
+    result_content_hash CHAR(64) NULL,
+    revision_model_call_id BIGINT NULL,
+    revision_attempt INT NOT NULL DEFAULT 0,
+    error_code VARCHAR(64) NULL,
+    error_message VARCHAR(500) NULL,
+    deleted TINYINT NOT NULL DEFAULT 0,
+    version INT NOT NULL DEFAULT 0,
+    gmt_create DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    gmt_modified DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_bounded_revision_idempotency (source_generation_id, idempotency_key),
+    UNIQUE KEY uk_bounded_revision_source_generation (source_generation_id),
+    UNIQUE KEY uk_bounded_revision_source_report (source_report_id),
+    KEY idx_bounded_revision_chapter_status (chapter_id, revision_status, id),
+    CONSTRAINT fk_bounded_revision_source_generation FOREIGN KEY (source_generation_id)
+        REFERENCES chapter_generations (id),
+    CONSTRAINT fk_bounded_revision_source_report FOREIGN KEY (source_report_id)
+        REFERENCES chapter_generation_evaluation_reports (id),
+    CONSTRAINT fk_bounded_revision_result_generation FOREIGN KEY (result_generation_id)
+        REFERENCES chapter_generations (id),
+    CONSTRAINT fk_bounded_revision_result_report FOREIGN KEY (result_report_id)
+        REFERENCES chapter_generation_evaluation_reports (id),
+    CONSTRAINT fk_bounded_revision_task FOREIGN KEY (ai_task_id) REFERENCES ai_tasks (id),
+    CONSTRAINT fk_bounded_revision_run FOREIGN KEY (agent_run_id) REFERENCES agent_runs (id),
+    CONSTRAINT fk_bounded_revision_model_call FOREIGN KEY (revision_model_call_id) REFERENCES llm_model_calls (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
