@@ -18,6 +18,10 @@
 观测白名单只包含业务 ID、Provider/模型、配置版本、模板版本、请求引用哈希、token、耗时、终态和安全错误分类。
 数据库、日志与接口均不保存或返回 API Key、完整 Prompt、正文、隐藏推理和原始异常消息。
 
+整章评价与有界修订的 Provider 调用从评价报告持久化记录读取 `workId/chapterId/aiTaskId`，
+并与当前 Agent Run/Step 一起写入调用上下文。人工重试使用新的 Step ID，但保持同一业务归属；
+历史报告缺少可靠归属时对应字段继续为空，不从旧 Run 输入或其他记录猜测。
+
 ## 最近调用
 
 `GET /api/llm-calls`

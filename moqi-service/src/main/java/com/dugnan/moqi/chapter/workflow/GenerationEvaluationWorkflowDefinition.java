@@ -19,6 +19,7 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationFinding;
 import com.dugnan.moqi.chapter.service.EvaluationFindingContractException;
 import com.dugnan.moqi.chapter.service.impl.GenerationEvaluationServiceImpl;
+import com.dugnan.moqi.chapter.service.impl.GenerationEvaluationServiceImpl.EvaluationCallOwnership;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.llm.LlmCallContext;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
@@ -183,10 +184,8 @@ public class GenerationEvaluationWorkflowDefinition implements AgentWorkflowDefi
     private EvaluationBatch evaluateSource(Long reportId, AgentStepExecutionContext context, String source) {
         try {
             LlmExecutionConfig config = userConfigService.requireAvailableExecutionConfig();
-            LlmProvider provider = providerFactory.createObserved(config, LlmCallContext.builder(workflowType(), SEMANTIC_EVALUATE)
-                    .workId(context.input().get("workId") instanceof Number number ? number.longValue() : null)
-                    .aiTaskId(context.input().get("aiTaskId") instanceof Number number ? number.longValue() : null)
-                    .agentRunId(context.runId()).agentStepId(context.stepId()).logicalCallId("agent-step:" + context.stepId() + ":evaluation")
+            LlmProvider provider = providerFactory.createObserved(config,
+                    observedCallContext(reportId, context, SEMANTIC_EVALUATE, "evaluation")
                     .promptTemplateVersion(GenerationEvaluationServiceImpl.EVALUATOR_VERSION)
                     .sourceFingerprint(evaluationService.sourceFingerprint(reportId)).build());
             LlmResponse response = provider.generate(new LlmRequest(List.of(
@@ -511,9 +510,7 @@ public class GenerationEvaluationWorkflowDefinition implements AgentWorkflowDefi
         try {
             LlmExecutionConfig config = userConfigService.requireAvailableExecutionConfig();
             LlmProvider provider = providerFactory.createObserved(config,
-                    LlmCallContext.builder(workflowType(), REVISE_CANDIDATE)
-                            .agentRunId(context.runId()).agentStepId(context.stepId())
-                            .logicalCallId("agent-step:" + context.stepId() + ":revision")
+                    observedCallContext(reportId, context, REVISE_CANDIDATE, "revision")
                             .promptTemplateVersion("generation-revision-v1")
                             .sourceFingerprint(evaluationService.sourceFingerprint(reportId)).build());
             LlmResponse response = provider.generate(new LlmRequest(List.of(
@@ -533,6 +530,24 @@ public class GenerationEvaluationWorkflowDefinition implements AgentWorkflowDefi
         } catch (Exception exception) {
             throw new IllegalStateException("正文局部修订 Provider 调用失败", exception);
         }
+    }
+
+    private LlmCallContext.Builder observedCallContext(
+            Long reportId,
+            AgentStepExecutionContext context,
+            String operationType,
+            String logicalSuffix) {
+        LlmCallContext.Builder builder = LlmCallContext.builder(workflowType(), operationType)
+                .agentRunId(context.runId())
+                .agentStepId(context.stepId())
+                .logicalCallId("agent-step:" + context.stepId() + ":" + logicalSuffix);
+        EvaluationCallOwnership ownership = evaluationService.callOwnership(reportId);
+        if (ownership != null) {
+            builder.workId(ownership.workId())
+                    .chapterId(ownership.chapterId())
+                    .aiTaskId(ownership.aiTaskId());
+        }
+        return builder;
     }
 
 }
