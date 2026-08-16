@@ -40,6 +40,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationEvaluationReportMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationRevisionCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
+import com.dugnan.moqi.chapter.service.EvaluationFindingContractException;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -61,7 +62,7 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
 
     public static final String WORKFLOW_TYPE = "chapter_generation_evaluation_v1";
     public static final String RULESET_VERSION = "whole-chapter-rules-v2";
-    public static final String EVALUATOR_VERSION = "whole-chapter-evaluator-v2";
+    public static final String EVALUATOR_VERSION = "whole-chapter-evaluator-v3";
     private static final String LOCAL_USER = "local-user";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_READY = "ready";
@@ -73,6 +74,11 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     private static final String ASSEMBLY_BOUNDED_REVISION = "bounded_revision";
     private static final String BOUNDED_CANDIDATE_READY = "candidate_ready";
     private static final String BOUNDED_RE_EVALUATING = "re_evaluating";
+    private static final String SEVERITY_BLOCKING = "blocking";
+    private static final List<String> FINDING_SEVERITIES = List.of(SEVERITY_BLOCKING, "warning", "info");
+    private static final int MAX_FINDING_COUNT = 30;
+    private static final double MIN_CONFIDENCE = 0D;
+    private static final double MAX_CONFIDENCE = 1D;
 
     private final ChapterGenerationMapper generationMapper;
     private final ChapterGenerationSceneMapper sceneMapper;
@@ -363,28 +369,72 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     public List<EvaluationFinding> validateSemanticFindings(Long reportId, List<EvaluationFinding> findings) {
         ChapterGenerationEvaluationReportEntity report = requireReportById(reportId);
         ensureCurrent(report);
-        if (findings == null || findings.size() > 30) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "模型评价 Finding 数量非法");
+        if (findings == null || findings.size() > MAX_FINDING_COUNT) {
+            throw new EvaluationFindingContractException("invalid_count", "findings");
         }
-        for (EvaluationFinding finding : findings) {
-            if (finding == null || blank(finding.issueKey()) || blank(finding.category()) || blank(finding.severity())
-                    || finding.confidence() == null || finding.confidence() < 0D || finding.confidence() > 1D
-                    || !List.of("blocking", "warning", "info").contains(finding.severity())
-                    || finding.generationSceneId() != null && !belongsToGeneration(report.getGenerationId(), finding.generationSceneId())
-                    || finding.storyFactRef() != null && !allowedStoryFactRefs(report).contains(finding.storyFactRef())
-                    || finding.summary() == null || finding.summary().length() > 500
-                    || finding.evidenceRange() != null && finding.evidenceRange().length() > 200
-                    || finding.violatedSource() != null && finding.violatedSource().length() > 500
-                    || finding.impactScope() != null && finding.impactScope().length() > 200
-                    || finding.blocksAcceptance() == null || finding.suitableForAutoRevision() == null
-                    || "blocking".equals(finding.severity()) != Boolean.TRUE.equals(finding.blocksAcceptance())
-                    || Boolean.TRUE.equals(finding.suitableForAutoRevision())
-                            && !Boolean.TRUE.equals(finding.blocksAcceptance())
-                    || Boolean.TRUE.equals(finding.blocksAcceptance()) && blank(finding.evidenceRange())) {
-                throw new BusinessException(ErrorCode.BAD_REQUEST, "模型评价 Finding 不符合安全契约");
-            }
+        java.util.Set<String> allowedFactRefs = allowedStoryFactRefs(report);
+        for (int index = 0; index < findings.size(); index++) {
+            validateSemanticFinding(report, findings.get(index), index, allowedFactRefs);
         }
         return List.copyOf(findings);
+    }
+
+    private void validateSemanticFinding(ChapterGenerationEvaluationReportEntity report, EvaluationFinding finding,
+            int index, java.util.Set<String> allowedFactRefs) {
+        String base = "findings[" + index + "]";
+        if (finding == null) {
+            throw new EvaluationFindingContractException("type_mismatch", base);
+        }
+        requireFindingText(finding.issueKey(), base + ".issueKey", 500);
+        requireFindingText(finding.category(), base + ".category", 200);
+        requireFindingText(finding.severity(), base + ".severity", 50);
+        if (!FINDING_SEVERITIES.contains(finding.severity())) {
+            throw new EvaluationFindingContractException("invalid_enum", base + ".severity");
+        }
+        if (finding.confidence() == null || finding.confidence() < MIN_CONFIDENCE
+                || finding.confidence() > MAX_CONFIDENCE) {
+            throw new EvaluationFindingContractException("invalid_value", base + ".confidence");
+        }
+        if (finding.generationSceneId() != null
+                && !belongsToGeneration(report.getGenerationId(), finding.generationSceneId())) {
+            throw new EvaluationFindingContractException("invalid_reference", base + ".generationSceneId");
+        }
+        if (finding.storyFactRef() != null && !allowedFactRefs.contains(finding.storyFactRef())) {
+            throw new EvaluationFindingContractException("invalid_reference", base + ".storyFactRef");
+        }
+        requireOptionalFindingText(finding.evidenceRange(), base + ".evidenceRange", 200);
+        requireFindingText(finding.summary(), base + ".summary", 500);
+        requireOptionalFindingText(finding.violatedSource(), base + ".violatedSource", 500);
+        requireOptionalFindingText(finding.impactScope(), base + ".impactScope", 200);
+        if (finding.blocksAcceptance() == null) {
+            throw new EvaluationFindingContractException("missing_field", base + ".blocksAcceptance");
+        }
+        if (finding.suitableForAutoRevision() == null) {
+            throw new EvaluationFindingContractException("missing_field", base + ".suitableForAutoRevision");
+        }
+        if (SEVERITY_BLOCKING.equals(finding.severity()) != Boolean.TRUE.equals(finding.blocksAcceptance())) {
+            throw new EvaluationFindingContractException("inconsistent_value", base + ".blocksAcceptance");
+        }
+        if (Boolean.TRUE.equals(finding.suitableForAutoRevision())
+                && !Boolean.TRUE.equals(finding.blocksAcceptance())) {
+            throw new EvaluationFindingContractException("inconsistent_value", base + ".suitableForAutoRevision");
+        }
+        if (Boolean.TRUE.equals(finding.blocksAcceptance()) && blank(finding.evidenceRange())) {
+            throw new EvaluationFindingContractException("missing_evidence", base + ".evidenceRange");
+        }
+    }
+
+    private void requireFindingText(String value, String path, int maxLength) {
+        if (blank(value)) {
+            throw new EvaluationFindingContractException("invalid_value", path);
+        }
+        requireOptionalFindingText(value, path, maxLength);
+    }
+
+    private void requireOptionalFindingText(String value, String path, int maxLength) {
+        if (value != null && value.length() > maxLength) {
+            throw new EvaluationFindingContractException("value_too_long", path);
+        }
     }
 
     @Transactional(rollbackFor = RuntimeException.class)
