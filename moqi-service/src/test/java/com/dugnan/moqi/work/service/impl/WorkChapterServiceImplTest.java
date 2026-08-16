@@ -143,6 +143,24 @@ class WorkChapterServiceImplTest {
     }
 
     /**
+     * 验证章节摘要直接暴露当前 Story Release 绑定的正文 revision。
+     */
+    @Test
+    void exposesCurrentProseRevisionInChapterSummary() {
+        WorkEntity work = work(1L);
+        ChapterEntity chapter = chapter(2L, 1L, 1, "已发布正文");
+        chapter.setCurrentProseRevisionId(9L);
+        when(workMapper.selectById(1L)).thenReturn(work);
+        when(chapterMapper.selectList(any())).thenReturn(List.of(chapter));
+
+        var result = service.listChapters(1L, null, null, null);
+
+        assertThat(result.chapters()).singleElement()
+                .extracting("currentProseRevisionId")
+                .isEqualTo(9L);
+    }
+
+    /**
      * 验证打开章节时按预览、编辑器、共创顺序选择工作区。
      */
     @Test
