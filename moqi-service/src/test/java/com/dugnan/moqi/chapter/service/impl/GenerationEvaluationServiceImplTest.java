@@ -180,6 +180,32 @@ class GenerationEvaluationServiceImplTest {
     }
 
     @Test
+    void readsCallOwnershipOnlyFromThePersistedEvaluationReport() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity report = fixture.retryableReport();
+        when(fixture.reportMapper.selectById(9L)).thenReturn(report);
+
+        var ownership = fixture.service.callOwnership(9L);
+
+        assertThat(ownership.workId()).isEqualTo(1L);
+        assertThat(ownership.chapterId()).isEqualTo(12L);
+        assertThat(ownership.aiTaskId()).isEqualTo(8L);
+    }
+
+    @Test
+    void keepsUnknownHistoricalCallOwnershipEmpty() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity report = fixture.batchReport();
+        when(fixture.reportMapper.selectById(9L)).thenReturn(report);
+
+        var ownership = fixture.service.callOwnership(9L);
+
+        assertThat(ownership.workId()).isNull();
+        assertThat(ownership.chapterId()).isNull();
+        assertThat(ownership.aiTaskId()).isNull();
+    }
+
+    @Test
     void exposesPersistedSemanticAttemptAndSafeRetryFlag() {
         Fixture fixture = new Fixture();
         ChapterGenerationEvaluationReportEntity report = fixture.retryableReport();

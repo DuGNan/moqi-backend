@@ -381,6 +381,17 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
         return requireReportById(reportId).getInputFingerprint();
     }
 
+    /**
+     * 返回评价报告已经持久化的模型调用归属，不从运行时输入猜测历史关联。
+     *
+     * @param reportId 评价报告 ID
+     * @return 可空字段保持原始持久化语义的调用归属
+     */
+    public EvaluationCallOwnership callOwnership(Long reportId) {
+        ChapterGenerationEvaluationReportEntity report = requireReportById(reportId);
+        return new EvaluationCallOwnership(report.getWorkId(), report.getChapterId(), report.getAiTaskId());
+    }
+
     /** 校验模型 Finding 只能引用当前批次中的已固化场景。 */
     public List<EvaluationFinding> validateSemanticFindings(Long reportId, List<EvaluationFinding> findings) {
         ChapterGenerationEvaluationReportEntity report = requireReportById(reportId);
@@ -888,6 +899,10 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     }
 
     private record FrozenEvaluationSource(String sourceJson, Long contextSnapshotId) {
+    }
+
+    /** 评价 Provider 调用可安全持久化的业务归属。 */
+    public record EvaluationCallOwnership(Long workId, Long chapterId, Long aiTaskId) {
     }
 
     private boolean blank(String value) {

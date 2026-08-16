@@ -16,7 +16,9 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationFinding;
 import com.dugnan.moqi.chapter.service.impl.GenerationEvaluationServiceImpl;
+import com.dugnan.moqi.chapter.service.impl.GenerationEvaluationServiceImpl.EvaluationCallOwnership;
 import com.dugnan.moqi.config.service.UserConfigService;
+import com.dugnan.moqi.llm.LlmCallContext;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmProvider;
 import com.dugnan.moqi.llm.LlmProviderFactory;
@@ -30,6 +32,49 @@ import org.mockito.ArgumentCaptor;
  * @description 验证正文评价工作流使用结构化 Provider 输出而不写入正文。
  */
 class GenerationEvaluationWorkflowDefinitionTest {
+
+    @Test
+    void bindsPersistedReportOwnershipToSemanticEvaluationCall() throws Exception {
+        Harness harness = harness("{\"sceneId\":null}", "{\"findings\":[]}");
+        when(harness.service().callOwnership(9L)).thenReturn(new EvaluationCallOwnership(21L, 22L, 23L));
+        when(harness.service().validateSemanticFindings(org.mockito.ArgumentMatchers.eq(9L),
+                org.mockito.ArgumentMatchers.anyList())).thenAnswer(invocation -> invocation.getArgument(1));
+
+        harness.workflow().execute("semantic_evaluate", context());
+
+        ArgumentCaptor<LlmCallContext> contextCaptor = ArgumentCaptor.forClass(LlmCallContext.class);
+        verify(harness.providerFactory()).createObserved(any(), contextCaptor.capture());
+        LlmCallContext callContext = contextCaptor.getValue();
+        assertThat(callContext.workId()).isEqualTo(21L);
+        assertThat(callContext.chapterId()).isEqualTo(22L);
+        assertThat(callContext.aiTaskId()).isEqualTo(23L);
+        assertThat(callContext.agentRunId()).isEqualTo(1L);
+        assertThat(callContext.agentStepId()).isEqualTo(2L);
+        assertThat(callContext.operationType()).isEqualTo("semantic_evaluate");
+    }
+
+    @Test
+    void bindsTheSamePersistedOwnershipToRevisionCall() throws Exception {
+        Harness harness = harness("{\"sceneId\":null}", "{\"revisionContent\":\"修订正文\"}");
+        when(harness.service().callOwnership(9L)).thenReturn(new EvaluationCallOwnership(21L, 22L, 23L));
+        when(harness.service().sourceFingerprint(9L)).thenReturn("source-fingerprint");
+        when(harness.service().revisionInput(org.mockito.ArgumentMatchers.eq(9L),
+                org.mockito.ArgumentMatchers.anyList())).thenReturn(Map.of("content", "候选正文"));
+
+        harness.workflow().execute("revise_candidate", new AgentStepExecutionContext(3L, 4L,
+                "revise_candidate", 2, "effect", Map.of("reportId", 9L),
+                Map.of("findings", List.of()), Map.of(), null));
+
+        ArgumentCaptor<LlmCallContext> contextCaptor = ArgumentCaptor.forClass(LlmCallContext.class);
+        verify(harness.providerFactory()).createObserved(any(), contextCaptor.capture());
+        LlmCallContext callContext = contextCaptor.getValue();
+        assertThat(callContext.workId()).isEqualTo(21L);
+        assertThat(callContext.chapterId()).isEqualTo(22L);
+        assertThat(callContext.aiTaskId()).isEqualTo(23L);
+        assertThat(callContext.agentRunId()).isEqualTo(3L);
+        assertThat(callContext.agentStepId()).isEqualTo(4L);
+        assertThat(callContext.operationType()).isEqualTo("revise_candidate");
+    }
 
     @Test
     void evaluatesStructuredFindingsWithFakeProvider() throws Exception {
@@ -235,7 +280,7 @@ class GenerationEvaluationWorkflowDefinitionTest {
         when(service.semanticSource(9L)).thenReturn(source);
         when(provider.generate(any())).thenReturn(new LlmResponse(null, objectMapper.readTree(output), null));
         return new Harness(new GenerationEvaluationWorkflowDefinition(service, providerFactory,
-                userConfigService, objectMapper), service);
+                userConfigService, objectMapper), service, providerFactory);
     }
 
     private AgentStepExecutionContext context() {
@@ -251,6 +296,9 @@ class GenerationEvaluationWorkflowDefinitionTest {
                 + "\"blocksAcceptance\":false,\"suitableForAutoRevision\":false}]}";
     }
 
-    private record Harness(GenerationEvaluationWorkflowDefinition workflow, GenerationEvaluationServiceImpl service) {
+    private record Harness(
+            GenerationEvaluationWorkflowDefinition workflow,
+            GenerationEvaluationServiceImpl service,
+            LlmProviderFactory providerFactory) {
     }
 }
