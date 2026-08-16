@@ -520,15 +520,16 @@ public class AgentRuntimeService implements AgentRuntime {
         boolean retryable = step.getAttempt() < prepared.definition().maxAttempts(step.getStepKey());
         String errorCategory = prepared.definition().errorCategory(exception);
         String errorCode = prepared.definition().errorCode(exception);
+        String errorMessage = safeMessage(prepared.definition(), exception);
         stepMapper.update(null, new UpdateWrapper<AgentRunStepEntity>()
                 .eq("id", step.getId()).eq("deleted", 0).eq("version", step.getVersion())
                 .eq("step_status", STATUS_RUNNING).set("step_status", STATUS_FAILED)
                 .set("retryable", retryable ? 1 : 0).set("error_category", errorCategory)
                 .set("error_code", errorCode)
-                .set("error_message", safeMessage(exception)).set("finished_at", LocalDateTime.now())
+                .set("error_message", errorMessage).set("finished_at", LocalDateTime.now())
                 .set("version", step.getVersion() + 1));
         prepared.definition().applyFailure(step.getStepKey(), prepared.context(), exception);
-        updateRunStatus(run, STATUS_FAILED, errorCode, safeMessage(exception), step.getStepKey());
+        updateRunStatus(run, STATUS_FAILED, errorCode, errorMessage, step.getStepKey());
         if (run.getAiTaskId() != null) {
             updateAiTaskTerminal(run.getAiTaskId(), STATUS_FAILED);
         }
@@ -850,6 +851,14 @@ public class AgentRuntimeService implements AgentRuntime {
         return message == null || message.isBlank()
                 ? "Agent 步骤执行失败"
                 : message.substring(0, Math.min(500, message.length()));
+    }
+
+    String safeMessage(AgentWorkflowDefinition definition, Exception exception) {
+        String workflowMessage = definition.errorMessage(exception);
+        if (workflowMessage == null || workflowMessage.isBlank()) {
+            return safeMessage(exception);
+        }
+        return workflowMessage.substring(0, Math.min(500, workflowMessage.length()));
     }
 
     private boolean blank(String value) {

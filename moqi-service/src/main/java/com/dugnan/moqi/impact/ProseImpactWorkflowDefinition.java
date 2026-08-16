@@ -77,6 +77,22 @@ public class ProseImpactWorkflowDefinition implements AgentWorkflowDefinition {
         if (reportId != null) { service.fail(reportId, exception); }
     }
 
+    @Override public String errorCategory(Exception exception) {
+        return contractException(exception) == null ? AgentWorkflowDefinition.super.errorCategory(exception)
+                : "model_output";
+    }
+
+    @Override public String errorCode(Exception exception) {
+        ProseImpactContractException contractException = contractException(exception);
+        return contractException == null ? AgentWorkflowDefinition.super.errorCode(exception)
+                : "impact_output_" + contractException.category();
+    }
+
+    @Override public String errorMessage(Exception exception) {
+        ProseImpactContractException contractException = contractException(exception);
+        return contractException == null ? null : contractException.getMessage();
+    }
+
     private ModelResult analyze(Long reportId, AgentStepExecutionContext context) {
         try {
             LlmExecutionConfig config = configService.requireAvailableExecutionConfig();
@@ -112,8 +128,10 @@ public class ProseImpactWorkflowDefinition implements AgentWorkflowDefinition {
                 + "object_resource、space_time_route、causality、faction_rule、foreshadowing、language_only；"
                 + "epistemicStatus 必须区分 objective、character_claim、rumor、speculation、unexplained、"
                 + "author_backstage；changeKind 只能为 added、removed、modified、reframed；confidence 必须"
-                + "为 0 到 1 的数字，directDependency 必须为布尔值。每条 evidenceText 和 UTF-16 offset"
-                + " 必须精确指向 target 正文。没有事实变化时 changes 必须为空数组，范围只能为 none 或"
+                + "为 0 到 1 的数字，directDependency 必须为布尔值。每条 evidenceText 必须逐字复制 target"
+                + " 正文中能够唯一定位的一段原文，禁止概括、改写、省略或补全标点；evidenceStartOffset 和"
+                + " evidenceEndOffset 必须使用 Java String 的 UTF-16 下标，不能使用 Unicode code point、"
+                + " UTF-8 字节或自然语言计数。没有事实变化时 changes 必须为空数组，范围只能为 none 或"
                 + " language_only。完整格式示例：{\"impactScope\":\"local\",\"summary\":\"地点变化\","
                 + "\"changes\":[{\"changeKey\":\"fact-1\",\"factType\":\"space_time_route\","
                 + "\"epistemicStatus\":\"objective\",\"changeKind\":\"modified\",\"impactScope\":"
@@ -123,5 +141,15 @@ public class ProseImpactWorkflowDefinition implements AgentWorkflowDefinition {
                 + "角色主张、传闻与推测不是权威事实。报告只是候选分析，不得确认知识或修改正文。";
     }
     private Long number(Object value) { return value instanceof Number number ? number.longValue() : null; }
+    private ProseImpactContractException contractException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ProseImpactContractException contractException) {
+                return contractException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
     private record ModelResult(ImpactAnalysis analysis, Long modelCallId) { }
 }

@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import com.dugnan.moqi.agent.AgentRunCallRegistry;
@@ -25,6 +26,7 @@ import com.dugnan.moqi.llm.LlmProviderException;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 import com.dugnan.moqi.llm.LlmResponse;
+import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.impact.ProseImpactModels.ImpactAnalysis;
 
 @ExtendWith(MockitoExtension.class)
@@ -39,11 +41,11 @@ class ProseImpactWorkflowDefinitionTest {
     @BeforeEach
     void setUp() {
         workflow = new ProseImpactWorkflowDefinition(service, providerFactory, configService, objectMapper);
-        when(configService.requireAvailableExecutionConfig()).thenReturn(new LlmExecutionConfig(
+        lenient().when(configService.requireAvailableExecutionConfig()).thenReturn(new LlmExecutionConfig(
                 new LlmProviderRuntimeConfig("fake", "http://fake", "test-only", "fake-model"),
                 new LlmExecutionConfigDescriptor("fake", "fake-model", 1, 1)));
-        when(providerFactory.createObserved(any(), any())).thenReturn(fakeProvider);
-        when(service.analysisSource(20L)).thenReturn("{\"baseline\":\"旧\",\"target\":\"林舟抵达北城\"}");
+        lenient().when(providerFactory.createObserved(any(), any())).thenReturn(fakeProvider);
+        lenient().when(service.analysisSource(20L)).thenReturn("{\"baseline\":\"旧\",\"target\":\"林舟抵达北城\"}");
         lenient().when(service.validateForReport(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
     }
 
@@ -62,6 +64,12 @@ class ProseImpactWorkflowDefinitionTest {
 
         assertThat(result.nextStepKey()).isEqualTo("finalize");
         assertThat(result.checkpointState()).containsKeys("reportId", "analysis", "modelCallId");
+        ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(fakeProvider).generate(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().messages().get(0).content())
+                .contains("逐字复制 target 正文")
+                .contains("Java String 的 UTF-16 下标")
+                .contains("禁止概括、改写、省略或补全标点");
     }
 
     @Test
@@ -92,6 +100,27 @@ class ProseImpactWorkflowDefinitionTest {
 
         assertThatThrownBy(() -> workflow.execute(ProseImpactServiceImpl.ANALYZE_STEP, context()))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("摘要");
+    }
+
+    @Test
+    void contractFailureExposesOnlyStableCategoryCodeAndFieldPath() {
+        ProseImpactContractException contractException = new ProseImpactContractException(
+                "invalid_reference", "changes[2].evidenceText");
+        Exception wrapped = new IllegalStateException("Agent 步骤执行失败", contractException);
+
+        assertThat(workflow.errorCategory(wrapped)).isEqualTo("model_output");
+        assertThat(workflow.errorCode(wrapped)).isEqualTo("impact_output_invalid_reference");
+        assertThat(workflow.errorMessage(wrapped))
+                .isEqualTo("影响分析证据输出字段 changes[2].evidenceText 不符合安全契约：invalid_reference");
+    }
+
+    @Test
+    void unrelatedFailureKeepsRuntimeDefaults() {
+        Exception exception = new IllegalStateException("Provider failure");
+
+        assertThat(workflow.errorCategory(exception)).isEqualTo("execution");
+        assertThat(workflow.errorCode(exception)).isEqualTo("AGENT_STEP_EXECUTION_FAILED");
+        assertThat(workflow.errorMessage(exception)).isNull();
     }
 
     private AgentStepExecutionContext context() {

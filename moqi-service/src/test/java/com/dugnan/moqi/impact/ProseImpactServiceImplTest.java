@@ -79,6 +79,101 @@ class ProseImpactServiceImplTest {
     }
 
     @Test
+    void normalizesOffsetsWhenEvidenceTextHasOneExactMatch() {
+        Fixture fixture = new Fixture();
+        FactChange wrongOffsets = new FactChange("fact-1", "event", "objective", "modified", "local",
+                "抵达北城", 0, 4, new BigDecimal("0.90"), true, "地点变化");
+
+        ImpactAnalysis result = fixture.service.validate(
+                new ImpactAnalysis("local", "摘要", List.of(wrongOffsets)), "林舟抵达北城");
+
+        assertThat(result.changes().get(0).evidenceStartOffset()).isEqualTo(2);
+        assertThat(result.changes().get(0).evidenceEndOffset()).isEqualTo(6);
+    }
+
+    @Test
+    void normalizesOffsetsUsingJavaUtf16Indexes() {
+        Fixture fixture = new Fixture();
+        String target = "雨夜🌧️林舟抵达北城";
+        FactChange codePointOffsets = new FactChange("fact-1", "event", "objective", "modified", "local",
+                "林舟抵达北城", 4, 10, new BigDecimal("0.90"), true, "地点变化");
+
+        ImpactAnalysis result = fixture.service.validate(
+                new ImpactAnalysis("local", "摘要", List.of(codePointOffsets)), target);
+
+        assertThat(result.changes().get(0).evidenceStartOffset()).isEqualTo(target.indexOf("林舟抵达北城"));
+        assertThat(result.changes().get(0).evidenceEndOffset())
+                .isEqualTo(target.indexOf("林舟抵达北城") + "林舟抵达北城".length());
+    }
+
+    @Test
+    void fillsMissingOffsetsOnlyForUniqueExactEvidence() {
+        Fixture fixture = new Fixture();
+        FactChange missingOffsets = new FactChange("fact-1", "event", "objective", "modified", "local",
+                "抵达北城", null, null, new BigDecimal("0.90"), true, "地点变化");
+
+        ImpactAnalysis result = fixture.service.validate(
+                new ImpactAnalysis("local", "摘要", List.of(missingOffsets)), "林舟抵达北城");
+
+        assertThat(result.changes().get(0).evidenceStartOffset()).isEqualTo(2);
+        assertThat(result.changes().get(0).evidenceEndOffset()).isEqualTo(6);
+    }
+
+    @Test
+    void rejectsAmbiguousEvidenceWhenOffsetsDoNotIdentifyOneOccurrence() {
+        Fixture fixture = new Fixture();
+        FactChange ambiguous = new FactChange("fact-1", "event", "objective", "modified", "local",
+                "北城", 1, 3, new BigDecimal("0.90"), true, "地点变化");
+
+        assertThatThrownBy(() -> fixture.service.validate(
+                new ImpactAnalysis("local", "摘要", List.of(ambiguous)), "北城与北城"))
+                .isInstanceOf(ProseImpactContractException.class)
+                .satisfies(exception -> {
+                    ProseImpactContractException contractException = (ProseImpactContractException) exception;
+                    assertThat(contractException.category()).isEqualTo("ambiguous_reference");
+                    assertThat(contractException.path()).isEqualTo("changes[0].evidenceText");
+                });
+    }
+
+    @Test
+    void preservesExactOffsetsWhenRepeatedTextIsAlreadyDisambiguated() {
+        Fixture fixture = new Fixture();
+        FactChange disambiguated = new FactChange("fact-1", "event", "objective", "modified", "local",
+                "北城", 3, 5, new BigDecimal("0.90"), true, "地点变化");
+
+        ImpactAnalysis result = fixture.service.validate(
+                new ImpactAnalysis("local", "摘要", List.of(disambiguated)), "北城与北城");
+
+        assertThat(result.changes().get(0).evidenceStartOffset()).isEqualTo(3);
+        assertThat(result.changes().get(0).evidenceEndOffset()).isEqualTo(5);
+    }
+
+    @Test
+    void rejectsEvidenceThatHasNoExactOccurrence() {
+        Fixture fixture = new Fixture();
+        FactChange missing = new FactChange("fact-1", "event", "objective", "modified", "local",
+                "抵达南城", 0, 4, new BigDecimal("0.90"), true, "地点变化");
+
+        assertThatThrownBy(() -> fixture.service.validate(
+                new ImpactAnalysis("local", "摘要", List.of(missing)), "林舟抵达北城"))
+                .isInstanceOf(ProseImpactContractException.class)
+                .satisfies(exception -> {
+                    ProseImpactContractException contractException = (ProseImpactContractException) exception;
+                    assertThat(contractException.category()).isEqualTo("invalid_reference");
+                    assertThat(contractException.path()).isEqualTo("changes[0].evidenceText");
+                });
+    }
+
+    @Test
+    void mapsContractCategoryToStableReportErrorCode() {
+        Fixture fixture = new Fixture();
+
+        assertThat(fixture.service.errorCode(
+                new ProseImpactContractException("ambiguous_reference", "changes[0].evidenceText")))
+                .isEqualTo("impact_output_ambiguous_reference");
+    }
+
+    @Test
     void validatesLocalAdjacentAndExplicitCrossChapterReferencesWithinWork() {
         Fixture fixture = new Fixture();
         when(fixture.chapterMapper.selectList(any())).thenReturn(fixture.chapters());
