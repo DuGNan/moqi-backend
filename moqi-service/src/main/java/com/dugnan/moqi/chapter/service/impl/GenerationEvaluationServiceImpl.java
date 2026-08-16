@@ -42,6 +42,8 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationRevisionCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
 import com.dugnan.moqi.chapter.service.EvaluationFindingContractException;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.context.entity.StoryContextSnapshotEntity;
@@ -68,6 +70,8 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     private static final String STATUS_READY = "ready";
     private static final String STATUS_CANCELED = "canceled";
     private static final String STATUS_STALE = "stale";
+    private static final String STATUS_FAILED = "failed";
+    private static final String SEMANTIC_EVALUATE = "semantic_evaluate";
     private static final String GENERATION_PREVIEW = "preview";
     private static final String CONCLUSION_NEEDS_REVISION = "needs_revision";
     private static final String CONCLUSION_NEEDS_HUMAN = "needs_human";
@@ -91,6 +95,7 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     private final StoryContextSnapshotMapper contextSnapshotMapper;
     private final ChapterAssetSourceSnapshotMapper assetSourceSnapshotMapper;
     private final ScenePlanVersionMapper scenePlanVersionMapper;
+    private final GenerationRetryMetadataResolver retryMetadataResolver;
 
     public GenerationEvaluationServiceImpl(ChapterGenerationMapper generationMapper,
             ChapterGenerationSceneMapper sceneMapper, ChapterGenerationEvaluationReportMapper reportMapper,
@@ -98,7 +103,8 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
             BoundedChapterRevisionMapper boundedRevisionMapper, AiTaskMapper taskMapper,
             ObjectMapper objectMapper, StoryContextSnapshotMapper contextSnapshotMapper,
             ChapterAssetSourceSnapshotMapper assetSourceSnapshotMapper,
-            ScenePlanVersionMapper scenePlanVersionMapper) {
+            ScenePlanVersionMapper scenePlanVersionMapper,
+            GenerationRetryMetadataResolver retryMetadataResolver) {
         this.generationMapper = generationMapper;
         this.sceneMapper = sceneMapper;
         this.reportMapper = reportMapper;
@@ -109,6 +115,7 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
         this.contextSnapshotMapper = contextSnapshotMapper;
         this.assetSourceSnapshotMapper = assetSourceSnapshotMapper;
         this.scenePlanVersionMapper = scenePlanVersionMapper;
+        this.retryMetadataResolver = retryMetadataResolver;
     }
 
     @Autowired
@@ -267,15 +274,24 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     @Transactional(rollbackFor = RuntimeException.class)
     public AgentRunView retry(Long chapterId, Long generationId, Long reportId, RetryEvaluationRequest request) {
         ChapterGenerationEvaluationReportEntity report = requireReport(chapterId, generationId, reportId);
-        if (report.getAgentRunId() == null || request == null || request.expectedAttempt() == null) {
-            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT, "当前评价报告不能重试");
+        RetryMetadata metadata = retryMetadata(report);
+        if (request == null || request.expectedAttempt() == null
+                || !STATUS_FAILED.equals(report.getReportStatus())
+                || !Boolean.TRUE.equals(metadata.retryable())
+                || !Objects.equals(request.expectedAttempt(), metadata.currentAttempt())) {
+            throw retryConflict();
         }
-        reportMapper.update(null, new UpdateWrapper<ChapterGenerationEvaluationReportEntity>()
-                .eq("id", reportId).eq("report_status", "failed").set("report_status", "running")
+        int changed = reportMapper.update(null, new UpdateWrapper<ChapterGenerationEvaluationReportEntity>()
+                .eq("id", reportId).eq("version", report.getVersion())
+                .eq("agent_run_id", report.getAgentRunId()).eq("report_status", STATUS_FAILED)
+                .set("report_status", "running")
                 .set("conclusion", null).set("error_code", null).set("error_message", null)
                 .setSql("version = version + 1"));
+        if (changed != 1) {
+            throw retryConflict();
+        }
         return agentRuntime.retryStep(new RetryAgentStepCommand(
-                report.getAgentRunId(), "semantic_evaluate", request.expectedAttempt()));
+                report.getAgentRunId(), SEMANTIC_EVALUATE, request.expectedAttempt()));
     }
 
     @Override
@@ -697,13 +713,29 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
     }
 
     private EvaluationReportView view(ChapterGenerationEvaluationReportEntity report) {
+        RetryMetadata metadata = retryMetadata(report);
+        boolean failed = STATUS_FAILED.equals(report.getReportStatus());
+        boolean retryable = failed
+                && Boolean.TRUE.equals(metadata.retryable());
         return new EvaluationReportView(report.getId(), report.getGenerationId(), report.getGenerationSceneId(), report.getContextSnapshotId(),
                 report.getAiTaskId(), report.getAgentRunId(), report.getReportStatus(), report.getConclusion(), findings(report),
                 report.getRulesetVersion(), report.getEvaluatorVersion(), report.getContentHash(),
                 report.getBriefFingerprint(), report.getSourceFingerprint(), report.getModelCallId(),
-                report.getErrorCode(), report.getErrorMessage(), report.getRevisionAttempt(),
+                report.getErrorCode(), report.getErrorMessage(), failed ? metadata.currentAttempt() : null, retryable,
+                report.getRevisionAttempt(),
                 report.getRevisionCandidateId() == null ? null : revisionCandidate(report.getChapterId(), report.getGenerationId(), report.getId()),
                 report.getVersion(), report.getGmtCreate(), report.getGmtModified());
+    }
+
+    private RetryMetadata retryMetadata(ChapterGenerationEvaluationReportEntity report) {
+        RetryMetadata metadata = retryMetadataResolver.resolveOwned(report.getAgentRunId(), SEMANTIC_EVALUATE,
+                WORKFLOW_TYPE, report.getWorkId(), report.getChapterId(), report.getAiTaskId());
+        return metadata == null ? RetryMetadata.empty() : metadata;
+    }
+
+    private BusinessException retryConflict() {
+        return new BusinessException(ErrorCode.AGENT_RUN_STATE_CONFLICT,
+                "评价重试状态已变化，请重新读取报告后再试");
     }
 
     private RevisionCandidateView revisionView(ChapterGenerationRevisionCandidateEntity item) {

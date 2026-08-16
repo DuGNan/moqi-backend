@@ -350,6 +350,7 @@ public class AgentRuntimeService implements AgentRuntime {
                 .eq("id", run.getId()).eq("deleted", 0).eq("version", run.getVersion())
                 .eq("run_status", STATUS_FAILED).set("run_status", STATUS_QUEUED)
                 .set("current_step_key", step.getStepKey()).set("error_code", null).set("error_message", null)
+                .set("timeout_at", LocalDateTime.now().plus(definition.timeout()))
                 .set("version", run.getVersion() + 1));
         if (changed != 1) {
             throw conflict(ErrorCode.AGENT_RUN_STATE_CONFLICT, "Agent Run 状态已变化");

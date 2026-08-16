@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
@@ -15,6 +16,7 @@ import org.junit.jupiter.api.Test;
 
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationFinding;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.CreateEvaluationRequest;
+import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.RetryEvaluationRequest;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEvaluationReportEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
@@ -25,6 +27,8 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationEvaluationReportMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationRevisionCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.context.entity.StoryContextSnapshotEntity;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.context.mapper.StoryContextSnapshotMapper;
@@ -173,6 +177,97 @@ class GenerationEvaluationServiceImplTest {
         assertReportConclusion(fixture, "needs_human");
         verify(fixture.generationMapper, never()).update(
                 org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void exposesPersistedSemanticAttemptAndSafeRetryFlag() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity report = fixture.retryableReport();
+        when(fixture.reportMapper.selectById(9L)).thenReturn(report);
+        when(fixture.retryMetadataResolver.resolveOwned(7L, "semantic_evaluate",
+                GenerationEvaluationServiceImpl.WORKFLOW_TYPE, 1L, 12L, 8L))
+                .thenReturn(new RetryMetadata("semantic_evaluate", 2, true));
+
+        var view = fixture.service.get(12L, 3L, 9L);
+
+        assertThat(view.currentAttempt()).isEqualTo(2);
+        assertThat(view.retryable()).isTrue();
+        assertThat(view.revisionAttempt()).isZero();
+    }
+
+    @Test
+    void hidesAttemptForReadyReportEvenWhenRuntimeStillHasLatestStep() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity report = fixture.retryableReport();
+        report.setReportStatus("ready");
+        when(fixture.reportMapper.selectById(9L)).thenReturn(report);
+        when(fixture.retryMetadataResolver.resolveOwned(7L, "semantic_evaluate",
+                GenerationEvaluationServiceImpl.WORKFLOW_TYPE, 1L, 12L, 8L))
+                .thenReturn(new RetryMetadata("semantic_evaluate", 2, false));
+
+        var view = fixture.service.get(12L, 3L, 9L);
+
+        assertThat(view.currentAttempt()).isNull();
+        assertThat(view.retryable()).isFalse();
+    }
+
+    @Test
+    void retriesOnlyMatchingPersistedAttemptAndSingleReportCas() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity report = fixture.retryableReport();
+        when(fixture.reportMapper.selectById(9L)).thenReturn(report);
+        when(fixture.retryMetadataResolver.resolveOwned(7L, "semantic_evaluate",
+                GenerationEvaluationServiceImpl.WORKFLOW_TYPE, 1L, 12L, 8L))
+                .thenReturn(new RetryMetadata("semantic_evaluate", 2, true));
+        when(fixture.reportMapper.update(org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(1);
+        com.dugnan.moqi.agent.AgentRuntime runtime = mock(com.dugnan.moqi.agent.AgentRuntime.class);
+        fixture.service.setAgentRuntime(runtime);
+
+        fixture.service.retry(12L, 3L, 9L, new RetryEvaluationRequest(2));
+
+        verify(runtime).retryStep(org.mockito.ArgumentMatchers.argThat(command ->
+                Long.valueOf(7L).equals(command.runId())
+                        && "semantic_evaluate".equals(command.stepKey())
+                        && Integer.valueOf(2).equals(command.expectedAttempt())));
+    }
+
+    @Test
+    void rejectsOldAttemptBeforeCreatingAnyRetryWork() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity report = fixture.retryableReport();
+        when(fixture.reportMapper.selectById(9L)).thenReturn(report);
+        when(fixture.retryMetadataResolver.resolveOwned(7L, "semantic_evaluate",
+                GenerationEvaluationServiceImpl.WORKFLOW_TYPE, 1L, 12L, 8L))
+                .thenReturn(new RetryMetadata("semantic_evaluate", 3, true));
+        com.dugnan.moqi.agent.AgentRuntime runtime = mock(com.dugnan.moqi.agent.AgentRuntime.class);
+        fixture.service.setAgentRuntime(runtime);
+
+        assertThatThrownBy(() -> fixture.service.retry(12L, 3L, 9L, new RetryEvaluationRequest(2)))
+                .isInstanceOf(BusinessException.class);
+
+        verify(fixture.reportMapper, never()).update(org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.any());
+        verifyNoInteractions(runtime);
+    }
+
+    @Test
+    void rejectsDuplicateRetryWhenReportCasLosesWithoutCallingRuntime() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity report = fixture.retryableReport();
+        when(fixture.reportMapper.selectById(9L)).thenReturn(report);
+        when(fixture.retryMetadataResolver.resolveOwned(7L, "semantic_evaluate",
+                GenerationEvaluationServiceImpl.WORKFLOW_TYPE, 1L, 12L, 8L))
+                .thenReturn(new RetryMetadata("semantic_evaluate", 2, true));
+        when(fixture.reportMapper.update(org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(0);
+        com.dugnan.moqi.agent.AgentRuntime runtime = mock(com.dugnan.moqi.agent.AgentRuntime.class);
+        fixture.service.setAgentRuntime(runtime);
+
+        assertThatThrownBy(() -> fixture.service.retry(12L, 3L, 9L, new RetryEvaluationRequest(2)))
+                .isInstanceOf(BusinessException.class);
+
+        verifyNoInteractions(runtime);
     }
 
     @Test
@@ -462,10 +557,11 @@ class GenerationEvaluationServiceImplTest {
         private final StoryContextSnapshotMapper contextSnapshotMapper = mock(StoryContextSnapshotMapper.class);
         private final ChapterAssetSourceSnapshotMapper assetSourceSnapshotMapper =
                 mock(ChapterAssetSourceSnapshotMapper.class);
+        private final GenerationRetryMetadataResolver retryMetadataResolver = mock(GenerationRetryMetadataResolver.class);
         private ChapterGenerationEntity currentGeneration;
         private final GenerationEvaluationServiceImpl service = new GenerationEvaluationServiceImpl(generationMapper, sceneMapper,
                 reportMapper, revisionMapper, boundedRevisionMapper, taskMapper, new ObjectMapper(),
-                contextSnapshotMapper, assetSourceSnapshotMapper, planMapper);
+                contextSnapshotMapper, assetSourceSnapshotMapper, planMapper, retryMetadataResolver);
 
         private ChapterGenerationEvaluationReportEntity createReport(
                 String basisSnapshot,
@@ -558,6 +654,17 @@ class GenerationEvaluationServiceImplTest {
             report.setInputFingerprint(batchFingerprint("原正文"));
             report.setVersion(0);
             report.setDeleted(0);
+            return report;
+        }
+
+        private ChapterGenerationEvaluationReportEntity retryableReport() {
+            ChapterGenerationEvaluationReportEntity report = batchReport();
+            report.setWorkId(1L);
+            report.setChapterId(12L);
+            report.setAiTaskId(8L);
+            report.setAgentRunId(7L);
+            report.setReportStatus("failed");
+            report.setRevisionAttempt(0);
             return report;
         }
 
