@@ -421,6 +421,25 @@ class AgentRuntimeServiceTest {
                 .hasMessageContaining("终态");
     }
 
+    @Test
+    void workflowCanProvideBoundedSafeFailureMessage() {
+        AgentWorkflowDefinition workflow = mock(AgentWorkflowDefinition.class);
+        String safeMessage = "影响分析证据输出字段 changes[0].evidenceText 不符合安全契约：invalid_reference";
+        when(workflow.errorMessage(any())).thenReturn(safeMessage.repeat(20));
+
+        String persisted = runtime().safeMessage(workflow, new IllegalStateException("原始敏感消息"));
+
+        assertThat(persisted).hasSize(500).startsWith(safeMessage).doesNotContain("原始敏感消息");
+    }
+
+    @Test
+    void workflowWithoutSafeFailureMessageFallsBackToRuntimeMessage() {
+        AgentWorkflowDefinition workflow = mock(AgentWorkflowDefinition.class);
+
+        assertThat(runtime().safeMessage(workflow, new IllegalStateException("运行时安全消息")))
+                .isEqualTo("运行时安全消息");
+    }
+
     private AgentRuntimeService runtime() {
         return new AgentRuntimeService(
                 runMapper,

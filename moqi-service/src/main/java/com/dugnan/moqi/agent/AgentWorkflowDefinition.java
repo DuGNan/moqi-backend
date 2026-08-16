@@ -85,6 +85,16 @@ public interface AgentWorkflowDefinition {
     }
 
     /**
+     * 返回供运行时持久化的安全失败消息。工作流只有在消息不包含正文、Prompt、凭据等敏感内容时才应覆盖。
+     *
+     * @param exception 步骤异常
+     * @return 已脱敏的失败消息；返回空值时由运行时使用默认消息
+     */
+    default String errorMessage(Exception exception) {
+        return null;
+    }
+
+    /**
      * 在运行时短事务中收敛领域候选的失败状态。
      *
      * @param stepKey 步骤键

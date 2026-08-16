@@ -74,7 +74,7 @@ import com.dugnan.moqi.work.mapper.WorkMapper;
 public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactReleaseHook {
     public static final String WORKFLOW_TYPE = "prose_revision_impact_v1";
     public static final String ANALYZE_STEP = "analyze_impact";
-    public static final String ANALYZER_VERSION = "prose-impact-analyzer-v1";
+    public static final String ANALYZER_VERSION = "prose-impact-analyzer-v2";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_RUNNING = "running";
     private static final String STATUS_READY = "ready";
@@ -310,29 +310,59 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
             throw invalid("事实变化列表缺失或超限");
         }
         Set<String> keys = new LinkedHashSet<>();
+        List<FactChange> normalizedChanges = new ArrayList<>();
         ChapterScope chapterScope = workId == null ? null : chapterScope(workId, currentChapterId);
-        for (FactChange change : analysis.changes()) {
+        for (int index = 0; index < analysis.changes().size(); index++) {
+            FactChange change = analysis.changes().get(index);
             if (change == null || !StringUtils.hasText(change.changeKey()) || !keys.add(change.changeKey())
                     || !FACT_TYPES.contains(change.factType()) || !EPISTEMIC.contains(change.epistemicStatus())
                     || !CHANGE_KINDS.contains(change.changeKind()) || !SCOPES.contains(change.impactScope())
                     || !Objects.equals(analysis.impactScope(), change.impactScope())
                     || change.confidence() == null || change.confidence().compareTo(BigDecimal.ZERO) < 0
-                    || change.confidence().compareTo(BigDecimal.ONE) > 0 || change.evidenceStartOffset() == null
-                    || change.evidenceEndOffset() == null || change.evidenceStartOffset() < 0
-                    || change.evidenceEndOffset() > targetContent.length()
-                    || change.evidenceStartOffset() >= change.evidenceEndOffset()
-                    || !Objects.equals(targetContent.substring(change.evidenceStartOffset(), change.evidenceEndOffset()),
-                            change.evidenceText()) || !StringUtils.hasText(change.explanation())
+                    || change.confidence().compareTo(BigDecimal.ONE) > 0
+                    || !StringUtils.hasText(change.explanation())
                     || change.affectedChapterIds() == null) {
                 throw invalid("影响分析证据未通过正文边界校验");
             }
-            if (chapterScope != null) { validateAffectedChapters(change, chapterScope); }
+            FactChange normalizedChange = normalizeEvidence(change, targetContent, index);
+            normalizedChanges.add(normalizedChange);
+            if (chapterScope != null) { validateAffectedChapters(normalizedChange, chapterScope); }
         }
         if (Set.of(SCOPE_NONE, SCOPE_LANGUAGE_ONLY).contains(analysis.impactScope())
                 && !analysis.changes().isEmpty()) {
             throw invalid("无事实变化或纯语言调整不得携带事实变化");
         }
-        return new ImpactAnalysis(analysis.impactScope(), analysis.summary(), List.copyOf(analysis.changes()));
+        return new ImpactAnalysis(analysis.impactScope(), analysis.summary(), List.copyOf(normalizedChanges));
+    }
+
+    private FactChange normalizeEvidence(FactChange change, String targetContent, int index) {
+        String basePath = "changes[" + index + "].evidence";
+        if (!StringUtils.hasText(change.evidenceText()) || targetContent == null) {
+            throw new ProseImpactContractException("missing_evidence", basePath + "Text");
+        }
+        Integer startOffset = change.evidenceStartOffset();
+        Integer endOffset = change.evidenceEndOffset();
+        if (isExactEvidenceRange(targetContent, change.evidenceText(), startOffset, endOffset)) {
+            return change;
+        }
+        int exactStart = targetContent.indexOf(change.evidenceText());
+        if (exactStart < 0) {
+            throw new ProseImpactContractException("invalid_reference", basePath + "Text");
+        }
+        if (targetContent.indexOf(change.evidenceText(), exactStart + 1) >= 0) {
+            throw new ProseImpactContractException("ambiguous_reference", basePath + "Text");
+        }
+        int exactEnd = exactStart + change.evidenceText().length();
+        return new FactChange(change.changeKey(), change.factType(), change.epistemicStatus(), change.changeKind(),
+                change.impactScope(), change.evidenceText(), exactStart, exactEnd, change.confidence(),
+                change.directDependency(), change.explanation(), change.affectedChapterIds());
+    }
+
+    private boolean isExactEvidenceRange(String targetContent, String evidenceText,
+            Integer startOffset, Integer endOffset) {
+        return startOffset != null && endOffset != null && startOffset >= 0
+                && endOffset <= targetContent.length() && startOffset < endOffset
+                && Objects.equals(targetContent.substring(startOffset, endOffset), evidenceText);
     }
 
     boolean requiresHuman(ImpactAnalysis analysis) {
@@ -825,9 +855,12 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
         catch (Exception exception) { throw new IllegalStateException(exception); }
     }
     private Object value(Object value) { return value == null ? "" : value; }
-    private String errorCode(Exception exception) {
+    String errorCode(Exception exception) {
         Throwable current = exception;
         while (current != null) {
+            if (current instanceof ProseImpactContractException contractException) {
+                return "impact_output_" + contractException.category();
+            }
             if (current instanceof BusinessException business
                     && business.getErrorCode() == ErrorCode.PROSE_IMPACT_REPORT_INVALID) {
                 return "invalid_model_output";
