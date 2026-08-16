@@ -46,6 +46,7 @@ public final class WorkChapterModels {
             LocalDateTime gmtModified) {
     }
 
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     public record ChapterSummary(
             Long id,
             Long workId,
@@ -53,6 +54,7 @@ public final class WorkChapterModels {
             Integer chapterNo,
             String chapterType,
             String workflowStatus,
+            Long currentProseRevisionId,
             int wordCount,
             boolean hasPreviewGeneration,
             Integer version,
@@ -65,6 +67,7 @@ public final class WorkChapterModels {
     public record WorkRef(Long id, String title) {
     }
 
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     public record ChapterCreated(
             Long id,
             Long workId,
@@ -72,12 +75,14 @@ public final class WorkChapterModels {
             Integer chapterNo,
             String chapterType,
             String workflowStatus,
+            Long currentProseRevisionId,
             Integer version,
             String defaultWorkspace,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
     }
 
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     public record ChapterDetail(
             Long id,
             Long workId,
@@ -86,6 +91,7 @@ public final class WorkChapterModels {
             Integer chapterNo,
             String chapterType,
             String workflowStatus,
+            Long currentProseRevisionId,
             int wordCount,
             Integer version,
             LocalDateTime gmtCreate,
