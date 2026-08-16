@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
@@ -386,11 +387,18 @@ class AgentRuntimeServiceTest {
         AgentWorkflowDefinition workflow = mock(AgentWorkflowDefinition.class);
         when(workflowRegistry.require("chapter-draft")).thenReturn(workflow);
         when(workflow.maxAttempts("draft")).thenReturn(2);
+        when(workflow.timeout()).thenReturn(Duration.ofMinutes(30));
         when(runMapper.update(isNull(), any())).thenReturn(1);
+        LocalDateTime beforeRetry = LocalDateTime.now();
 
         runtime().retryStep(new RetryAgentStepCommand(41L, "draft", 1));
 
         verify(eventPublisher).publishEvent(isA(AgentRunSubmittedEvent.class));
+        ArgumentCaptor<UpdateWrapper<AgentRunEntity>> updateCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(runMapper).update(isNull(), updateCaptor.capture());
+        assertThat(updateCaptor.getValue().getParamNameValuePairs().values())
+                .anyMatch(value -> value instanceof LocalDateTime timeoutAt
+                        && timeoutAt.isAfter(beforeRetry.plusMinutes(29)));
     }
 
     @Test

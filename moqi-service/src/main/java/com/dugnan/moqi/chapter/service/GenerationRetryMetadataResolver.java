@@ -57,10 +57,51 @@ public class GenerationRetryMetadataResolver {
                 retryable);
     }
 
+    /**
+     * 仅在 Run 与业务记录的持久化归属完全一致时返回步骤元数据。
+     * 归属缺失或冲突时不猜测历史记录，统一返回不可重试。
+     */
+    public RetryMetadata resolveOwned(Long runId, String stepKey, String workflowType,
+            Long workId, Long chapterId, Long aiTaskId) {
+        if (runId == null) {
+            return RetryMetadata.empty();
+        }
+        AgentRunEntity run = runMapper.selectById(runId);
+        if (run == null
+                || !Integer.valueOf(0).equals(run.getDeleted())
+                || !workflowType.equals(run.getWorkflowType())
+                || !java.util.Objects.equals(workId, run.getWorkId())
+                || !java.util.Objects.equals(chapterId, run.getChapterId())
+                || !java.util.Objects.equals(aiTaskId, run.getAiTaskId())) {
+            return RetryMetadata.empty();
+        }
+        AgentRunStepEntity step = latestStep(runId, stepKey);
+        if (step == null) {
+            return RetryMetadata.empty();
+        }
+        boolean retryable = STATUS_FAILED.equals(run.getRunStatus())
+                && STATUS_FAILED.equals(step.getStepStatus())
+                && Integer.valueOf(1).equals(step.getRetryable());
+        return new RetryMetadata(run.getCurrentStepKey(), step.getAttempt(), retryable);
+    }
+
+    private AgentRunStepEntity latestStep(Long runId, String stepKey) {
+        return stepMapper.selectList(new LambdaQueryWrapper<AgentRunStepEntity>()
+                .eq(AgentRunStepEntity::getRunId, runId)
+                .eq(AgentRunStepEntity::getStepKey, stepKey)
+                .eq(AgentRunStepEntity::getDeleted, 0)
+                .orderByDesc(AgentRunStepEntity::getAttempt)
+                .orderByDesc(AgentRunStepEntity::getId)
+                .last("LIMIT 1"))
+                .stream()
+                .findFirst()
+                .orElse(null);
+    }
+
     /** 前端可见的最小重试恢复元数据。 */
     public record RetryMetadata(String currentStepKey, Integer currentAttempt, Boolean retryable) {
 
-        private static RetryMetadata empty() {
+        public static RetryMetadata empty() {
             return new RetryMetadata(null, null, false);
         }
     }

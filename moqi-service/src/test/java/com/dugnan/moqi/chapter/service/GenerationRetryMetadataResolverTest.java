@@ -58,4 +58,69 @@ class GenerationRetryMetadataResolverTest {
         assertThat(result.currentAttempt()).isNull();
         assertThat(result.retryable()).isFalse();
     }
+
+    @Test
+    void resolvesOwnedFailedSemanticStepOnlyWhenEveryBindingMatches() {
+        AgentRunEntity run = ownedRun();
+        AgentRunStepEntity step = failedStep();
+        when(runMapper.selectById(9L)).thenReturn(run);
+        when(stepMapper.selectList(any())).thenReturn(List.of(step));
+
+        var result = resolver.resolveOwned(9L, "semantic_evaluate", "chapter_generation_evaluation_v1",
+                1L, 12L, 8L);
+
+        assertThat(result.currentAttempt()).isEqualTo(3);
+        assertThat(result.retryable()).isTrue();
+    }
+
+    @Test
+    void returnsSafeEmptyMetadataForMismatchedOwnershipOrMissingStep() {
+        AgentRunEntity run = ownedRun();
+        when(runMapper.selectById(9L)).thenReturn(run);
+
+        var mismatched = resolver.resolveOwned(9L, "semantic_evaluate", "chapter_generation_evaluation_v1",
+                2L, 12L, 8L);
+        assertThat(mismatched.currentAttempt()).isNull();
+        assertThat(mismatched.retryable()).isFalse();
+
+        when(stepMapper.selectList(any())).thenReturn(List.of());
+        var missingStep = resolver.resolveOwned(9L, "semantic_evaluate", "chapter_generation_evaluation_v1",
+                1L, 12L, 8L);
+        assertThat(missingStep.currentAttempt()).isNull();
+        assertThat(missingStep.retryable()).isFalse();
+    }
+
+    @Test
+    void exposesAttemptButDisablesRetryForNonFailedRun() {
+        AgentRunEntity run = ownedRun();
+        run.setRunStatus("running");
+        when(runMapper.selectById(9L)).thenReturn(run);
+        when(stepMapper.selectList(any())).thenReturn(List.of(failedStep()));
+
+        var result = resolver.resolveOwned(9L, "semantic_evaluate", "chapter_generation_evaluation_v1",
+                1L, 12L, 8L);
+
+        assertThat(result.currentAttempt()).isEqualTo(3);
+        assertThat(result.retryable()).isFalse();
+    }
+
+    private AgentRunEntity ownedRun() {
+        AgentRunEntity run = new AgentRunEntity();
+        run.setDeleted(0);
+        run.setWorkflowType("chapter_generation_evaluation_v1");
+        run.setWorkId(1L);
+        run.setChapterId(12L);
+        run.setAiTaskId(8L);
+        run.setRunStatus("failed");
+        run.setCurrentStepKey("semantic_evaluate");
+        return run;
+    }
+
+    private AgentRunStepEntity failedStep() {
+        AgentRunStepEntity step = new AgentRunStepEntity();
+        step.setAttempt(3);
+        step.setStepStatus("failed");
+        step.setRetryable(1);
+        return step;
+    }
 }

@@ -82,6 +82,8 @@ public final class GenerationEvaluationModels {
             Long modelCallId,
             String errorCode,
             String errorMessage,
+            Integer currentAttempt,
+            boolean retryable,
             Integer revisionAttempt,
             RevisionCandidateView revisionCandidate,
             Integer version,
