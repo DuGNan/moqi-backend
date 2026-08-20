@@ -47,6 +47,8 @@ public final class ChapterCollaborationModels {
             ReplyPolicySnapshot effectiveReplyPolicy,
             MessageInteraction interaction,
             MessageInteractionResponse interactionResponse,
+            String generationStatus,
+            Long retryOfTaskId,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
 
@@ -72,7 +74,7 @@ public final class ChapterCollaborationModels {
                 LocalDateTime gmtCreate,
                 LocalDateTime gmtModified) {
             this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, null, null,
-                    null, null, null, null, gmtCreate, gmtModified);
+                    null, null, null, null, null, null, gmtCreate, gmtModified);
         }
     }
 
@@ -92,6 +94,8 @@ public final class ChapterCollaborationModels {
             ReplyPolicySnapshot effectiveReplyPolicy,
             MessageInteraction interaction,
             MessageInteractionResponse interactionResponse,
+            String generationStatus,
+            Long retryOfTaskId,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
 
@@ -117,7 +121,7 @@ public final class ChapterCollaborationModels {
                 LocalDateTime gmtCreate,
                 LocalDateTime gmtModified) {
             this(id, conversationId, chapterId, messageRole, content, aiTaskId, null, null, null, null,
-                    null, null, null, null, gmtCreate, gmtModified);
+                    null, null, null, null, null, null, gmtCreate, gmtModified);
         }
     }
 

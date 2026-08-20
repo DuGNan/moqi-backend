@@ -63,7 +63,7 @@ public class WorkChapterServiceImpl implements WorkChapterService {
     private static final Set<String> CHAPTER_TYPES =
             Set.of("dedication", "prologue", "chapter", "epilogue", "other");
     private static final Set<String> WORKFLOW_STATUSES = Set.of("co_creation", "done");
-    private static final Set<String> ACTIVE_TASK_STATUSES = Set.of("queued", "running");
+    private static final Set<String> ACTIVE_TASK_STATUSES = Set.of("queued", "running", "canceling");
     private static final Set<String> ACTIVE_RUN_STATUSES = Set.of("queued", "running", "waiting");
 
     private final WorkMapper workMapper;

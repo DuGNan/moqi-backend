@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -56,6 +57,7 @@ class AiTaskServiceImplTest {
     @BeforeEach
     void setUp() {
         service = new AiTaskServiceImpl(taskMapper, candidateMapper, null, messageMapper, eventPublisher);
+        lenient().when(messageMapper.selectById(11L)).thenReturn(userMessage());
     }
 
     /**
@@ -104,8 +106,6 @@ class AiTaskServiceImplTest {
         task.setErrorMessage("Provider unavailable");
         when(taskMapper.selectById(9001L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
-        when(messageMapper.selectList(any())).thenReturn(List.of(new ChapterConversationMessageEntity()));
-
         var result = service.retryTask(9001L);
 
         assertThat(result.id()).isEqualTo(9001L);
@@ -157,7 +157,7 @@ class AiTaskServiceImplTest {
         service.cancelTask(9001L);
 
         verify(eventPublisher).publishEvent(new AiTaskCancellationSignal(9001L));
-        verify(eventPublisher).publishEvent(ChapterReplyEvent.canceled(12L, 9001L));
+        verify(eventPublisher).publishEvent(ChapterReplyEvent.canceling(12L, 9001L));
     }
 
     /**
@@ -177,7 +177,7 @@ class AiTaskServiceImplTest {
 
         var result = service.cancelTask(9001L);
 
-        assertThat(result.taskStatus()).isEqualTo("canceled");
+        assertThat(result.taskStatus()).isEqualTo("canceling");
         verify(taskMapper, times(2)).selectById(9001L);
         verify(taskMapper, times(2)).update(any(), any());
     }
@@ -280,6 +280,48 @@ class AiTaskServiceImplTest {
                 12L, 9001L, 7002L, "canceled", "canceled", 33L, 4));
     }
 
+    @Test
+    void createsTraceableRetryTaskForCanceledReply() {
+        AiTaskEntity source = task(9001L, "canceled");
+        source.setTaskInputJson("""
+                {"schemaVersion":1,"messageId":11,"conversationId":8,
+                 "replyMode":"explore","replyDepth":"brief",
+                 "replyScope":{"primaryIntent":"discuss","targetType":"current_discussion",
+                 "targetReference":null,"allowedChanges":"discussion","maxCandidates":1,"allowNewTerms":true},
+                 "controlSource":"message","policyVersion":"chapter-reply-policy-v1",
+                 "contextAuthorityVersion":"story-context-authority-v2","convergenceApplied":false}
+                """);
+        when(taskMapper.selectById(9001L)).thenReturn(source);
+        when(taskMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.insert(any(AiTaskEntity.class))).thenAnswer(invocation -> {
+            AiTaskEntity retry = invocation.getArgument(0);
+            retry.setId(9002L);
+            return 1;
+        });
+
+        var result = service.retryTask(9001L);
+
+        assertThat(result.id()).isEqualTo(9002L);
+        assertThat(result.taskStatus()).isEqualTo("queued");
+        assertThat(result.retryOfTaskId()).isEqualTo(9001L);
+        verify(eventPublisher).publishEvent(new ConversationReplyTaskSubmittedEvent(9002L));
+    }
+
+    @Test
+    void returnsExistingRetryTaskForRepeatedCanceledRetry() {
+        AiTaskEntity source = task(9001L, "canceled");
+        AiTaskEntity existing = task(9002L, "running");
+        existing.setRetryOfTaskId(9001L);
+        when(taskMapper.selectById(9001L)).thenReturn(source);
+        when(taskMapper.selectOne(any())).thenReturn(existing);
+
+        var result = service.retryTask(9001L);
+
+        assertThat(result.id()).isEqualTo(9002L);
+        assertThat(result.retryOfTaskId()).isEqualTo(9001L);
+        verify(taskMapper, never()).insert(any(AiTaskEntity.class));
+    }
+
     /**
      * 构造测试 AI 任务。
      *
@@ -297,5 +339,15 @@ class AiTaskServiceImplTest {
         task.setDeleted(0);
         task.setVersion(0);
         return task;
+    }
+
+    private ChapterConversationMessageEntity userMessage() {
+        ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
+        message.setId(11L);
+        message.setConversationId(8L);
+        message.setChapterId(12L);
+        message.setMessageRole("user");
+        message.setDeleted(0);
+        return message;
     }
 }

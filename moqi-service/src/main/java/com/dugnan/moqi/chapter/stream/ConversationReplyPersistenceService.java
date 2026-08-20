@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.util.StringUtils;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
@@ -25,6 +26,11 @@ import org.slf4j.LoggerFactory;
  */
 @Service
 public class ConversationReplyPersistenceService {
+    private static final String STATUS_CANCELING = "canceling";
+    private static final String STATUS_CANCELED = "canceled";
+    private static final String GENERATION_COMPLETED = "completed";
+    private static final String GENERATION_STOPPED = "stopped";
+
     private static final Logger LOGGER = LoggerFactory.getLogger(ConversationReplyPersistenceService.class);
 
     private final AiTaskMapper taskMapper;
@@ -87,6 +93,7 @@ public class ConversationReplyPersistenceService {
         message.setChapterId(task.getChapterId());
         message.setMessageRole("assistant");
         message.setContent(content);
+        message.setGenerationStatus(GENERATION_COMPLETED);
         message.setInteractionJson(interactionJson);
         message.setAiTaskId(task.getId());
         message.setDeleted(0);
@@ -110,6 +117,54 @@ public class ConversationReplyPersistenceService {
             throw new ConversationReplyTaskCanceledException();
         }
         return message.getId();
+    }
+
+    /**
+     * 保存用户停止时已经生成的可见文本，并完成两阶段取消。
+     *
+     * @param task 当前运行任务
+     * @param input 触发回复的用户消息
+     * @param content 已经生成并向用户展示的部分文本
+     * @return 已持久化的部分消息 ID，无可见文本时为空
+     */
+    @Transactional(rollbackFor = RuntimeException.class)
+    public Long stop(
+            AiTaskEntity task,
+            ChapterConversationMessageEntity input,
+            String content) {
+        AiTaskEntity latest = taskMapper.selectById(task.getId());
+        if (latest == null || !STATUS_CANCELING.equals(latest.getTaskStatus())) {
+            if (latest != null && STATUS_CANCELED.equals(latest.getTaskStatus())) {
+                return latest.getResultMessageId();
+            }
+            throw new IllegalStateException("讨论回复任务不处于正在停止状态");
+        }
+        Long messageId = null;
+        if (StringUtils.hasText(content)) {
+            ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
+            message.setConversationId(input.getConversationId());
+            message.setChapterId(task.getChapterId());
+            message.setMessageRole("assistant");
+            message.setContent(content);
+            message.setGenerationStatus(GENERATION_STOPPED);
+            message.setAiTaskId(task.getId());
+            message.setDeleted(0);
+            messageMapper.insert(message);
+            messageId = message.getId();
+        }
+        int version = latest.getVersion() == null ? 0 : latest.getVersion();
+        if (taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
+                .eq("id", latest.getId())
+                .eq("deleted", 0)
+                .eq("version", version)
+                .eq("task_status", STATUS_CANCELING)
+                .set("task_status", STATUS_CANCELED)
+                .set("result_message_id", messageId)
+                .set("version", version + 1)
+                .set("gmt_modified", LocalDateTime.now())) != 1) {
+            throw new IllegalStateException("讨论回复停止状态已变化");
+        }
+        return messageId;
     }
 
     private void startMaturityRun(AiTaskEntity task, ChapterConversationMessageEntity input,
