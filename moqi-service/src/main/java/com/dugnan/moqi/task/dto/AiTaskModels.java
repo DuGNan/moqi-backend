@@ -30,6 +30,7 @@ public final class AiTaskModels {
             Long resultBriefId,
             Long resultOutlineCandidateId,
             Long agentRunId,
+            Long retryOfTaskId,
             EffectiveReplyPolicy effectiveReplyPolicy,
             String errorCode,
             String errorMessage,
@@ -75,6 +76,7 @@ public final class AiTaskModels {
                     null,
                     null,
                     null,
+                    null,
                     errorCode,
                     errorMessage,
                     gmtCreate,
@@ -100,7 +102,31 @@ public final class AiTaskModels {
                 LocalDateTime gmtCreate,
                 LocalDateTime gmtModified) {
             this(id, taskType, taskStatus, workId, chapterId, resultMessageId, resultGenerationId,
-                    resultBriefId, resultOutlineCandidateId, agentRunId, null,
+                    resultBriefId, resultOutlineCandidateId, agentRunId, null, null,
+                    errorCode, errorMessage, gmtCreate, gmtModified);
+        }
+
+        /**
+         * 保留不含重试来源的有效回复策略构造入口。
+         */
+        public AiTaskDetail(
+                Long id,
+                String taskType,
+                String taskStatus,
+                Long workId,
+                Long chapterId,
+                Long resultMessageId,
+                Long resultGenerationId,
+                Long resultBriefId,
+                Long resultOutlineCandidateId,
+                Long agentRunId,
+                EffectiveReplyPolicy effectiveReplyPolicy,
+                String errorCode,
+                String errorMessage,
+                LocalDateTime gmtCreate,
+                LocalDateTime gmtModified) {
+            this(id, taskType, taskStatus, workId, chapterId, resultMessageId, resultGenerationId,
+                    resultBriefId, resultOutlineCandidateId, agentRunId, null, effectiveReplyPolicy,
                     errorCode, errorMessage, gmtCreate, gmtModified);
         }
     }

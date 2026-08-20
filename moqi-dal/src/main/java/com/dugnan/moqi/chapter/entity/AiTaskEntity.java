@@ -18,6 +18,8 @@ public class AiTaskEntity extends BaseEntity {
 
     private String taskStatus;
 
+    private Long retryOfTaskId;
+
     private Long workId;
 
     private Long chapterId;

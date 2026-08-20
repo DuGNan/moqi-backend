@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,11 +48,14 @@ public class AiTaskServiceImpl implements AiTaskService {
     private static final String STATUS_RUNNING = "running";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_FAILED = "failed";
+    private static final String STATUS_CANCELING = "canceling";
     private static final String STATUS_CANCELED = "canceled";
-    private static final Set<String> NON_TERMINAL_STATUSES = Set.of("queued", STATUS_RUNNING);
+    private static final String MESSAGE_ROLE_USER = "user";
+    private static final Set<String> NON_TERMINAL_STATUSES = Set.of(STATUS_QUEUED, STATUS_RUNNING, STATUS_CANCELING);
+    private static final Set<String> CANCELABLE_STATUSES = Set.of(STATUS_QUEUED, STATUS_RUNNING);
     private static final Set<String> TERMINAL_STATUSES = Set.of("succeeded", "failed", STATUS_CANCELED);
     private static final Set<String> TASK_STATUSES =
-            Set.of("queued", "running", "succeeded", "failed", STATUS_CANCELED);
+            Set.of(STATUS_QUEUED, STATUS_RUNNING, STATUS_CANCELING, "succeeded", STATUS_FAILED, STATUS_CANCELED);
     private static final int MAX_CANCEL_ATTEMPTS = 3;
 
     private final AiTaskMapper taskMapper;
@@ -114,11 +118,16 @@ public class AiTaskServiceImpl implements AiTaskService {
             if (TERMINAL_STATUSES.contains(task.getTaskStatus())) {
                 return cancelResult(task);
             }
+            if (STATUS_CANCELING.equals(task.getTaskStatus())) {
+                return cancelResult(task);
+            }
             AiTaskCanceled canceled = tryCancel(task);
             if (canceled != null) {
-                markCandidateCanceled(task);
+                if (STATUS_CANCELED.equals(canceled.taskStatus())) {
+                    markCandidateCanceled(task);
+                }
                 publishProviderCancellation(task);
-                publishCanceled(task);
+                publishCancellationState(task, canceled.taskStatus());
                 return canceled;
             }
             task = requireTask(taskId);
@@ -136,10 +145,16 @@ public class AiTaskServiceImpl implements AiTaskService {
         if (NON_TERMINAL_STATUSES.contains(task.getTaskStatus())) {
             return taskDetail(task);
         }
-        if (!TASK_TYPE_CONVERSATION_REPLY.equals(task.getTaskType()) || !STATUS_FAILED.equals(task.getTaskStatus())) {
+        if (!TASK_TYPE_CONVERSATION_REPLY.equals(task.getTaskType())) {
             throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "当前 AI 任务不支持重试");
         }
-        requireConversationReplyInput(task.getId());
+        if (STATUS_CANCELED.equals(task.getTaskStatus())) {
+            return retryCanceledConversationReply(task);
+        }
+        if (!STATUS_FAILED.equals(task.getTaskStatus())) {
+            throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "当前 AI 任务不支持重试");
+        }
+        requireConversationReplyInput(task);
         if (tryRetry(task)) {
             eventPublisher.publishEvent(new ConversationReplyTaskSubmittedEvent(task.getId()));
             return taskDetail(task);
@@ -178,18 +193,74 @@ public class AiTaskServiceImpl implements AiTaskService {
         return true;
     }
 
-    private void requireConversationReplyInput(Long taskId) {
+    private AiTaskDetail retryCanceledConversationReply(AiTaskEntity source) {
+        AiTaskEntity existing = findRetryTask(source.getId());
+        if (existing != null) {
+            return taskDetail(existing);
+        }
+        requireConversationReplyInput(source);
+        AiTaskEntity retry = new AiTaskEntity();
+        retry.setTaskType(source.getTaskType());
+        retry.setTaskStatus(STATUS_QUEUED);
+        retry.setRetryOfTaskId(source.getId());
+        retry.setWorkId(source.getWorkId());
+        retry.setChapterId(source.getChapterId());
+        retry.setTaskInputJson(source.getTaskInputJson());
+        retry.setDeleted(0);
+        retry.setVersion(0);
+        try {
+            taskMapper.insert(retry);
+        } catch (DuplicateKeyException exception) {
+            AiTaskEntity concurrent = findRetryTask(source.getId());
+            if (concurrent != null) {
+                return taskDetail(concurrent);
+            }
+            throw exception;
+        }
+        eventPublisher.publishEvent(new ConversationReplyTaskSubmittedEvent(retry.getId()));
+        return taskDetail(retry);
+    }
+
+    private AiTaskEntity findRetryTask(Long sourceTaskId) {
+        return taskMapper.selectOne(new LambdaQueryWrapper<AiTaskEntity>()
+                .eq(AiTaskEntity::getRetryOfTaskId, sourceTaskId)
+                .eq(AiTaskEntity::getDeleted, 0));
+    }
+
+    private void requireConversationReplyInput(AiTaskEntity task) {
         if (messageMapper == null) {
             return;
         }
+        Long messageId = taskInputMessageId(task);
+        if (messageId != null) {
+            ChapterConversationMessageEntity message = messageMapper.selectById(messageId);
+            if (message != null && MESSAGE_ROLE_USER.equals(message.getMessageRole())
+                    && !Integer.valueOf(1).equals(message.getDeleted())) {
+                return;
+            }
+            throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "AI 任务快照引用的用户消息不存在");
+        }
         List<ChapterConversationMessageEntity> messages = messageMapper.selectList(
                 new LambdaQueryWrapper<ChapterConversationMessageEntity>()
-                        .eq(ChapterConversationMessageEntity::getAiTaskId, taskId)
-                        .eq(ChapterConversationMessageEntity::getMessageRole, "user")
+                        .eq(ChapterConversationMessageEntity::getAiTaskId, task.getId())
+                        .eq(ChapterConversationMessageEntity::getMessageRole, MESSAGE_ROLE_USER)
                         .eq(ChapterConversationMessageEntity::getDeleted, 0)
                         .last("limit 1"));
         if (messages.isEmpty()) {
             throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "AI 任务缺少可重试的用户消息");
+        }
+    }
+
+    private Long taskInputMessageId(AiTaskEntity task) {
+        if (task.getTaskInputJson() == null || task.getTaskInputJson().isBlank()) {
+            return null;
+        }
+        try {
+            return new ObjectMapper()
+                    .readValue(task.getTaskInputJson(), ConversationReplyTaskInputV1.class)
+                    .messageId();
+        } catch (JsonProcessingException exception) {
+            return null;
         }
     }
 
@@ -202,16 +273,21 @@ public class AiTaskServiceImpl implements AiTaskService {
     private AiTaskCanceled tryCancel(AiTaskEntity task) {
         int currentVersion = task.getVersion() == null ? 0 : task.getVersion();
         LocalDateTime modifiedAt = LocalDateTime.now();
+        String targetStatus = TASK_TYPE_CONVERSATION_REPLY.equals(task.getTaskType())
+                && STATUS_RUNNING.equals(task.getTaskStatus())
+                ? STATUS_CANCELING
+                : STATUS_CANCELED;
         UpdateWrapper<AiTaskEntity> update = new UpdateWrapper<AiTaskEntity>()
                 .eq("id", task.getId())
                 .eq("deleted", 0)
                 .eq("version", currentVersion)
-                .in("task_status", NON_TERMINAL_STATUSES)
-                .set("task_status", STATUS_CANCELED)
+                .eq("task_status", task.getTaskStatus())
+                .in("task_status", CANCELABLE_STATUSES)
+                .set("task_status", targetStatus)
                 .set("version", currentVersion + 1)
                 .set("gmt_modified", modifiedAt);
         if (taskMapper.update(null, update) == 1) {
-            return new AiTaskCanceled(task.getId(), STATUS_CANCELED, modifiedAt);
+            return new AiTaskCanceled(task.getId(), targetStatus, modifiedAt);
         }
         return null;
     }
@@ -251,6 +327,7 @@ public class AiTaskServiceImpl implements AiTaskService {
                 task.getResultBriefId(),
                 task.getResultOutlineCandidateId(),
                 agentRunId(task.getId()),
+                task.getRetryOfTaskId(),
                 effectiveReplyPolicy(task),
                 task.getErrorCode(),
                 task.getErrorMessage(),
@@ -288,9 +365,11 @@ public class AiTaskServiceImpl implements AiTaskService {
         return new AiTaskCanceled(task.getId(), task.getTaskStatus(), task.getGmtModified());
     }
 
-    private void publishCanceled(AiTaskEntity task) {
+    private void publishCancellationState(AiTaskEntity task, String targetStatus) {
         if (TASK_TYPE_CONVERSATION_REPLY.equals(task.getTaskType())) {
-            eventPublisher.publishEvent(ChapterReplyEvent.canceled(task.getChapterId(), task.getId()));
+            eventPublisher.publishEvent(STATUS_CANCELING.equals(targetStatus)
+                    ? ChapterReplyEvent.canceling(task.getChapterId(), task.getId())
+                    : ChapterReplyEvent.canceled(task.getChapterId(), task.getId(), null));
         }
         if (TASK_TYPE_OUTLINE_CANDIDATE.equals(task.getTaskType()) && candidateMapper != null) {
             ChapterOutlineCandidateEntity candidate = candidateMapper.findByTaskId(task.getId());

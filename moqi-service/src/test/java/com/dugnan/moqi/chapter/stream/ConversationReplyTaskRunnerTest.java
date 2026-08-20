@@ -71,6 +71,7 @@ class ConversationReplyTaskRunnerTest {
         lenient().when(userConfigService.requireAvailableExecutionConfig())
                 .thenReturn(executionConfig("deepseek-v4-flash"));
         lenient().when(providerFactory.createObserved(any(), any())).thenReturn(provider);
+        lenient().when(messageMapper.selectById(11L)).thenReturn(userMessage());
     }
 
     @Test
@@ -78,7 +79,7 @@ class ConversationReplyTaskRunnerTest {
         AiTaskEntity task = task("queued", 0);
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
-        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
         lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
@@ -118,10 +119,11 @@ class ConversationReplyTaskRunnerTest {
     @Test
     void ignoresLateDeltaAndDoesNotPersistAfterCancellation() {
         AiTaskEntity task = task("queued", 0);
+        AiTaskEntity canceling = task("canceling", 2);
         LlmStreamCallRegistry callRegistry = new LlmStreamCallRegistry();
-        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.selectById(12L)).thenReturn(task, canceling, canceling);
         when(taskMapper.update(any(), any())).thenReturn(1);
-        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
         lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
@@ -148,7 +150,44 @@ class ConversationReplyTaskRunnerTest {
         verify(messageMapper, never()).insert(any(ChapterConversationMessageEntity.class));
         verify(eventPublisher, never()).publishEvent(
                 ChapterReplyEvent.delta(2L, 12L, "取消后的迟到增量"));
+        verify(eventPublisher).publishEvent(ChapterReplyEvent.canceled(2L, 12L, null));
         assertThat(callRegistry.isCancellationRequested(12L)).isFalse();
+    }
+
+    @Test
+    void persistsVisiblePartialReplyBeforePublishingCanceled() {
+        AiTaskEntity task = task("queued", 0);
+        AiTaskEntity canceling = task("canceling", 2);
+        when(taskMapper.selectById(12L)).thenReturn(task, canceling, canceling);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            java.util.function.Consumer<LlmStreamEvent> consumer = invocation.getArgument(1);
+            consumer.accept(new LlmStreamEvent.TextDelta("已经展示的部分"));
+            return new CanceledCall();
+        }).when(provider).stream(any(), any());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(100L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper,
+                messageMapper,
+                userConfigService,
+                providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher,
+                new LlmStreamCallRegistry()).run(12L);
+
+        ArgumentCaptor<ChapterConversationMessageEntity> messageCaptor =
+                ArgumentCaptor.forClass(ChapterConversationMessageEntity.class);
+        verify(messageMapper).insert(messageCaptor.capture());
+        assertThat(messageCaptor.getValue().getContent()).isEqualTo("已经展示的部分");
+        assertThat(messageCaptor.getValue().getGenerationStatus()).isEqualTo("stopped");
+        verify(eventPublisher).publishEvent(ChapterReplyEvent.canceled(2L, 12L, 100L));
     }
 
     /**
@@ -180,7 +219,7 @@ class ConversationReplyTaskRunnerTest {
                 """);
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
-        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
         lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
@@ -242,7 +281,7 @@ class ConversationReplyTaskRunnerTest {
                 """);
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
-        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
         lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
@@ -289,7 +328,7 @@ class ConversationReplyTaskRunnerTest {
         AiTaskEntity task = task("queued", 0);
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
-        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
         lenient().when(userConfigService.requireAvailableModelConfig())
                 .thenReturn(new LlmProviderRuntimeConfig(
                         "deepseek",
@@ -323,7 +362,7 @@ class ConversationReplyTaskRunnerTest {
         AiTaskEntity task = task("queued", 0);
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
-        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
         lenient().when(userConfigService.requireAvailableModelConfig()).thenReturn(
                 new LlmProviderRuntimeConfig("deepseek", "https://api.deepseek.com", "test-key", "deepseek-v4-flash"));
         when(providerFactory.create(any())).thenReturn(provider);
@@ -390,7 +429,7 @@ class ConversationReplyTaskRunnerTest {
                 """);
         when(taskMapper.selectById(12L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
-        when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
         lenient().when(userConfigService.requireAvailableModelConfig()).thenReturn(
                 new LlmProviderRuntimeConfig("deepseek", "https://api.deepseek.com", "test-key", "small-context"));
         when(userConfigService.requireAvailableExecutionConfig()).thenReturn(executionConfig("small-context"));

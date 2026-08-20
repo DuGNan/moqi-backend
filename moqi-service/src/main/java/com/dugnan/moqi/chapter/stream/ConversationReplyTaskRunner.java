@@ -72,6 +72,7 @@ public class ConversationReplyTaskRunner {
     private static final String TASK_TYPE = "conversation_reply";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_RUNNING = "running";
+    private static final String STATUS_CANCELING = "canceling";
     private static final String STATUS_SUCCEEDED = "succeeded";
     private static final String STATUS_FAILED = "failed";
 
@@ -227,13 +228,17 @@ public class ConversationReplyTaskRunner {
         try {
             performProviderCall(task, state);
         } catch (ConversationReplyTaskCanceledException exception) {
-            // 取消事件由取消服务发布，执行器不覆盖已取消状态。
+            stopCanceledTask(task, state);
         } catch (StoryContextTaskBindingException exception) {
             // 快照关联竞争失败时保持任务终态，不调用模型。
         } catch (LlmProviderException exception) {
-            fail(task, exception.getError().name(), exception.getMessage());
+            if (!stopCanceledTask(task, state)) {
+                fail(task, exception.getError().name(), exception.getMessage());
+            }
         } catch (BusinessException exception) {
-            fail(task, exception.getErrorCode().name(), exception.getMessage());
+            if (!stopCanceledTask(task, state)) {
+                fail(task, exception.getErrorCode().name(), exception.getMessage());
+            }
         } catch (RuntimeException exception) {
             LOGGER.error(
                     "章节讨论回复任务发生未预期异常，taskId={}, chapterId={}, exceptionType={}",
@@ -241,18 +246,21 @@ public class ConversationReplyTaskRunner {
                     task.getChapterId(),
                     exception.getClass().getName(),
                     exception);
-            fail(task, "INTERNAL_ERROR", "AI 回复生成失败，请稍后重试");
+            if (!stopCanceledTask(task, state)) {
+                fail(task, "INTERNAL_ERROR", "AI 回复生成失败，请稍后重试");
+            }
         } finally {
             callRegistry.unregister(task.getId(), state.call);
         }
     }
 
     private void performProviderCall(AiTaskEntity task, ProviderCallState state) {
-        ChapterConversationMessageEntity input = requireInputMessage(task.getId());
+        ChapterConversationMessageEntity input = requireInputMessage(task);
+        state.input = input;
         ConversationReplyTaskInputV1 taskInput = readTaskInput(task, input);
         LlmExecutionConfig executionConfig = userConfigService.requireAvailableExecutionConfig();
         LlmProvider provider = providerFactory.create(executionConfig.runtimeConfig());
-        StringBuilder response = new StringBuilder();
+        StringBuilder response = state.response;
         StoryContextSnapshot contextSnapshot = buildContext(task, input, provider, taskInput);
         provider = providerFactory.createObserved(
                 executionConfig,
@@ -273,6 +281,7 @@ public class ConversationReplyTaskRunner {
                         .build());
         eventPublisher.publishEvent(ChapterReplyEvent.started(task.getChapterId(), task.getId()));
         boolean structured = isStructuredInteraction(taskInput.replyMode());
+        state.publishPartial = !structured;
         state.call = provider.stream(
                 contextSnapshot == null ? request(input, taskInput) : request(contextSnapshot, taskInput),
                 event -> appendDelta(task, response, event, !structured));
@@ -361,10 +370,20 @@ public class ConversationReplyTaskRunner {
         return false;
     }
 
-    private ChapterConversationMessageEntity requireInputMessage(Long taskId) {
+    private ChapterConversationMessageEntity requireInputMessage(AiTaskEntity task) {
+        Long snapshotMessageId = taskInputMessageId(task);
+        if (snapshotMessageId != null) {
+            ChapterConversationMessageEntity snapshotMessage = messageMapper.selectById(snapshotMessageId);
+            if (snapshotMessage == null
+                    || Integer.valueOf(1).equals(snapshotMessage.getDeleted())
+                    || !"user".equals(snapshotMessage.getMessageRole())) {
+                throw new IllegalStateException("conversation_reply 任务快照引用的用户消息不存在");
+            }
+            return snapshotMessage;
+        }
         List<ChapterConversationMessageEntity> messages = messageMapper.selectList(
                 new LambdaQueryWrapper<ChapterConversationMessageEntity>()
-                        .eq(ChapterConversationMessageEntity::getAiTaskId, taskId)
+                        .eq(ChapterConversationMessageEntity::getAiTaskId, task.getId())
                         .eq(ChapterConversationMessageEntity::getMessageRole, "user")
                         .eq(ChapterConversationMessageEntity::getDeleted, 0)
                         .orderByDesc(ChapterConversationMessageEntity::getId));
@@ -372,6 +391,17 @@ public class ConversationReplyTaskRunner {
             throw new IllegalStateException("conversation_reply 任务缺少用户输入消息");
         }
         return messages.get(0);
+    }
+
+    private Long taskInputMessageId(AiTaskEntity task) {
+        if (!StringUtils.hasText(task.getTaskInputJson())) {
+            return null;
+        }
+        try {
+            return objectMapper().readValue(task.getTaskInputJson(), ConversationReplyTaskInputV1.class).messageId();
+        } catch (JsonProcessingException exception) {
+            return null;
+        }
     }
 
     private void ensureRunning(AiTaskEntity task) {
@@ -427,7 +457,10 @@ public class ConversationReplyTaskRunner {
             throw new BusinessException(com.dugnan.moqi.common.api.ErrorCode.MESSAGE_REFERENCE_INVALID,
                     "引用消息不可用");
         }
-        return new MessageReference(referenced.getId(), referenced.getMessageRole(), referenced.getContent());
+        String content = "stopped".equals(referenced.getGenerationStatus())
+                ? "[不完整：作者已停止本次生成，不得据此确认共识或写入权威内容]\n" + referenced.getContent()
+                : referenced.getContent();
+        return new MessageReference(referenced.getId(), referenced.getMessageRole(), content);
     }
 
     private boolean isAvailableMessageReference(
@@ -638,12 +671,29 @@ public class ConversationReplyTaskRunner {
         }
     }
 
+    private boolean stopCanceledTask(AiTaskEntity task, ProviderCallState state) {
+        AiTaskEntity latest = taskMapper.selectById(task.getId());
+        if (latest == null || !STATUS_CANCELING.equals(latest.getTaskStatus())) {
+            return false;
+        }
+        Long messageId = persistenceService.stop(
+                latest,
+                state.input,
+                state.publishPartial ? state.response.toString() : "");
+        eventPublisher.publishEvent(ChapterReplyEvent.canceled(
+                latest.getChapterId(), latest.getId(), messageId));
+        return true;
+    }
+
     private int version(AiTaskEntity task) {
         return task.getVersion() == null ? 0 : task.getVersion();
     }
 
     private static final class ProviderCallState {
         private LlmStreamCall call;
+        private ChapterConversationMessageEntity input;
+        private final StringBuilder response = new StringBuilder();
+        private boolean publishPartial;
     }
 
 }

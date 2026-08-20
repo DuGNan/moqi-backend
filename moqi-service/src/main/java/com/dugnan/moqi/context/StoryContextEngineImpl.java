@@ -465,12 +465,18 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             }
             add(candidates, StoryContextSourceType.CONVERSATION_TURN,
                     user.getId() + ":" + assistant.getId(), "USER",
-                    "用户：" + user.getContent() + "\n助手：" + assistant.getContent(), false,
+                    "用户：" + user.getContent() + "\n助手：" + conversationAssistantContent(assistant), false,
                     600, historyOrder, user.getVersion() + ":" + assistant.getVersion(),
                     assistant.getGmtModified(), Category.HISTORY);
             historyOrder++;
             index++;
         }
+    }
+
+    private String conversationAssistantContent(ChapterConversationMessageEntity message) {
+        return "stopped".equals(message.getGenerationStatus())
+                ? "[不完整：作者已停止本次生成，不得据此确认共识或写入权威内容]\n" + message.getContent()
+                : message.getContent();
     }
 
     private Selection select(StoryContextBuildCommand command, List<Candidate> candidates) {

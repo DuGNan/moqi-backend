@@ -50,6 +50,17 @@ public record ChapterReplyEvent(
     }
 
     /**
+     * 创建回复正在停止事件。
+     *
+     * @param chapterId 章节 ID
+     * @param taskId 任务 ID
+     * @return 回复正在停止事件
+     */
+    public static ChapterReplyEvent canceling(Long chapterId, Long taskId) {
+        return new ChapterReplyEvent("reply.canceling", chapterId, taskId, null, null, null, null);
+    }
+
+    /**
      * 创建回复失败事件。
      *
      * @param chapterId 章节 ID
@@ -67,9 +78,21 @@ public record ChapterReplyEvent(
      *
      * @param chapterId 章节 ID
      * @param taskId 任务 ID
+     * @param messageId 已持久化的部分消息 ID，无增量时为空
+     * @return 回复取消事件
+     */
+    public static ChapterReplyEvent canceled(Long chapterId, Long taskId, Long messageId) {
+        return new ChapterReplyEvent("reply.canceled", chapterId, taskId, messageId, null, null, null);
+    }
+
+    /**
+     * 保留无部分消息的取消事件构造入口。
+     *
+     * @param chapterId 章节 ID
+     * @param taskId 任务 ID
      * @return 回复取消事件
      */
     public static ChapterReplyEvent canceled(Long chapterId, Long taskId) {
-        return new ChapterReplyEvent("reply.canceled", chapterId, taskId, null, null, null, null);
+        return canceled(chapterId, taskId, null);
     }
 }

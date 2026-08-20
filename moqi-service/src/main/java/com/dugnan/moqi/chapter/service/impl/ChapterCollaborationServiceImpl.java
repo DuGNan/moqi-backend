@@ -773,6 +773,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 replyPolicySnapshot(task),
                 DiscussionInteractionCodec.parseInteraction(entity.getInteractionJson(), objectMapper()),
                 DiscussionInteractionCodec.parseResponse(entity.getInteractionResponseJson(), objectMapper()),
+                entity.getGenerationStatus(),
+                task == null ? null : task.getRetryOfTaskId(),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
     }
@@ -802,6 +804,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 replyPolicySnapshot(task),
                 DiscussionInteractionCodec.parseInteraction(entity.getInteractionJson(), objectMapper()),
                 DiscussionInteractionCodec.parseResponse(entity.getInteractionResponseJson(), objectMapper()),
+                entity.getGenerationStatus(),
+                task == null ? null : task.getRetryOfTaskId(),
                 entity.getGmtCreate(),
                 entity.getGmtModified());
     }
