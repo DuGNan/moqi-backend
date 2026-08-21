@@ -25,6 +25,7 @@ import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.BoundedChapterRevisionMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationEvaluationReportMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
+import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.sourcechain.mapper.ChapterAssetSourceSnapshotMapper;
 
@@ -147,6 +148,8 @@ class BoundedChapterRevisionServiceImplTest {
         private final ChapterAssetSourceSnapshotMapper sourceSnapshotMapper =
                 mock(ChapterAssetSourceSnapshotMapper.class);
         private final AgentRuntime runtime = mock(AgentRuntime.class);
+        private final ProseCandidateMaterializationService materializationService =
+                mock(ProseCandidateMaterializationService.class);
         private final ChapterGenerationEntity generation = generation();
         private final ChapterGenerationEvaluationReportEntity report = report();
         private final BoundedChapterRevisionServiceImpl service = new BoundedChapterRevisionServiceImpl(
@@ -155,6 +158,7 @@ class BoundedChapterRevisionServiceImplTest {
         private Fixture() {
             report.setContentHash(serviceHash("原始正文"));
             service.setAgentRuntime(runtime);
+            service.setMaterializationService(materializationService);
             when(generationMapper.selectById(3L)).thenReturn(generation);
             when(reportMapper.selectById(9L)).thenReturn(report);
             org.mockito.Mockito.doAnswer(invocation -> {

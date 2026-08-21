@@ -7,6 +7,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.json.JsonParserFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +37,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationService;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
@@ -92,6 +94,7 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     private final ApplicationEventPublisher eventPublisher;
     private final GenerationRetryMetadataResolver retryMetadataResolver;
     private final GenerationEvaluationService evaluationService;
+    private ProseCandidateMaterializationService materializationService;
 
     /**
      * 创建章节生成服务。
@@ -128,6 +131,11 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         this.eventPublisher = eventPublisher;
         this.retryMetadataResolver = retryMetadataResolver;
         this.evaluationService = evaluationService;
+    }
+
+    @Autowired
+    public void setMaterializationService(ProseCandidateMaterializationService materializationService) {
+        this.materializationService = materializationService;
     }
 
     @Override
@@ -255,6 +263,9 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             throw versionConflict(requireChapter(chapter.getId()));
         }
         generationMapper.supersedeOlderPreviews(chapter.getId(), generationId);
+        if (materializationService != null) {
+            materializationService.synchronizeChapterStatuses(chapter.getId());
+        }
         generation.setGenerationStatus(STATUS_ACCEPTED);
         eventPublisher.publishEvent(new ChapterGenerationAcceptedEvent(chapter.getId(), generation.getId()));
         return accepted(generation, requireChapter(chapter.getId()));
@@ -269,6 +280,9 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             throw statusConflict();
         }
         ChapterGenerationEntity rejected = requireGeneration(generationId);
+        if (materializationService != null) {
+            materializationService.synchronizeChapterStatuses(rejected.getChapterId());
+        }
         return new GenerationRejected(rejected.getId(), rejected.getGenerationStatus(), rejected.getGmtModified());
     }
 
@@ -346,6 +360,10 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     @Transactional(rollbackFor = RuntimeException.class)
     public ContentSaved saveContent(Long chapterId, SaveContentRequest request) {
         ChapterEntity chapter = requireChapter(chapterId);
+        if (chapter.getCurrentProseRevisionId() != null) {
+            throw new BusinessException(ErrorCode.PROSE_REVISION_CONFLICT,
+                    "已有 Story Release 的正式正文只读，请先创建正文候选");
+        }
         if (request == null || request.content() == null || request.baseVersion() == null) {
             throw badRequest("content 和 baseVersion 不能为空");
         }

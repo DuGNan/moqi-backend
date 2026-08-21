@@ -60,6 +60,12 @@ public enum ErrorCode {
     MESSAGE_REFERENCE_INVALID,
     /** 章节正文版本冲突。 */
     CHAPTER_VERSION_CONFLICT,
+    /** 统一正文工作区中的候选不存在。 */
+    PROSE_CANDIDATE_NOT_FOUND,
+    /** 正文候选内容版本或稳定来源发生冲突。 */
+    PROSE_CANDIDATE_CONFLICT,
+    /** 正文工作区选择记录发生版本或对象冲突。 */
+    PROSE_WORKSPACE_CONFLICT,
     WORK_VERSION_CONFLICT,
     /** 用户配置版本冲突。 */
     CONFIG_VERSION_CONFLICT,

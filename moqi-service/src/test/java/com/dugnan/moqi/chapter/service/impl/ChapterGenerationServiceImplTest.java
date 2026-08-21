@@ -3,6 +3,8 @@ package com.dugnan.moqi.chapter.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.never;
@@ -659,6 +661,21 @@ class ChapterGenerationServiceImplTest {
         assertThat(result.saved()).isTrue();
         assertThat(result.version()).isEqualTo(4);
         verify(chapterMapper).updateContentIfVersion(12L, "新正文", 3);
+    }
+
+    @Test
+    void rejectsDirectSaveForReleasedFormalContent() {
+        ChapterEntity released = chapter(12L, "已发布正文", 3);
+        released.setCurrentProseRevisionId(20L);
+        when(chapterMapper.selectById(12L)).thenReturn(released);
+
+        assertThatThrownBy(() -> service.saveContent(
+                12L, new SaveContentRequest("试图覆盖", 3, "manual")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getErrorCode())
+                                .isEqualTo(ErrorCode.PROSE_REVISION_CONFLICT));
+
+        verify(chapterMapper, never()).updateContentIfVersion(anyLong(), anyString(), anyInt());
     }
 
     /**

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
+import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
 
 /**
@@ -21,12 +22,15 @@ public class ChapterGenerationCompletionHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(ChapterGenerationCompletionHandler.class);
     private final ApplicationEventPublisher eventPublisher;
     private final GenerationEvaluationService evaluationService;
+    private final ProseCandidateMaterializationService materializationService;
 
     public ChapterGenerationCompletionHandler(
             ApplicationEventPublisher eventPublisher,
-            GenerationEvaluationService evaluationService) {
+            GenerationEvaluationService evaluationService,
+            ProseCandidateMaterializationService materializationService) {
         this.eventPublisher = eventPublisher;
         this.evaluationService = evaluationService;
+        this.materializationService = materializationService;
     }
 
     public void generationStarted(ChapterGenerationEntity generation) {
@@ -67,9 +71,12 @@ public class ChapterGenerationCompletionHandler {
     public void generationCompleted(ChapterGenerationEntity generation) {
         eventPublisher.publishEvent(SceneGenerationEvent.generation(
                 "generation.completed", generation.getChapterId(), generation.getId(), "preview"));
+        materializationService.materialize(generation);
         try {
             evaluationService.createAutomatic(generation.getChapterId(), generation.getId());
+            materializationService.markQualityRequested(generation.getId());
         } catch (RuntimeException exception) {
+            materializationService.markQualityUnavailable(generation.getId());
             LOGGER.error("整章候选自动评价启动失败，generationId={}", generation.getId(), exception);
         }
     }
