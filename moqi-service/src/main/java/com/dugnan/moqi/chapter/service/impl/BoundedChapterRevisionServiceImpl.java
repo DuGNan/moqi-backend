@@ -35,6 +35,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationEvaluationReportMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.service.BoundedChapterRevisionService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
+import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.sourcechain.entity.ChapterAssetSourceSnapshotEntity;
@@ -67,6 +68,7 @@ public class BoundedChapterRevisionServiceImpl implements BoundedChapterRevision
     private final ObjectMapper objectMapper;
     private AgentRuntime agentRuntime;
     private GenerationEvaluationService evaluationService;
+    private ProseCandidateMaterializationService materializationService;
 
     public BoundedChapterRevisionServiceImpl(
             ChapterGenerationMapper generationMapper,
@@ -91,6 +93,11 @@ public class BoundedChapterRevisionServiceImpl implements BoundedChapterRevision
     @Autowired
     public void setEvaluationService(@Lazy GenerationEvaluationService evaluationService) {
         this.evaluationService = evaluationService;
+    }
+
+    @Autowired
+    public void setMaterializationService(ProseCandidateMaterializationService materializationService) {
+        this.materializationService = materializationService;
     }
 
     @Override
@@ -246,8 +253,16 @@ public class BoundedChapterRevisionServiceImpl implements BoundedChapterRevision
         if (revision.getResultReportId() != null) {
             return revision.getResultReportId();
         }
-        EvaluationReportView report = evaluationService.createAutomatic(
-                revision.getChapterId(), revision.getResultGenerationId());
+        ChapterGenerationEntity candidate = generationMapper.selectById(revision.getResultGenerationId());
+        materializationService.materialize(candidate);
+        EvaluationReportView report;
+        try {
+            report = evaluationService.createAutomatic(revision.getChapterId(), revision.getResultGenerationId());
+            materializationService.markQualityRequested(revision.getResultGenerationId());
+        } catch (RuntimeException exception) {
+            materializationService.markQualityUnavailable(revision.getResultGenerationId());
+            throw exception;
+        }
         revisionMapper.update(null, new UpdateWrapper<BoundedChapterRevisionEntity>()
                 .eq("id", revisionId).isNull("result_report_id")
                 .set("result_report_id", report.id()).set("revision_status", "re_evaluating")
