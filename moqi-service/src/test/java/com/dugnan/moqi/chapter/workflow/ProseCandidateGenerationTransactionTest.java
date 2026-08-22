@@ -6,10 +6,10 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
-import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.support.AbstractPlatformTransactionManager;
-import org.springframework.transaction.support.DefaultTransactionStatus;
-import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.event.TransactionalEventListenerFactory;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionSynchronizationUtils;
 
 import com.dugnan.moqi.chapter.event.ChapterGenerationCompletedEvent;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
@@ -29,12 +29,14 @@ class ProseCandidateGenerationTransactionTest {
         GenerationEvaluationService evaluationService = mock(GenerationEvaluationService.class);
 
         try (AnnotationConfigApplicationContext context = context(materializationService, evaluationService)) {
-            TransactionTemplate transactionTemplate = new TransactionTemplate(new TestTransactionManager());
-
-            transactionTemplate.executeWithoutResult(status -> {
+            beginTransactionSynchronization();
+            try {
                 context.publishEvent(new ChapterGenerationCompletedEvent(12L, 3L));
-                status.setRollbackOnly();
-            });
+                TransactionSynchronizationUtils.triggerAfterCompletion(
+                        TransactionSynchronization.STATUS_ROLLED_BACK);
+            } finally {
+                clearTransactionSynchronization();
+            }
 
             verifyNoInteractions(materializationService, evaluationService);
         }
@@ -47,10 +49,17 @@ class ProseCandidateGenerationTransactionTest {
         GenerationEvaluationService evaluationService = mock(GenerationEvaluationService.class);
 
         try (AnnotationConfigApplicationContext context = context(materializationService, evaluationService)) {
-            TransactionTemplate transactionTemplate = new TransactionTemplate(new TestTransactionManager());
-
-            transactionTemplate.executeWithoutResult(status ->
-                    context.publishEvent(new ChapterGenerationCompletedEvent(12L, 3L)));
+            beginTransactionSynchronization();
+            try {
+                context.publishEvent(new ChapterGenerationCompletedEvent(12L, 3L));
+                TransactionSynchronizationUtils.triggerBeforeCommit(false);
+                TransactionSynchronizationUtils.triggerBeforeCompletion();
+                TransactionSynchronizationUtils.triggerAfterCommit();
+                TransactionSynchronizationUtils.triggerAfterCompletion(
+                        TransactionSynchronization.STATUS_COMMITTED);
+            } finally {
+                clearTransactionSynchronization();
+            }
 
             verify(materializationService).materializeByGenerationId(3L);
             verify(evaluationService).createAutomatic(12L, 3L);
@@ -64,31 +73,19 @@ class ProseCandidateGenerationTransactionTest {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
         context.registerBean(ProseCandidateMaterializationService.class, () -> materializationService);
         context.registerBean(GenerationEvaluationService.class, () -> evaluationService);
+        context.registerBean(TransactionalEventListenerFactory.class);
         context.registerBean(ProseCandidateGenerationCompletedListener.class);
         context.refresh();
         return context;
     }
 
-    private static final class TestTransactionManager extends AbstractPlatformTransactionManager {
+    private void beginTransactionSynchronization() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+    }
 
-        @Override
-        protected Object doGetTransaction() {
-            return new Object();
-        }
-
-        @Override
-        protected void doBegin(Object transaction, TransactionDefinition definition) {
-            // No resource is required; this manager only drives transaction synchronization callbacks.
-        }
-
-        @Override
-        protected void doCommit(DefaultTransactionStatus status) {
-            // No resource is required; commit triggers the registered AFTER_COMMIT listener.
-        }
-
-        @Override
-        protected void doRollback(DefaultTransactionStatus status) {
-            // No resource is required; rollback must discard the registered listener callback.
-        }
+    private void clearTransactionSynchronization() {
+        TransactionSynchronizationManager.clearSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(false);
     }
 }
