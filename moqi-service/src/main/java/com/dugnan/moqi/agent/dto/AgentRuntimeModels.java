@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 import java.util.Map;
 
 import com.dugnan.moqi.agent.AgentRunCallRegistry;
+import com.dugnan.moqi.common.api.PublicFailure;
 
 /**
  * Agent Runtime 的框架无关传输模型。
@@ -65,7 +66,27 @@ public final class AgentRuntimeModels {
             Integer interruptionTokenVersion,
             LocalDateTime timeoutAt,
             String errorCode,
-            String errorMessage) {
+            String errorMessage,
+            PublicFailure failure) {
+
+        public AgentRunView(
+                Long runId,
+                String workflowType,
+                String runStatus,
+                Long workId,
+                Long chapterId,
+                Long aiTaskId,
+                String currentStepKey,
+                Long checkpointSequence,
+                Long interruptionId,
+                Integer interruptionTokenVersion,
+                LocalDateTime timeoutAt,
+                String errorCode,
+                String errorMessage) {
+            this(runId, workflowType, runStatus, workId, chapterId, aiTaskId, currentStepKey,
+                    checkpointSequence, interruptionId, interruptionTokenVersion, timeoutAt,
+                    errorCode, errorMessage, null);
+        }
     }
 
     public record AgentStepExecutionContext(

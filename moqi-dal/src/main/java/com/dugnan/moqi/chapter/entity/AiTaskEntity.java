@@ -43,4 +43,6 @@ public class AiTaskEntity extends BaseEntity {
     private String errorCode;
 
     private String errorMessage;
+
+    private String diagnosticRef;
 }

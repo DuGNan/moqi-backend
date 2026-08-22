@@ -37,6 +37,8 @@ import com.dugnan.moqi.chapter.service.BoundedChapterRevisionService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailure;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.sourcechain.entity.ChapterAssetSourceSnapshotEntity;
 import com.dugnan.moqi.sourcechain.mapper.ChapterAssetSourceSnapshotMapper;
@@ -490,8 +492,23 @@ public class BoundedChapterRevisionServiceImpl implements BoundedChapterRevision
                 item.getResultGenerationId(), item.getResultReportId(), item.getAiTaskId(), item.getAgentRunId(),
                 status, stopReason, readList(item.getFindingKeysJson()), readMap(item.getRevisionBriefJson()),
                 item.getSourceContentHash(), item.getResultContentHash(), item.getRevisionModelCallId(),
-                item.getRevisionAttempt(), item.getErrorCode(), item.getErrorMessage(), item.getVersion(),
-                item.getGmtCreate(), item.getGmtModified());
+                item.getRevisionAttempt(), item.getErrorCode(),
+                safeErrorMessage(item.getErrorCode(), item.getErrorMessage()), item.getVersion(),
+                item.getGmtCreate(), item.getGmtModified(), publicFailure(item.getAiTaskId(), item.getErrorCode()));
+    }
+
+    private PublicFailure publicFailure(Long taskId, String errorCode) {
+        if (errorCode == null || errorCode.isBlank()) {
+            return null;
+        }
+        AiTaskEntity task = taskId == null ? null : taskMapper.selectById(taskId);
+        return PublicFailureFactory.from(errorCode, task == null ? null : task.getDiagnosticRef());
+    }
+
+    private String safeErrorMessage(String errorCode, String errorMessage) {
+        return errorCode == null || errorCode.isBlank()
+                ? null
+                : PublicFailureFactory.safeMessage(errorCode, errorMessage);
     }
 
     private List<EvaluationFinding> findings(ChapterGenerationEvaluationReportEntity report) {

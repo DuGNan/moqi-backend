@@ -78,6 +78,24 @@ class AiTaskServiceImplTest {
     }
 
     @Test
+    void returnsStablePublicFailureAcrossRepeatedPolling() {
+        AiTaskEntity task = task(9001L, "failed");
+        task.setErrorCode("MODEL_UNAVAILABLE");
+        task.setErrorMessage("providerEndpoint contains chapterId");
+        task.setDiagnosticRef("diag_0123456789abcdef0123456789abcdef");
+        when(taskMapper.selectById(9001L)).thenReturn(task);
+
+        var first = service.getTask(9001L);
+        var second = service.getTask(9001L);
+
+        assertThat(first.failure()).isEqualTo(second.failure());
+        assertThat(first.failure().category()).isEqualTo("service_unavailable");
+        assertThat(first.failure().retryable()).isTrue();
+        assertThat(first.failure().diagnosticRef()).isEqualTo(task.getDiagnosticRef());
+        assertThat(first.errorMessage()).isEqualTo("模型服务暂时不可用");
+    }
+
+    @Test
     void retriesFailedConversationReplyWithoutCreatingAnotherTask() {
         AiTaskEntity task = task(9001L, "failed");
         task.setTaskInputJson("""
@@ -104,6 +122,7 @@ class AiTaskServiceImplTest {
         task.setResultMessageId(7001L);
         task.setErrorCode("PROVIDER_UNAVAILABLE");
         task.setErrorMessage("Provider unavailable");
+        task.setDiagnosticRef("diag_0123456789abcdef0123456789abcdef");
         when(taskMapper.selectById(9001L)).thenReturn(task);
         when(taskMapper.update(any(), any())).thenReturn(1);
         var result = service.retryTask(9001L);
@@ -113,6 +132,8 @@ class AiTaskServiceImplTest {
         assertThat(result.effectiveReplyPolicy().replyMode()).isEqualTo("compare");
         assertThat(result.effectiveReplyPolicy().replyDepth()).isEqualTo("brief");
         assertThat(result.effectiveReplyPolicy().replyScope().maxCandidates()).isEqualTo(3);
+        assertThat(result.failure()).isNull();
+        assertThat(task.getDiagnosticRef()).isEqualTo("diag_0123456789abcdef0123456789abcdef");
         verify(eventPublisher).publishEvent(new ConversationReplyTaskSubmittedEvent(9001L));
     }
 

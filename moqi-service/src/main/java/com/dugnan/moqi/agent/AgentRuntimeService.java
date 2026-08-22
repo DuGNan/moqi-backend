@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -47,6 +48,7 @@ import com.dugnan.moqi.agent.mapper.AgentRunStepMapper;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
@@ -178,7 +180,8 @@ public class AgentRuntimeService implements AgentRuntime {
     /** 由执行器调用；只有 queued Run 能被一个工作线程领取。 */
     public void executeQueuedRun(Long runId) {
         callRegistry.beginExecution(runId);
-        try {
+        String executionDiagnosticRef = PublicFailureFactory.newDiagnosticRef();
+        try (MDC.MDCCloseable ignored = MDC.putCloseable("diagnosticRef", executionDiagnosticRef)) {
             PreparedStep prepared = transactionTemplate.execute(status -> claimAndPrepare(runId));
             if (prepared == null) {
                 return;
@@ -394,11 +397,14 @@ public class AgentRuntimeService implements AgentRuntime {
         if (Set.of(STATUS_SUCCEEDED, STATUS_FAILED, STATUS_CANCELED, STATUS_TIMED_OUT).contains(run.getRunStatus())) {
             return view(run);
         }
+        boolean failed = STATUS_FAILED.equals(targetStatus) || STATUS_TIMED_OUT.equals(targetStatus);
+        String diagnosticRef = resolveDiagnosticRef(run, failed);
         int changed = runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
                 .eq("id", run.getId()).eq("deleted", 0).eq("version", run.getVersion())
                 .in("run_status", STATUS_QUEUED, STATUS_RUNNING, STATUS_WAITING)
                 .set("run_status", targetStatus).set("error_code", errorCode)
                 .set("error_message", STATUS_TIMED_OUT.equals(targetStatus) ? "Agent Run 已超时" : null)
+                .set(failed, "diagnostic_ref", diagnosticRef)
                 .set("version", run.getVersion() + 1));
         if (changed != 1) {
             return view(requireRun(runId));
@@ -521,7 +527,9 @@ public class AgentRuntimeService implements AgentRuntime {
         boolean retryable = step.getAttempt() < prepared.definition().maxAttempts(step.getStepKey());
         String errorCategory = prepared.definition().errorCategory(exception);
         String errorCode = prepared.definition().errorCode(exception);
-        String errorMessage = safeMessage(prepared.definition(), exception);
+        String errorMessage = PublicFailureFactory.safeMessage(
+                errorCode,
+                safeMessage(prepared.definition(), exception));
         stepMapper.update(null, new UpdateWrapper<AgentRunStepEntity>()
                 .eq("id", step.getId()).eq("deleted", 0).eq("version", step.getVersion())
                 .eq("step_status", STATUS_RUNNING).set("step_status", STATUS_FAILED)
@@ -639,14 +647,26 @@ public class AgentRuntimeService implements AgentRuntime {
             String errorCode,
             String errorMessage,
             String currentStepKey) {
+        boolean failed = STATUS_FAILED.equals(status) || STATUS_TIMED_OUT.equals(status);
+        String diagnosticRef = resolveDiagnosticRef(run, failed);
         int changed = runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
                 .eq("id", run.getId()).eq("deleted", 0).eq("version", run.getVersion())
                 .eq("run_status", STATUS_RUNNING).set("run_status", status)
                 .set("current_step_key", currentStepKey).set("error_code", errorCode)
-                .set("error_message", errorMessage).set("version", run.getVersion() + 1));
+                .set("error_message", errorMessage)
+                .set(failed, "diagnostic_ref", diagnosticRef)
+                .set("version", run.getVersion() + 1));
         if (changed != 1) {
             throw conflict(ErrorCode.AGENT_RUN_STATE_CONFLICT, "Agent Run 状态已变化");
         }
+    }
+
+    private String resolveDiagnosticRef(AgentRunEntity run, boolean failed) {
+        if (!failed || !blank(run.getDiagnosticRef())) {
+            return run.getDiagnosticRef();
+        }
+        String contextDiagnosticRef = MDC.get("diagnosticRef");
+        return blank(contextDiagnosticRef) ? PublicFailureFactory.newDiagnosticRef() : contextDiagnosticRef;
     }
 
     private void markActiveStepTerminal(Long runId, String terminalStatus) {
@@ -676,9 +696,28 @@ public class AgentRuntimeService implements AgentRuntime {
 
     private void updateAiTaskTerminal(Long taskId, String runStatus) {
         String taskStatus = STATUS_TIMED_OUT.equals(runStatus) ? STATUS_FAILED : runStatus;
+        AiTaskEntity task = taskMapper.selectById(taskId);
+        AgentRunEntity linkedRun = runMapper.selectOne(new LambdaQueryWrapper<AgentRunEntity>()
+                .eq(AgentRunEntity::getAiTaskId, taskId)
+                .eq(AgentRunEntity::getDeleted, 0)
+                .orderByDesc(AgentRunEntity::getId)
+                .last("LIMIT 1"));
+        boolean failed = STATUS_FAILED.equals(taskStatus);
+        String errorCode = STATUS_TIMED_OUT.equals(runStatus)
+                ? ErrorCode.AGENT_RUN_TIMED_OUT.name()
+                : linkedRun == null ? null : linkedRun.getErrorCode();
+        String diagnosticRef = task == null ? null : task.getDiagnosticRef();
+        if (blank(diagnosticRef) && linkedRun != null) {
+            diagnosticRef = linkedRun.getDiagnosticRef();
+        }
+        if (failed && blank(diagnosticRef)) {
+            diagnosticRef = PublicFailureFactory.newDiagnosticRef();
+        }
         taskMapper.update(null, new UpdateWrapper<AiTaskEntity>().eq("id", taskId).eq("deleted", 0)
                 .in("task_status", STATUS_QUEUED, STATUS_RUNNING).set("task_status", taskStatus)
-                .set("error_code", STATUS_TIMED_OUT.equals(runStatus) ? ErrorCode.AGENT_RUN_TIMED_OUT.name() : null)
+                .set("error_code", failed ? errorCode : null)
+                .set("error_message", failed && linkedRun != null ? linkedRun.getErrorMessage() : null)
+                .set(failed, "diagnostic_ref", diagnosticRef)
                 .setSql("version = version + 1"));
     }
 
@@ -762,7 +801,11 @@ public class AgentRuntimeService implements AgentRuntime {
                 run.getAiTaskId(), run.getCurrentStepKey(), run.getCheckpointSequence(),
                 interruption == null ? null : interruption.getId(),
                 interruption == null ? null : interruption.getTokenVersion(), run.getTimeoutAt(),
-                run.getErrorCode(), run.getErrorMessage());
+                run.getErrorCode(), run.getErrorCode() == null
+                        ? null
+                        : PublicFailureFactory.safeMessage(run.getErrorCode(), run.getErrorMessage()),
+                run.getErrorCode() == null ? null
+                        : PublicFailureFactory.from(run.getErrorCode(), run.getDiagnosticRef()));
     }
 
     private void publish(
@@ -775,7 +818,9 @@ public class AgentRuntimeService implements AgentRuntime {
                     run.getAiTaskId(), run.getRunStatus(), step == null ? null : step.getId(),
                     step == null ? run.getCurrentStepKey() : step.getStepKey(),
                     step == null ? null : step.getStepStatus(),
-                    checkpoint == null ? run.getCheckpointSequence() : checkpoint.getSequenceId(), interruptionId));
+                    checkpoint == null ? run.getCheckpointSequence() : checkpoint.getSequenceId(), interruptionId,
+                    run.getErrorCode() == null ? null
+                            : PublicFailureFactory.from(run.getErrorCode(), run.getDiagnosticRef())));
         }
     }
 

@@ -45,6 +45,8 @@ import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailure;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.context.entity.StoryContextSnapshotEntity;
 import com.dugnan.moqi.context.mapper.StoryContextSnapshotMapper;
@@ -732,10 +734,24 @@ public class GenerationEvaluationServiceImpl implements GenerationEvaluationServ
                 report.getAiTaskId(), report.getAgentRunId(), report.getReportStatus(), report.getConclusion(), findings(report),
                 report.getRulesetVersion(), report.getEvaluatorVersion(), report.getContentHash(),
                 report.getBriefFingerprint(), report.getSourceFingerprint(), report.getModelCallId(),
-                report.getErrorCode(), report.getErrorMessage(), failed ? metadata.currentAttempt() : null, retryable,
+                report.getErrorCode(), safeErrorMessage(report.getErrorCode(), report.getErrorMessage()),
+                failed ? metadata.currentAttempt() : null, retryable,
                 report.getRevisionAttempt(),
                 report.getRevisionCandidateId() == null ? null : revisionCandidate(report.getChapterId(), report.getGenerationId(), report.getId()),
-                report.getVersion(), report.getGmtCreate(), report.getGmtModified());
+                report.getVersion(), report.getGmtCreate(), report.getGmtModified(),
+                publicFailure(report.getAiTaskId(), report.getErrorCode()));
+    }
+
+    private PublicFailure publicFailure(Long taskId, String errorCode) {
+        if (blank(errorCode)) {
+            return null;
+        }
+        AiTaskEntity task = taskId == null ? null : taskMapper.selectById(taskId);
+        return PublicFailureFactory.from(errorCode, task == null ? null : task.getDiagnosticRef());
+    }
+
+    private String safeErrorMessage(String errorCode, String errorMessage) {
+        return blank(errorCode) ? null : PublicFailureFactory.safeMessage(errorCode, errorMessage);
     }
 
     private RetryMetadata retryMetadata(ChapterGenerationEvaluationReportEntity report) {

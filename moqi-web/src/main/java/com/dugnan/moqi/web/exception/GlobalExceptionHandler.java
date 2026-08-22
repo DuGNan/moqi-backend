@@ -1,17 +1,15 @@
 package com.dugnan.moqi.web.exception;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.BindException;
-import org.springframework.validation.FieldError;
 import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.servlet.NoHandlerFoundException;
@@ -21,6 +19,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 
 import com.dugnan.moqi.common.api.ApiResponse;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 
 /**
@@ -50,6 +49,7 @@ public class GlobalExceptionHandler {
                     GENERATION_SCENE_NOT_FOUND,
                     KNOWLEDGE_EXTRACTION_NOT_FOUND,
                     CHAPTER_CAPACITY_ASSESSMENT_NOT_FOUND,
+                    PROSE_CANDIDATE_NOT_FOUND, PROSE_IMPACT_REPORT_NOT_FOUND,
                     PROSE_REVISION_NOT_FOUND, REVISION_WORKSPACE_NOT_FOUND,
                     STORY_RELEASE_NOT_FOUND -> HttpStatus.NOT_FOUND;
             case OUTLINE_REVISION_CONFLICT, GENERATION_STATUS_CONFLICT,
@@ -70,13 +70,19 @@ public class GlobalExceptionHandler {
                     CHAPTER_CAPACITY_DECISION_REQUIRED,
                     CHAPTER_CAPACITY_LONG_CONTEXT_REQUIRED,
                     PROSE_REVISION_CONFLICT, REVISION_WORKSPACE_CONFLICT,
-                    STORY_RELEASE_CONFLICT -> HttpStatus.CONFLICT;
+                    STORY_RELEASE_CONFLICT, PROSE_CANDIDATE_CONFLICT,
+                    PROSE_WORKSPACE_CONFLICT, PROSE_IMPACT_REPORT_CONFLICT -> HttpStatus.CONFLICT;
+            case MODEL_UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
             case INTERNAL_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
             default -> HttpStatus.BAD_REQUEST;
         };
-        ApiResponse<Map<String, Object>> response =
-                ApiResponse.failure(exception.getErrorCode(), exception.getMessage(), exception.getData());
-        return ResponseEntity.status(status).body(response);
+        return failure(
+                status,
+                exception.getErrorCode(),
+                PublicFailureFactory.safeMessage(exception.getErrorCode(), exception.getMessage()),
+                PublicFailureFactory.safeData(exception.getData()),
+                exception,
+                status.is5xxServerError());
     }
 
     /**
@@ -86,11 +92,8 @@ public class GlobalExceptionHandler {
      * @return 参数校验错误响应
      */
     @ExceptionHandler({MethodArgumentNotValidException.class, BindException.class})
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ApiResponse<Map<String, Object>> handleValidationException(Exception exception) {
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("errors", extractErrors(exception));
-        return ApiResponse.failure(ErrorCode.BAD_REQUEST, "request validation failed", data);
+    public ResponseEntity<ApiResponse<Map<String, Object>>> handleValidationException(Exception exception) {
+        return failure(HttpStatus.BAD_REQUEST, ErrorCode.BAD_REQUEST, "请求参数校验失败", Map.of(), exception, false);
     }
 
     /**
@@ -100,9 +103,9 @@ public class GlobalExceptionHandler {
      * @return 请求体错误响应
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ApiResponse<Map<String, Object>> handleUnreadableMessage(HttpMessageNotReadableException exception) {
-        return ApiResponse.failure(ErrorCode.BAD_REQUEST, "请求体不是有效 JSON", Map.of());
+    public ResponseEntity<ApiResponse<Map<String, Object>>> handleUnreadableMessage(
+            HttpMessageNotReadableException exception) {
+        return failure(HttpStatus.BAD_REQUEST, ErrorCode.BAD_REQUEST, "请求体不是有效 JSON", Map.of(), exception, false);
     }
 
     /**
@@ -112,13 +115,9 @@ public class GlobalExceptionHandler {
      * @return 参数类型错误响应
      */
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ApiResponse<Map<String, Object>> handleArgumentTypeMismatch(
+    public ResponseEntity<ApiResponse<Map<String, Object>>> handleArgumentTypeMismatch(
             MethodArgumentTypeMismatchException exception) {
-        return ApiResponse.failure(
-                ErrorCode.BAD_REQUEST,
-                "请求参数类型错误",
-                Map.of("parameter", exception.getName()));
+        return failure(HttpStatus.BAD_REQUEST, ErrorCode.BAD_REQUEST, "请求参数类型错误", Map.of(), exception, false);
     }
 
     /**
@@ -138,9 +137,8 @@ public class GlobalExceptionHandler {
      * @return 路由不存在响应
      */
     @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
-    @ResponseStatus(HttpStatus.NOT_FOUND)
-    public ApiResponse<Map<String, Object>> handleApiNotFound(Exception exception) {
-        return ApiResponse.failure(ErrorCode.API_NOT_FOUND, "接口不存在", Map.of());
+    public ResponseEntity<ApiResponse<Map<String, Object>>> handleApiNotFound(Exception exception) {
+        return failure(HttpStatus.NOT_FOUND, ErrorCode.API_NOT_FOUND, "接口不存在", Map.of(), exception, false);
     }
 
     /**
@@ -150,30 +148,36 @@ public class GlobalExceptionHandler {
      * @return 系统错误响应
      */
     @ExceptionHandler(Exception.class)
-    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    public ApiResponse<Map<String, Object>> handleUnexpectedException(Exception exception) {
-        LOGGER.error("未处理的接口异常", exception);
-        return ApiResponse.failure(ErrorCode.INTERNAL_ERROR, "internal server error", Map.of());
+    public ResponseEntity<ApiResponse<Map<String, Object>>> handleUnexpectedException(Exception exception) {
+        return failure(
+                HttpStatus.INTERNAL_SERVER_ERROR,
+                ErrorCode.INTERNAL_ERROR,
+                "服务暂时无法完成请求",
+                Map.of(),
+                exception,
+                true);
     }
 
-    /**
-     * 提取参数校验错误字段及消息。
-     *
-     * @param exception 参数校验异常
-     * @return 字段错误映射
-     */
-    private Map<String, String> extractErrors(Exception exception) {
-        Map<String, String> errors = new LinkedHashMap<>();
-        if (exception instanceof MethodArgumentNotValidException methodArgumentNotValidException) {
-            for (FieldError fieldError : methodArgumentNotValidException.getBindingResult().getFieldErrors()) {
-                errors.put(fieldError.getField(), fieldError.getDefaultMessage());
+    private ResponseEntity<ApiResponse<Map<String, Object>>> failure(
+            HttpStatus status,
+            ErrorCode errorCode,
+            String message,
+            Map<String, Object> data,
+            Exception exception,
+            boolean logStackTrace) {
+        String diagnosticRef = PublicFailureFactory.newDiagnosticRef();
+        try (MDC.MDCCloseable ignored = MDC.putCloseable("diagnosticRef", diagnosticRef)) {
+            if (logStackTrace) {
+                LOGGER.error("接口处理失败，exceptionType={}, diagnosticRef={}",
+                        exception.getClass().getName(), diagnosticRef);
+            } else {
+                LOGGER.info("接口请求未完成，errorCode={}, diagnosticRef={}", errorCode, diagnosticRef);
             }
+            ApiResponse<Map<String, Object>> response =
+                    ApiResponse.failure(errorCode, message, data, diagnosticRef);
+            return ResponseEntity.status(status)
+                    .header("X-Diagnostic-Ref", diagnosticRef)
+                    .body(response);
         }
-        if (exception instanceof BindException bindException) {
-            for (FieldError fieldError : bindException.getBindingResult().getFieldErrors()) {
-                errors.put(fieldError.getField(), fieldError.getDefaultMessage());
-            }
-        }
-        return errors;
     }
 }

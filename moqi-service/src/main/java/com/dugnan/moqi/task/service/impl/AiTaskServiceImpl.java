@@ -28,6 +28,7 @@ import com.dugnan.moqi.chapter.stream.OutlineCandidateEvent;
 import com.dugnan.moqi.agent.entity.AgentRunEntity;
 import com.dugnan.moqi.agent.mapper.AgentRunMapper;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.task.dto.AiTaskModels.AiTaskCanceled;
 import com.dugnan.moqi.task.dto.AiTaskModels.AiTaskDetail;
@@ -330,9 +331,13 @@ public class AiTaskServiceImpl implements AiTaskService {
                 task.getRetryOfTaskId(),
                 effectiveReplyPolicy(task),
                 task.getErrorCode(),
-                task.getErrorMessage(),
+                task.getErrorCode() == null
+                        ? null
+                        : PublicFailureFactory.safeMessage(task.getErrorCode(), task.getErrorMessage()),
                 task.getGmtCreate(),
-                task.getGmtModified());
+                task.getGmtModified(),
+                task.getErrorCode() == null ? null
+                        : PublicFailureFactory.from(task.getErrorCode(), task.getDiagnosticRef()));
     }
 
     private EffectiveReplyPolicy effectiveReplyPolicy(AiTaskEntity task) {

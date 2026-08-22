@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -30,6 +31,7 @@ import com.dugnan.moqi.chapter.policy.ReplyDepth;
 import com.dugnan.moqi.chapter.policy.ReplyMode;
 import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.common.exception.BusinessException;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextBuildCommand;
 import com.dugnan.moqi.context.MessageReference;
@@ -220,7 +222,10 @@ public class ConversationReplyTaskRunner {
                 || !TASK_TYPE.equals(task.getTaskType()) || !claim(task)) {
             return;
         }
-        executeClaimedTask(task);
+        String diagnosticRef = PublicFailureFactory.newDiagnosticRef();
+        try (MDC.MDCCloseable ignored = MDC.putCloseable("diagnosticRef", diagnosticRef)) {
+            executeClaimedTask(task);
+        }
     }
 
     private void executeClaimedTask(AiTaskEntity task) {
@@ -335,6 +340,9 @@ public class ConversationReplyTaskRunner {
             return;
         }
         int version = version(task);
+        String diagnosticRef = StringUtils.hasText(task.getDiagnosticRef())
+                ? task.getDiagnosticRef()
+                : currentOrNewDiagnosticRef();
         if (taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
                 .eq("id", task.getId())
                 .eq("deleted", 0)
@@ -343,10 +351,12 @@ public class ConversationReplyTaskRunner {
                 .set("task_status", STATUS_FAILED)
                 .set("error_code", "TASK_QUEUE_FULL")
                 .set("error_message", "AI 回复任务繁忙，请稍后重试")
+                .set("diagnostic_ref", diagnosticRef)
                 .set("version", version + 1)
                 .set("gmt_modified", LocalDateTime.now())) == 1) {
             eventPublisher.publishEvent(ChapterReplyEvent.failed(
-                    task.getChapterId(), task.getId(), "TASK_QUEUE_FULL", "AI 回复任务繁忙，请稍后重试"));
+                    task.getChapterId(), task.getId(), "TASK_QUEUE_FULL", "AI 回复任务繁忙，请稍后重试",
+                    diagnosticRef));
         }
     }
 
@@ -655,6 +665,10 @@ public class ConversationReplyTaskRunner {
             return;
         }
         int version = version(task);
+        String diagnosticRef = task.getDiagnosticRef() == null
+                ? currentOrNewDiagnosticRef()
+                : task.getDiagnosticRef();
+        String publicErrorMessage = PublicFailureFactory.safeMessage(errorCode, errorMessage);
         int updated = taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
                 .eq("id", task.getId())
                 .eq("deleted", 0)
@@ -662,12 +676,13 @@ public class ConversationReplyTaskRunner {
                 .eq("task_status", STATUS_RUNNING)
                 .set("task_status", STATUS_FAILED)
                 .set("error_code", errorCode)
-                .set("error_message", errorMessage)
+                .set("error_message", publicErrorMessage)
+                .set("diagnostic_ref", diagnosticRef)
                 .set("version", version + 1)
                 .set("gmt_modified", LocalDateTime.now()));
         if (updated == 1) {
             eventPublisher.publishEvent(ChapterReplyEvent.failed(
-                    task.getChapterId(), task.getId(), errorCode, errorMessage));
+                    task.getChapterId(), task.getId(), errorCode, publicErrorMessage, diagnosticRef));
         }
     }
 
@@ -683,6 +698,13 @@ public class ConversationReplyTaskRunner {
         eventPublisher.publishEvent(ChapterReplyEvent.canceled(
                 latest.getChapterId(), latest.getId(), messageId));
         return true;
+    }
+
+    private String currentOrNewDiagnosticRef() {
+        String diagnosticRef = MDC.get("diagnosticRef");
+        return diagnosticRef == null || diagnosticRef.isBlank()
+                ? PublicFailureFactory.newDiagnosticRef()
+                : diagnosticRef;
     }
 
     private int version(AiTaskEntity task) {

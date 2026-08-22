@@ -26,6 +26,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.context.StoryContextBuildCommand;
@@ -341,6 +342,9 @@ public class ChapterConsensusTaskRunner {
             return;
         }
         int version = version(task);
+        String diagnosticRef = StringUtils.hasText(task.getDiagnosticRef())
+                ? task.getDiagnosticRef()
+                : PublicFailureFactory.newDiagnosticRef();
         taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
                 .eq("id", task.getId())
                 .eq("deleted", 0)
@@ -349,6 +353,7 @@ public class ChapterConsensusTaskRunner {
                 .set("task_status", STATUS_FAILED)
                 .set("error_code", "TASK_QUEUE_FULL")
                 .set("error_message", "章节共识任务繁忙，请稍后重试")
+                .set("diagnostic_ref", diagnosticRef)
                 .set("version", version + 1)
                 .set("gmt_modified", LocalDateTime.now()));
     }
@@ -503,6 +508,10 @@ public class ChapterConsensusTaskRunner {
      */
     private void fail(AiTaskEntity task, String errorCode, String errorMessage) {
         int version = version(task);
+        String diagnosticRef = task.getDiagnosticRef() == null
+                ? PublicFailureFactory.newDiagnosticRef()
+                : task.getDiagnosticRef();
+        String publicErrorMessage = PublicFailureFactory.safeMessage(errorCode, errorMessage);
         taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
                 .eq("id", task.getId())
                 .eq("deleted", 0)
@@ -510,7 +519,8 @@ public class ChapterConsensusTaskRunner {
                 .eq("task_status", STATUS_RUNNING)
                 .set("task_status", STATUS_FAILED)
                 .set("error_code", errorCode)
-                .set("error_message", errorMessage)
+                .set("error_message", publicErrorMessage)
+                .set("diagnostic_ref", diagnosticRef)
                 .set("version", version + 1)
                 .set("gmt_modified", LocalDateTime.now()));
     }

@@ -138,6 +138,36 @@ class BoundedChapterRevisionServiceImplTest {
         verify(fixture.generationMapper, never()).insert(any(ChapterGenerationEntity.class));
     }
 
+    @Test
+    void exposesStablePublicFailureOnlyForFailedBoundedRevision() {
+        Fixture fixture = new Fixture();
+        BoundedChapterRevisionEntity failed = new BoundedChapterRevisionEntity();
+        failed.setId(7L);
+        failed.setChapterId(12L);
+        failed.setSourceGenerationId(3L);
+        failed.setAiTaskId(8L);
+        failed.setRevisionStatus("failed");
+        failed.setFindingKeysJson("[]");
+        failed.setRevisionBriefJson("{}");
+        failed.setErrorCode("AGENT_STEP_RETRY_EXHAUSTED");
+        failed.setErrorMessage("revisionPrompt leaked");
+        failed.setDeleted(0);
+        AiTaskEntity task = new AiTaskEntity();
+        task.setDiagnosticRef("diag_bounded_ref");
+        when(fixture.revisionMapper.selectById(7L)).thenReturn(failed);
+        when(fixture.taskMapper.selectById(8L)).thenReturn(task);
+
+        var failedView = fixture.service.get(12L, 3L, 7L);
+        failed.setErrorCode(null);
+        failed.setErrorMessage(null);
+        var successView = fixture.service.get(12L, 3L, 7L);
+
+        assertThat(failedView.failure().diagnosticRef()).isEqualTo("diag_bounded_ref");
+        assertThat(failedView.failure().category()).isEqualTo("task_failure");
+        assertThat(failedView.errorMessage()).isEqualTo("任务未能完成，请稍后重试");
+        assertThat(successView.failure()).isNull();
+    }
+
     private static final class Fixture {
         private final ObjectMapper objectMapper = new ObjectMapper();
         private final ChapterGenerationMapper generationMapper = mock(ChapterGenerationMapper.class);

@@ -31,6 +31,7 @@ import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.knowledge.dto.KnowledgeExtractionModels.BatchView;
 import com.dugnan.moqi.knowledge.dto.KnowledgeExtractionModels.CandidateDecision;
@@ -341,10 +342,15 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
             return;
         }
         updateTerminal(batchId, Set.of(STATUS_QUEUED, STATUS_RUNNING), "failed", errorCode);
+        AiTaskEntity task = taskMapper.selectById(batch.getAiTaskId());
+        String diagnosticRef = task != null && StringUtils.hasText(task.getDiagnosticRef())
+                ? task.getDiagnosticRef()
+                : PublicFailureFactory.newDiagnosticRef();
         taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
                 .eq("id", batch.getAiTaskId())
                 .set("task_status", "failed")
                 .set("error_code", errorCode)
+                .set("diagnostic_ref", diagnosticRef)
                 .setSql("version = version + 1"));
     }
 

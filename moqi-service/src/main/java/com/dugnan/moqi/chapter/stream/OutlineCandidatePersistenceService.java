@@ -19,6 +19,7 @@ import com.dugnan.moqi.chapter.outline.OutlineCandidateContent;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContentCodec;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateDiffService;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 
 /**
@@ -171,6 +172,10 @@ public class OutlineCandidatePersistenceService {
     @Transactional(rollbackFor = RuntimeException.class)
     public boolean fail(AiTaskEntity task, ChapterOutlineCandidateEntity candidate, String errorCode, String errorMessage) {
         int taskVersion = version(task);
+        String diagnosticRef = task.getDiagnosticRef() == null
+                ? PublicFailureFactory.newDiagnosticRef()
+                : task.getDiagnosticRef();
+        String publicErrorMessage = PublicFailureFactory.safeMessage(errorCode, errorMessage);
         int taskChanged = taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
                 .eq("id", task.getId())
                 .eq("deleted", 0)
@@ -178,7 +183,8 @@ public class OutlineCandidatePersistenceService {
                 .eq("task_status", STATUS_RUNNING)
                 .set("task_status", STATUS_FAILED)
                 .set("error_code", errorCode)
-                .set("error_message", errorMessage)
+                .set("error_message", publicErrorMessage)
+                .set("diagnostic_ref", diagnosticRef)
                 .set("version", taskVersion + 1)
                 .set("gmt_modified", LocalDateTime.now()));
         if (taskChanged != 1) {
@@ -198,6 +204,7 @@ public class OutlineCandidatePersistenceService {
             throw new OutlineCandidateTaskCompletionException();
         }
         task.setTaskStatus(STATUS_FAILED);
+        task.setDiagnosticRef(diagnosticRef);
         task.setVersion(taskVersion + 1);
         candidate.setCandidateStatus(CANDIDATE_FAILED);
         candidate.setVersion(candidateVersion + 1);
@@ -214,6 +221,9 @@ public class OutlineCandidatePersistenceService {
     @Transactional(rollbackFor = RuntimeException.class)
     public boolean reject(AiTaskEntity task, ChapterOutlineCandidateEntity candidate) {
         int taskVersion = version(task);
+        String diagnosticRef = task.getDiagnosticRef() == null
+                ? PublicFailureFactory.newDiagnosticRef()
+                : task.getDiagnosticRef();
         int taskChanged = taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()
                 .eq("id", task.getId())
                 .eq("deleted", 0)
@@ -222,6 +232,7 @@ public class OutlineCandidatePersistenceService {
                 .set("task_status", STATUS_FAILED)
                 .set("error_code", ErrorCode.INTERNAL_ERROR.name())
                 .set("error_message", "候选任务排队失败，请稍后重试")
+                .set("diagnostic_ref", diagnosticRef)
                 .set("version", taskVersion + 1)
                 .set("gmt_modified", LocalDateTime.now()));
         if (taskChanged != 1) {
@@ -241,6 +252,7 @@ public class OutlineCandidatePersistenceService {
             throw new OutlineCandidateTaskCompletionException();
         }
         task.setTaskStatus(STATUS_FAILED);
+        task.setDiagnosticRef(diagnosticRef);
         task.setVersion(taskVersion + 1);
         candidate.setCandidateStatus(CANDIDATE_FAILED);
         candidate.setVersion(candidateVersion + 1);

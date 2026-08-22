@@ -1,5 +1,6 @@
 package com.dugnan.moqi.chapter.selection;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
@@ -254,6 +255,30 @@ class SelectionAssistanceServiceImplTest {
 
         verify(runtime).retryStep(new RetryAgentStepCommand(
                 7L, SelectionAssistanceServiceImpl.GENERATE_STEP, 2));
+    }
+
+    @Test
+    void exposesStablePublicFailureOnlyForFailedSelectionRequest() {
+        Fixture fixture = new Fixture();
+        ChapterSelectionAssistanceEntity failed = fixture.candidate("原文", "候选");
+        failed.setRequestStatus("failed");
+        failed.setErrorCode("TASK_QUEUE_FULL");
+        failed.setErrorMessage("chapterId must not be null");
+        AiTaskEntity task = new AiTaskEntity();
+        task.setDiagnosticRef("diag_selection_ref");
+        when(fixture.assistanceMapper.selectById(9L)).thenReturn(failed);
+        when(fixture.taskMapper.selectById(8L)).thenReturn(task);
+
+        var failedView = fixture.service.get(9L);
+        failed.setErrorCode(null);
+        failed.setErrorMessage(null);
+        var successView = fixture.service.get(9L);
+
+        assertThat(failedView.failure().diagnosticRef()).isEqualTo("diag_selection_ref");
+        assertThat(failedView.failure().category()).isEqualTo("service_unavailable");
+        assertThat(failedView.errorMessage()).isEqualTo("依赖服务暂时不可用");
+        assertThat(successView.failure()).isNull();
+        assertThat(successView.errorMessage()).isNull();
     }
 
     @Test

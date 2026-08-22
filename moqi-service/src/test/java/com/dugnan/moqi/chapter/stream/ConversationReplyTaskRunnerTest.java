@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -350,11 +351,42 @@ class ConversationReplyTaskRunnerTest {
                 new ObjectMapper()).run(12L);
 
         verify(messageMapper, never()).insert(any(ChapterConversationMessageEntity.class));
-        verify(eventPublisher).publishEvent(ChapterReplyEvent.failed(
-                2L,
-                12L,
-                "SERVICE_UNAVAILABLE",
-                LlmProviderError.SERVICE_UNAVAILABLE.safeMessage()));
+        ArgumentCaptor<Object> eventCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher, org.mockito.Mockito.atLeastOnce()).publishEvent(eventCaptor.capture());
+        ChapterReplyEvent failedEvent = eventCaptor.getAllValues().stream()
+                .filter(ChapterReplyEvent.class::isInstance)
+                .map(ChapterReplyEvent.class::cast)
+                .filter(event -> "reply.failed".equals(event.type()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(failedEvent.errorCode()).isEqualTo("SERVICE_UNAVAILABLE");
+        assertThat(failedEvent.errorMessage()).isEqualTo("依赖服务暂时不可用");
+        assertThat(failedEvent.failure().diagnosticRef()).matches("diag_[0-9a-f]{32}");
+        assertThat(failedEvent.failure().category()).isEqualTo("service_unavailable");
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void retryQueueRejectionKeepsExistingDiagnosticReference() {
+        AiTaskEntity task = task("queued", 4);
+        task.setDiagnosticRef("diag_existing_reply_ref");
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+
+        new ConversationReplyTaskRunner(
+                taskMapper, messageMapper, userConfigService, providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper), eventPublisher,
+                new LlmStreamCallRegistry(), null, null, new ObjectMapper()).reject(12L);
+
+        ArgumentCaptor<UpdateWrapper<AiTaskEntity>> updateCaptor =
+                ArgumentCaptor.forClass((Class) UpdateWrapper.class);
+        verify(taskMapper).update(any(), updateCaptor.capture());
+        assertThat(updateCaptor.getValue().getParamNameValuePairs().values())
+                .contains("diag_existing_reply_ref");
+        ArgumentCaptor<Object> eventCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher).publishEvent(eventCaptor.capture());
+        assertThat(((ChapterReplyEvent) eventCaptor.getValue()).failure().diagnosticRef())
+                .isEqualTo("diag_existing_reply_ref");
     }
 
     @Test

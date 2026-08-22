@@ -100,6 +100,21 @@ class AgentRuntimeServiceTest {
     }
 
     @Test
+    void loadSanitizesHistoricalRunErrorMessage() {
+        AgentRunEntity run = run(41L, "failed", "draft", 1);
+        run.setUserId("local-user");
+        run.setErrorCode("AGENT_STEP_RETRY_EXHAUSTED");
+        run.setErrorMessage("promptPayload contains chapterId");
+        run.setDiagnosticRef("diag_historical_run_ref");
+        when(runMapper.selectById(41L)).thenReturn(run);
+
+        var view = runtime().load(41L, "local-user");
+
+        assertThat(view.errorMessage()).isEqualTo("任务未能完成，请稍后重试");
+        assertThat(view.failure().diagnosticRef()).isEqualTo("diag_historical_run_ref");
+    }
+
+    @Test
     void resumeQueuesCheckpointNextStepInsteadOfCompletedStep() throws Exception {
         TransactionStatus transactionStatus = mock(TransactionStatus.class);
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
@@ -363,6 +378,45 @@ class AgentRuntimeServiceTest {
         verify(stepMapper).update(isNull(), any());
         verify(interruptionMapper).update(isNull(), any());
         verify(eventPublisher).publishEvent(isA(AgentRunEvent.class));
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void linkedRunFailureKeepsDiagnosticReferenceFromRetriedAiTask() {
+        TransactionStatus transactionStatus = mock(TransactionStatus.class);
+        doAnswer(invocation -> {
+            Consumer<TransactionStatus> callback = invocation.getArgument(0);
+            callback.accept(transactionStatus);
+            return null;
+        }).when(transactionTemplate).executeWithoutResult(any());
+
+        AgentRunEntity waitingRun = run(41L, "waiting_for_human", "review", 3);
+        waitingRun.setAiTaskId(31L);
+        waitingRun.setTimeoutAt(LocalDateTime.now().minusMinutes(1));
+        AgentRunEntity timedOutRun = run(41L, "timed_out", "review", 4);
+        timedOutRun.setAiTaskId(31L);
+        timedOutRun.setErrorCode("AGENT_RUN_TIMED_OUT");
+        timedOutRun.setDiagnosticRef("diag_new_run_ref");
+        com.dugnan.moqi.chapter.entity.AiTaskEntity task =
+                new com.dugnan.moqi.chapter.entity.AiTaskEntity();
+        task.setId(31L);
+        task.setTaskStatus("running");
+        task.setDiagnosticRef("diag_existing_task_ref");
+        when(runMapper.selectList(any())).thenReturn(List.of(waitingRun));
+        when(runMapper.selectById(41L)).thenReturn(waitingRun, timedOutRun);
+        when(runMapper.selectOne(any())).thenReturn(timedOutRun);
+        when(taskMapper.selectById(31L)).thenReturn(task);
+        when(runMapper.update(isNull(), any())).thenReturn(1);
+
+        runtime().timeoutExpiredRuns();
+
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<
+                com.dugnan.moqi.chapter.entity.AiTaskEntity>> updateCaptor =
+                ArgumentCaptor.forClass((Class) com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper.class);
+        verify(taskMapper).update(isNull(), updateCaptor.capture());
+        assertThat(updateCaptor.getValue().getParamNameValuePairs().values())
+                .contains("diag_existing_task_ref")
+                .doesNotContain("diag_new_run_ref");
     }
 
     @Test

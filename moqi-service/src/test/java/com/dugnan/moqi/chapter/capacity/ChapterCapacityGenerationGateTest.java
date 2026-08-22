@@ -22,10 +22,12 @@ import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief;
 import com.dugnan.moqi.chapter.capacity.ChapterCapacityCompiler.CompiledCapacity;
 import com.dugnan.moqi.chapter.capacity.ChapterCapacityModels.CapacityResult;
 import com.dugnan.moqi.chapter.entity.ChapterCapacityAssessmentEntity;
+import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterCapacityAssessmentMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -112,6 +114,32 @@ class ChapterCapacityGenerationGateTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting(exception -> ((BusinessException) exception).getErrorCode())
                 .isEqualTo(ErrorCode.CHAPTER_CAPACITY_ASSESSMENT_STALE);
+    }
+
+    @Test
+    void exposesStablePublicFailureOnlyForFailedCapacityAssessment() throws Exception {
+        ChapterCapacityAssessmentEntity failed = entity(result("fits"));
+        failed.setAssessmentStatus("failed");
+        failed.setAiTaskId(6L);
+        failed.setAgentRunId(7L);
+        failed.setErrorCode("SERVICE_UNAVAILABLE");
+        failed.setErrorMessage("providerEndpoint unavailable");
+        AiTaskEntity task = new AiTaskEntity();
+        task.setDiagnosticRef("diag_capacity_ref");
+        when(assessmentMapper.selectById(8L)).thenReturn(failed);
+        when(taskMapper.selectById(6L)).thenReturn(task);
+        when(retryMetadataResolver.resolve(7L, "semantic_assess"))
+                .thenReturn(new RetryMetadata("semantic_assess", 2, true));
+
+        var failedView = service.get(8L);
+        failed.setErrorCode(null);
+        failed.setErrorMessage(null);
+        var successView = service.get(8L);
+
+        assertThat(failedView.failure().diagnosticRef()).isEqualTo("diag_capacity_ref");
+        assertThat(failedView.failure().retryable()).isTrue();
+        assertThat(failedView.errorMessage()).isEqualTo("依赖服务暂时不可用");
+        assertThat(successView.failure()).isNull();
     }
 
     private ChapterCapacityAssessmentEntity entity(CapacityResult result) throws Exception {

@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.dugnan.moqi.chapter.policy.ReplyScope;
+import com.dugnan.moqi.common.api.PublicFailure;
 
 /**
  * @author dgn
@@ -35,7 +36,30 @@ public final class AiTaskModels {
             String errorCode,
             String errorMessage,
             LocalDateTime gmtCreate,
-            LocalDateTime gmtModified) {
+            LocalDateTime gmtModified,
+            PublicFailure failure) {
+
+        public AiTaskDetail(
+                Long id,
+                String taskType,
+                String taskStatus,
+                Long workId,
+                Long chapterId,
+                Long resultMessageId,
+                Long resultGenerationId,
+                Long resultBriefId,
+                Long resultOutlineCandidateId,
+                Long agentRunId,
+                Long retryOfTaskId,
+                EffectiveReplyPolicy effectiveReplyPolicy,
+                String errorCode,
+                String errorMessage,
+                LocalDateTime gmtCreate,
+                LocalDateTime gmtModified) {
+            this(id, taskType, taskStatus, workId, chapterId, resultMessageId, resultGenerationId,
+                    resultBriefId, resultOutlineCandidateId, agentRunId, retryOfTaskId, effectiveReplyPolicy,
+                    errorCode, errorMessage, gmtCreate, gmtModified, null);
+        }
 
         /**
          * 保留不含 Brief 结果引用的旧构造入口。
@@ -80,7 +104,8 @@ public final class AiTaskModels {
                     errorCode,
                     errorMessage,
                     gmtCreate,
-                    gmtModified);
+                    gmtModified,
+                    null);
         }
 
         /**
@@ -103,7 +128,7 @@ public final class AiTaskModels {
                 LocalDateTime gmtModified) {
             this(id, taskType, taskStatus, workId, chapterId, resultMessageId, resultGenerationId,
                     resultBriefId, resultOutlineCandidateId, agentRunId, null, null,
-                    errorCode, errorMessage, gmtCreate, gmtModified);
+                    errorCode, errorMessage, gmtCreate, gmtModified, null);
         }
 
         /**
@@ -127,7 +152,7 @@ public final class AiTaskModels {
                 LocalDateTime gmtModified) {
             this(id, taskType, taskStatus, workId, chapterId, resultMessageId, resultGenerationId,
                     resultBriefId, resultOutlineCandidateId, agentRunId, null, effectiveReplyPolicy,
-                    errorCode, errorMessage, gmtCreate, gmtModified);
+                    errorCode, errorMessage, gmtCreate, gmtModified, null);
         }
     }
 
