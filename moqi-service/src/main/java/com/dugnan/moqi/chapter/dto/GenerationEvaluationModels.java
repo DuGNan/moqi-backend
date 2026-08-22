@@ -3,6 +3,8 @@ package com.dugnan.moqi.chapter.dto;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import com.dugnan.moqi.common.api.PublicFailure;
+
 /**
  * @author dgn
  * @date 2026-08-05
@@ -88,6 +90,22 @@ public final class GenerationEvaluationModels {
             RevisionCandidateView revisionCandidate,
             Integer version,
             LocalDateTime gmtCreate,
-            LocalDateTime gmtModified) {
+            LocalDateTime gmtModified,
+            PublicFailure failure) {
+
+        /** 兼容公共失败字段发布前的构造调用。 */
+        public EvaluationReportView(
+                Long id, Long generationId, Long generationSceneId, Long contextSnapshotId, Long aiTaskId,
+                Long agentRunId, String reportStatus, String conclusion, List<EvaluationFinding> findings,
+                String rulesetVersion, String evaluatorVersion, String contentHash, String briefFingerprint,
+                String sourceFingerprint, Long modelCallId, String errorCode, String errorMessage,
+                Integer currentAttempt, boolean retryable, Integer revisionAttempt,
+                RevisionCandidateView revisionCandidate, Integer version, LocalDateTime gmtCreate,
+                LocalDateTime gmtModified) {
+            this(id, generationId, generationSceneId, contextSnapshotId, aiTaskId, agentRunId, reportStatus,
+                    conclusion, findings, rulesetVersion, evaluatorVersion, contentHash, briefFingerprint,
+                    sourceFingerprint, modelCallId, errorCode, errorMessage, currentAttempt, retryable,
+                    revisionAttempt, revisionCandidate, version, gmtCreate, gmtModified, null);
+        }
     }
 }

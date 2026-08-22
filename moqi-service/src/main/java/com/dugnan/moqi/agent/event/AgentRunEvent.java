@@ -2,6 +2,8 @@ package com.dugnan.moqi.agent.event;
 
 import java.time.LocalDateTime;
 
+import com.dugnan.moqi.common.api.PublicFailure;
+
 /**
  * @author dgn
  * @date 2026-08-01
@@ -19,7 +21,25 @@ public record AgentRunEvent(
         String stepStatus,
         Long checkpointSequence,
         Long interruptionId,
-        LocalDateTime updatedAt) {
+        LocalDateTime updatedAt,
+        PublicFailure failure) {
+
+    public AgentRunEvent(
+            String type,
+            Long chapterId,
+            Long runId,
+            String workflowType,
+            Long aiTaskId,
+            String runStatus,
+            Long stepId,
+            String stepKey,
+            String stepStatus,
+            Long checkpointSequence,
+            Long interruptionId,
+            LocalDateTime updatedAt) {
+        this(type, chapterId, runId, workflowType, aiTaskId, runStatus, stepId, stepKey,
+                stepStatus, checkpointSequence, interruptionId, updatedAt, null);
+    }
 
     public static AgentRunEvent updated(
             Long chapterId,
@@ -35,5 +55,22 @@ public record AgentRunEvent(
         return new AgentRunEvent(
                 "agent_run.updated", chapterId, runId, workflowType, aiTaskId, runStatus,
                 stepId, stepKey, stepStatus, checkpointSequence, interruptionId, LocalDateTime.now());
+    }
+
+    public static AgentRunEvent updated(
+            Long chapterId,
+            Long runId,
+            String workflowType,
+            Long aiTaskId,
+            String runStatus,
+            Long stepId,
+            String stepKey,
+            String stepStatus,
+            Long checkpointSequence,
+            Long interruptionId,
+            PublicFailure failure) {
+        return new AgentRunEvent(
+                "agent_run.updated", chapterId, runId, workflowType, aiTaskId, runStatus,
+                stepId, stepKey, stepStatus, checkpointSequence, interruptionId, LocalDateTime.now(), failure);
     }
 }

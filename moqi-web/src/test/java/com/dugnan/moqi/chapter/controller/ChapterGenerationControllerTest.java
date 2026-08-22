@@ -267,12 +267,12 @@ class ChapterGenerationControllerTest {
     }
 
     /**
-     * 验证正文版本冲突映射为 409 并返回服务端状态。
+     * 验证正文版本冲突映射为 409，仅返回兼容版本事实而不泄漏服务端正文。
      *
      * @throws Exception MockMvc 请求执行失败
      */
     @Test
-    void mapsContentVersionConflictTo409WithServerState() throws Exception {
+    void mapsContentVersionConflictTo409WithSafeVersionFacts() throws Exception {
         LocalDateTime savedAt = LocalDateTime.of(2026, 7, 18, 20, 30);
         when(chapterGenerationService.saveContent(Mockito.eq(12L), Mockito.any()))
                 .thenThrow(new BusinessException(
@@ -288,8 +288,9 @@ class ChapterGenerationControllerTest {
                         .content("{\"content\":\"新正文\",\"baseVersion\":3,\"saveSource\":\"auto_save\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("CHAPTER_VERSION_CONFLICT"))
-                .andExpect(jsonPath("$.data.serverContent").value("服务端正文"))
                 .andExpect(jsonPath("$.data.version").value(4))
-                .andExpect(jsonPath("$.data.serverSavedAt").exists());
+                .andExpect(jsonPath("$.data.serverContent").doesNotExist())
+                .andExpect(jsonPath("$.data.serverSavedAt").doesNotExist())
+                .andExpect(jsonPath("$.failure.diagnosticRef").isNotEmpty());
     }
 }

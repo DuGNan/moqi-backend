@@ -33,4 +33,5 @@ public class AgentRunEntity extends BaseEntity {
     private LocalDateTime timeoutAt;
     private String errorCode;
     private String errorMessage;
+    private String diagnosticRef;
 }

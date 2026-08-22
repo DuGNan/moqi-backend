@@ -161,7 +161,7 @@ class ChapterConsensusTaskRunnerTest {
 
         runner(objectMapper).run(31L);
 
-        assertFailedWith("CHAPTER_CONSENSUS_JSON_INVALID", "模型共识 JSON 不符合字段契约");
+        assertFailedWith("CHAPTER_CONSENSUS_JSON_INVALID", "任务未能完成，请稍后重试");
     }
 
     /**
@@ -176,7 +176,7 @@ class ChapterConsensusTaskRunnerTest {
 
         runner(objectMapper).run(31L);
 
-        assertFailedWith("INVALID_RESPONSE", "DeepSeek 响应格式异常");
+        assertFailedWith("INVALID_RESPONSE", "任务未能完成，请稍后重试");
     }
 
     private void stubRunnableTask() {
@@ -223,6 +223,24 @@ class ChapterConsensusTaskRunnerTest {
                 objectMapper,
                 new ChapterConsensusResponseParser(objectMapper),
                 eventPublisher);
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void retryQueueRejectionKeepsExistingDiagnosticReference() {
+        AiTaskEntity task = task();
+        task.setVersion(4);
+        task.setDiagnosticRef("diag_existing_consensus_ref");
+        when(taskMapper.selectById(31L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+
+        runner(new ObjectMapper()).reject(31L);
+
+        ArgumentCaptor<UpdateWrapper<AiTaskEntity>> updateCaptor =
+                ArgumentCaptor.forClass((Class) UpdateWrapper.class);
+        verify(taskMapper).update(any(), updateCaptor.capture());
+        assertThat(updateCaptor.getValue().getParamNameValuePairs().values())
+                .contains("diag_existing_consensus_ref");
     }
 
     private AiTaskEntity task() {

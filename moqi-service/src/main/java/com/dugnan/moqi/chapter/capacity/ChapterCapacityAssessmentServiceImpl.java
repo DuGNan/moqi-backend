@@ -35,6 +35,8 @@ import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.chapter.workflow.ChapterGenerationLengthPolicy;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailure;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.planning.PlanningModels.ChapterPlanView;
 import com.dugnan.moqi.planning.PublishedScenePlanQueryPort;
@@ -389,9 +391,22 @@ public class ChapterCapacityAssessmentServiceImpl implements ChapterCapacityAsse
                 entity.getChapterPlanVersionId(), entity.getScenePlanNo(), entity.getTargetWordCount(),
                 entity.getAssessmentStatus(), result(entity), entity.getBriefTemplateVersion(),
                 entity.getBriefFingerprint(), entity.getInputFingerprint(), entity.getAiTaskId(),
-                entity.getAgentRunId(), entity.getModelCallId(), entity.getErrorCode(), entity.getErrorMessage(),
+                entity.getAgentRunId(), entity.getModelCallId(), entity.getErrorCode(),
+                safeErrorMessage(entity.getErrorCode(), entity.getErrorMessage()),
                 metadata.currentAttempt(), metadata.retryable(), entity.getVersion(), entity.getGmtCreate(),
-                entity.getGmtModified());
+                entity.getGmtModified(), publicFailure(entity.getAiTaskId(), entity.getErrorCode()));
+    }
+
+    private PublicFailure publicFailure(Long taskId, String errorCode) {
+        if (!StringUtils.hasText(errorCode)) {
+            return null;
+        }
+        AiTaskEntity task = taskId == null ? null : taskMapper.selectById(taskId);
+        return PublicFailureFactory.from(errorCode, task == null ? null : task.getDiagnosticRef());
+    }
+
+    private String safeErrorMessage(String errorCode, String errorMessage) {
+        return StringUtils.hasText(errorCode) ? PublicFailureFactory.safeMessage(errorCode, errorMessage) : null;
     }
 
     private CapacityResult result(ChapterCapacityAssessmentEntity entity) {

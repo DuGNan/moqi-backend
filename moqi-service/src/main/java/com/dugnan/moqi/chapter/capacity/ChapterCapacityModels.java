@@ -3,6 +3,8 @@ package com.dugnan.moqi.chapter.capacity;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import com.dugnan.moqi.common.api.PublicFailure;
+
 /**
  * @author dgn
  * @date 2026-08-15
@@ -82,7 +84,20 @@ public final class ChapterCapacityModels {
             Boolean retryable,
             Integer version,
             LocalDateTime gmtCreate,
-            LocalDateTime gmtModified) {
+            LocalDateTime gmtModified,
+            PublicFailure failure) {
+
+        /** 兼容公共失败字段发布前的完整构造调用。 */
+        public CapacityAssessmentView(
+                Long id, Long workId, Long chapterId, Long chapterPlanVersionId, Integer scenePlanNo,
+                Integer targetWordCount, String status, CapacityResult result, String briefTemplateVersion,
+                String briefFingerprint, String inputFingerprint, Long aiTaskId, Long agentRunId,
+                Long modelCallId, String errorCode, String errorMessage, Integer currentAttempt,
+                Boolean retryable, Integer version, LocalDateTime gmtCreate, LocalDateTime gmtModified) {
+            this(id, workId, chapterId, chapterPlanVersionId, scenePlanNo, targetWordCount, status, result,
+                    briefTemplateVersion, briefFingerprint, inputFingerprint, aiTaskId, agentRunId, modelCallId,
+                    errorCode, errorMessage, currentAttempt, retryable, version, gmtCreate, gmtModified, null);
+        }
 
         /** 兼容恢复元数据发布前的内部构造调用。 */
         public CapacityAssessmentView(
@@ -107,7 +122,7 @@ public final class ChapterCapacityModels {
                 LocalDateTime gmtModified) {
             this(id, workId, chapterId, chapterPlanVersionId, scenePlanNo, targetWordCount, status, result,
                     briefTemplateVersion, briefFingerprint, inputFingerprint, aiTaskId, agentRunId, modelCallId,
-                    errorCode, errorMessage, null, false, version, gmtCreate, gmtModified);
+                    errorCode, errorMessage, null, false, version, gmtCreate, gmtModified, null);
         }
     }
 }

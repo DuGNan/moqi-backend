@@ -1,5 +1,8 @@
 package com.dugnan.moqi.chapter.stream;
 
+import com.dugnan.moqi.common.api.PublicFailure;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
+
 /**
  * @author dgn
  * @date 2026-07-22
@@ -12,7 +15,19 @@ public record ChapterReplyEvent(
         Long messageId,
         String text,
         String errorCode,
-        String errorMessage) {
+        String errorMessage,
+        PublicFailure failure) {
+
+    public ChapterReplyEvent(
+            String type,
+            Long chapterId,
+            Long taskId,
+            Long messageId,
+            String text,
+            String errorCode,
+            String errorMessage) {
+        this(type, chapterId, taskId, messageId, text, errorCode, errorMessage, null);
+    }
 
     /**
      * 创建回复开始事件。
@@ -70,7 +85,17 @@ public record ChapterReplyEvent(
      * @return 回复失败事件
      */
     public static ChapterReplyEvent failed(Long chapterId, Long taskId, String errorCode, String errorMessage) {
-        return new ChapterReplyEvent("reply.failed", chapterId, taskId, null, null, errorCode, errorMessage);
+        return failed(chapterId, taskId, errorCode, errorMessage, null);
+    }
+
+    public static ChapterReplyEvent failed(
+            Long chapterId,
+            Long taskId,
+            String errorCode,
+            String errorMessage,
+            String diagnosticRef) {
+        return new ChapterReplyEvent("reply.failed", chapterId, taskId, null, null, errorCode, errorMessage,
+                PublicFailureFactory.from(errorCode, diagnosticRef));
     }
 
     /**

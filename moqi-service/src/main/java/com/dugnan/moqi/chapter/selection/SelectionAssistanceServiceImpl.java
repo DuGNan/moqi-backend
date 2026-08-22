@@ -35,6 +35,8 @@ import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.TextDiff;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.View;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailure;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
@@ -450,8 +452,21 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 entity.getResultContent(), diff, entity.getFactRiskStatus(), reasons == null ? List.of() : reasons,
                 canAccept, STATUS_REVIEW_REQUIRED.equals(entity.getFactRiskStatus())
                         ? "如需改变故事事实，请提交为规划变更并重新生成候选" : null,
-                entity.getErrorCode(), entity.getErrorMessage(), entity.getAcceptedChapterVersion(),
-                entity.getVersion(), entity.getGmtCreate(), entity.getGmtModified());
+                entity.getErrorCode(), safeErrorMessage(entity.getErrorCode(), entity.getErrorMessage()),
+                entity.getAcceptedChapterVersion(), entity.getVersion(), entity.getGmtCreate(), entity.getGmtModified(),
+                publicFailure(entity.getAiTaskId(), entity.getErrorCode()));
+    }
+
+    private PublicFailure publicFailure(Long taskId, String errorCode) {
+        if (!StringUtils.hasText(errorCode)) {
+            return null;
+        }
+        AiTaskEntity task = taskId == null ? null : taskMapper.selectById(taskId);
+        return PublicFailureFactory.from(errorCode, task == null ? null : task.getDiagnosticRef());
+    }
+
+    private String safeErrorMessage(String errorCode, String errorMessage) {
+        return StringUtils.hasText(errorCode) ? PublicFailureFactory.safeMessage(errorCode, errorMessage) : null;
     }
 
     private String sourceText(ChapterSelectionAssistanceEntity entity) {
@@ -466,8 +481,15 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     }
 
     private void updateTaskStatus(Long taskId, String status, String errorCode, String errorMessage) {
+        AiTaskEntity task = taskMapper.selectById(taskId);
+        boolean failed = "failed".equals(status);
+        String diagnosticRef = task != null && StringUtils.hasText(task.getDiagnosticRef())
+                ? task.getDiagnosticRef()
+                : failed ? PublicFailureFactory.newDiagnosticRef() : null;
         taskMapper.update(null, new UpdateWrapper<AiTaskEntity>().eq("id", taskId)
-                .set("task_status", status).set("error_code", errorCode).set("error_message", errorMessage)
+                .set("task_status", status).set("error_code", errorCode)
+                .set("error_message", PublicFailureFactory.safeMessage(errorCode, errorMessage))
+                .set(failed, "diagnostic_ref", diagnosticRef)
                 .setSql("version = version + 1"));
     }
 

@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.EvaluationFinding;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.CreateEvaluationRequest;
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.RetryEvaluationRequest;
+import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEvaluationReportEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
@@ -209,7 +210,12 @@ class GenerationEvaluationServiceImplTest {
     void exposesPersistedSemanticAttemptAndSafeRetryFlag() {
         Fixture fixture = new Fixture();
         ChapterGenerationEvaluationReportEntity report = fixture.retryableReport();
+        report.setErrorCode("SERVICE_UNAVAILABLE");
+        report.setErrorMessage("evaluationPrompt invalid");
+        AiTaskEntity task = new AiTaskEntity();
+        task.setDiagnosticRef("diag_evaluation_ref");
         when(fixture.reportMapper.selectById(9L)).thenReturn(report);
+        when(fixture.taskMapper.selectById(8L)).thenReturn(task);
         when(fixture.retryMetadataResolver.resolveOwned(7L, "semantic_evaluate",
                 GenerationEvaluationServiceImpl.WORKFLOW_TYPE, 1L, 12L, 8L))
                 .thenReturn(new RetryMetadata("semantic_evaluate", 2, true));
@@ -219,6 +225,8 @@ class GenerationEvaluationServiceImplTest {
         assertThat(view.currentAttempt()).isEqualTo(2);
         assertThat(view.retryable()).isTrue();
         assertThat(view.revisionAttempt()).isZero();
+        assertThat(view.failure().diagnosticRef()).isEqualTo("diag_evaluation_ref");
+        assertThat(view.errorMessage()).isEqualTo("依赖服务暂时不可用");
     }
 
     @Test
@@ -235,6 +243,7 @@ class GenerationEvaluationServiceImplTest {
 
         assertThat(view.currentAttempt()).isNull();
         assertThat(view.retryable()).isFalse();
+        assertThat(view.failure()).isNull();
     }
 
     @Test

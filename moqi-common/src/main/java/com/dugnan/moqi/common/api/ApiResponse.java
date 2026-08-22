@@ -14,7 +14,13 @@ public record ApiResponse<T>(
         String message,
         @JsonInclude(JsonInclude.Include.ALWAYS)
         T data,
-        OffsetDateTime timestamp) {
+        OffsetDateTime timestamp,
+        @JsonInclude(JsonInclude.Include.ALWAYS)
+        PublicFailure failure) {
+
+    public ApiResponse(String code, String message, T data, OffsetDateTime timestamp) {
+        this(code, message, data, timestamp, null);
+    }
 
     /**
      * 创建成功响应。
@@ -24,7 +30,7 @@ public record ApiResponse<T>(
      * @return 成功响应
      */
     public static <T> ApiResponse<T> success(T data) {
-        return new ApiResponse<>(ErrorCode.SUCCESS.name(), "ok", data, OffsetDateTime.now());
+        return new ApiResponse<>(ErrorCode.SUCCESS.name(), "ok", data, OffsetDateTime.now(), null);
     }
 
     /**
@@ -37,6 +43,16 @@ public record ApiResponse<T>(
      * @return 失败响应
      */
     public static <T> ApiResponse<T> failure(ErrorCode errorCode, String message, T data) {
-        return new ApiResponse<>(errorCode.name(), message, data, OffsetDateTime.now());
+        return new ApiResponse<>(errorCode.name(), message, data, OffsetDateTime.now(),
+                PublicFailureFactory.from(errorCode, null));
+    }
+
+    public static <T> ApiResponse<T> failure(
+            ErrorCode errorCode,
+            String message,
+            T data,
+            String diagnosticRef) {
+        return new ApiResponse<>(errorCode.name(), message, data, OffsetDateTime.now(),
+                PublicFailureFactory.from(errorCode, diagnosticRef));
     }
 }
