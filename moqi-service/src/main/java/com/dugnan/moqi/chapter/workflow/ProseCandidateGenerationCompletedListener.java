@@ -31,7 +31,7 @@ public class ProseCandidateGenerationCompletedListener {
         this.evaluationService = evaluationService;
     }
 
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void handle(ChapterGenerationCompletedEvent event) {
         try {
             materializationService.materializeByGenerationId(event.generationId());
