@@ -15,6 +15,7 @@ import com.dugnan.moqi.chapter.entity.BoundedChapterRevisionEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterProseCandidateEntity;
 import com.dugnan.moqi.chapter.mapper.BoundedChapterRevisionMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 
@@ -32,17 +33,37 @@ public class ProseCandidateMaterializationServiceImpl implements ProseCandidateM
 
     private final ChapterProseCandidateMapper candidateMapper;
     private final BoundedChapterRevisionMapper boundedRevisionMapper;
+    private final ChapterGenerationMapper generationMapper;
 
     public ProseCandidateMaterializationServiceImpl(
             ChapterProseCandidateMapper candidateMapper,
-            BoundedChapterRevisionMapper boundedRevisionMapper) {
+            BoundedChapterRevisionMapper boundedRevisionMapper,
+            ChapterGenerationMapper generationMapper) {
         this.candidateMapper = candidateMapper;
         this.boundedRevisionMapper = boundedRevisionMapper;
+        this.generationMapper = generationMapper;
     }
 
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = RuntimeException.class)
     public void materialize(ChapterGenerationEntity generation) {
+        doMaterialize(generation);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = RuntimeException.class)
+    public void materializeByGenerationId(Long generationId) {
+        if (generationId == null) {
+            return;
+        }
+        ChapterGenerationEntity generation = generationMapper.selectById(generationId);
+        if (generation == null || Integer.valueOf(1).equals(generation.getDeleted())) {
+            throw new IllegalStateException("已提交生成记录不存在，generationId=" + generationId);
+        }
+        doMaterialize(generation);
+    }
+
+    private void doMaterialize(ChapterGenerationEntity generation) {
         if (generation == null || generation.getId() == null || generation.getGeneratedContent() == null) {
             return;
         }

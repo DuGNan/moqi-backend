@@ -17,6 +17,13 @@ public interface ProseCandidateMaterializationService {
     void materialize(ChapterGenerationEntity generation);
 
     /**
+     * 在生成事务提交后按稳定 ID 重新加载并物化正文候选。
+     *
+     * @param generationId 已提交生成记录 ID
+     */
+    void materializeByGenerationId(Long generationId);
+
+    /**
      * 同步章节旧 generation 的采纳和替代状态。
      *
      * @param chapterId 章节 ID

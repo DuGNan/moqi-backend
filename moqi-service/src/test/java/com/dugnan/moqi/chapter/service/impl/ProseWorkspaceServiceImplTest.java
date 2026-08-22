@@ -18,6 +18,11 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.SaveProseCandidateRequest;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
@@ -58,6 +63,14 @@ class ProseWorkspaceServiceImplTest {
         assertThat(workspace.candidates()).hasSize(1);
         assertThat(workspace.candidates().get(0).quality().status()).isEqualTo("failed");
         assertThat(workspace.formal().objectId()).isEqualTo("formal:12");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<ChapterGenerationEvaluationReportEntity>> reportQuery =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(fixture.reportMapper).selectList(reportQuery.capture());
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), "test"),
+                ChapterGenerationEvaluationReportEntity.class);
+        assertThat(reportQuery.getValue().getSqlSegment()).contains("generation_scene_id IS NULL");
         verifyNoInteractions(fixture.evaluationService);
     }
 

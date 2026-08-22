@@ -13,6 +13,7 @@ import org.mockito.ArgumentCaptor;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterProseCandidateEntity;
 import com.dugnan.moqi.chapter.mapper.BoundedChapterRevisionMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 
 /**
@@ -26,8 +27,9 @@ class ProseCandidateMaterializationServiceImplTest {
     void materializesGenerationOnceAndSetsSelfAsRoot() {
         ChapterProseCandidateMapper candidateMapper = mock(ChapterProseCandidateMapper.class);
         BoundedChapterRevisionMapper boundedMapper = mock(BoundedChapterRevisionMapper.class);
+        ChapterGenerationMapper generationMapper = mock(ChapterGenerationMapper.class);
         ProseCandidateMaterializationServiceImpl service =
-                new ProseCandidateMaterializationServiceImpl(candidateMapper, boundedMapper);
+                new ProseCandidateMaterializationServiceImpl(candidateMapper, boundedMapper, generationMapper);
         ChapterGenerationEntity generation = generation();
         when(candidateMapper.insert(any(ChapterProseCandidateEntity.class))).thenAnswer(invocation -> {
             invocation.getArgument(0, ChapterProseCandidateEntity.class).setId(8L);
@@ -49,8 +51,9 @@ class ProseCandidateMaterializationServiceImplTest {
     void repeatedMaterializationKeepsExistingStableCandidate() {
         ChapterProseCandidateMapper candidateMapper = mock(ChapterProseCandidateMapper.class);
         BoundedChapterRevisionMapper boundedMapper = mock(BoundedChapterRevisionMapper.class);
+        ChapterGenerationMapper generationMapper = mock(ChapterGenerationMapper.class);
         ProseCandidateMaterializationServiceImpl service =
-                new ProseCandidateMaterializationServiceImpl(candidateMapper, boundedMapper);
+                new ProseCandidateMaterializationServiceImpl(candidateMapper, boundedMapper, generationMapper);
         ChapterProseCandidateEntity existing = new ChapterProseCandidateEntity();
         existing.setId(8L);
         when(candidateMapper.selectOne(any())).thenReturn(existing);
@@ -59,6 +62,21 @@ class ProseCandidateMaterializationServiceImplTest {
 
         verify(candidateMapper, never()).insert(any(ChapterProseCandidateEntity.class));
         verify(candidateMapper).synchronizeGenerationStatuses(12L);
+    }
+
+    @Test
+    void reloadsCommittedGenerationBeforeMaterialization() {
+        ChapterProseCandidateMapper candidateMapper = mock(ChapterProseCandidateMapper.class);
+        BoundedChapterRevisionMapper boundedMapper = mock(BoundedChapterRevisionMapper.class);
+        ChapterGenerationMapper generationMapper = mock(ChapterGenerationMapper.class);
+        ProseCandidateMaterializationServiceImpl service =
+                new ProseCandidateMaterializationServiceImpl(candidateMapper, boundedMapper, generationMapper);
+        when(generationMapper.selectById(3L)).thenReturn(generation());
+
+        service.materializeByGenerationId(3L);
+
+        verify(generationMapper).selectById(3L);
+        verify(candidateMapper).insert(any(ChapterProseCandidateEntity.class));
     }
 
     private static ChapterGenerationEntity generation() {

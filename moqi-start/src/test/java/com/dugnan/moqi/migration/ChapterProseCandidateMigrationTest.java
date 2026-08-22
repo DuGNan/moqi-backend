@@ -31,4 +31,15 @@ class ChapterProseCandidateMigrationTest {
                 .contains("JOIN candidate_tree parent ON parent.id = child.parent_candidate_id")
                 .contains("SET candidate.root_candidate_id = tree.root_candidate_id");
     }
+
+    @Test
+    void repairsSceneOnlyReportsThatWereMisclassifiedAsWholeChapterQuality() throws Exception {
+        String sql = new ClassPathResource("db/migration/V45__repair_prose_candidate_quality_scope.sql")
+                .getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(sql)
+                .contains("generation_scene_id IS NULL")
+                .contains("quality_request_status = 'requested'")
+                .contains("quality_request_status = 'unavailable'");
+    }
 }

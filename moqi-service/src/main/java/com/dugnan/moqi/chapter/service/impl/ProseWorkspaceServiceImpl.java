@@ -343,6 +343,7 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         List<ChapterGenerationEvaluationReportEntity> reports = reportMapper.selectList(
                 new LambdaQueryWrapper<ChapterGenerationEvaluationReportEntity>()
                         .eq(ChapterGenerationEvaluationReportEntity::getGenerationId, candidate.getQualityGenerationId())
+                        .isNull(ChapterGenerationEvaluationReportEntity::getGenerationSceneId)
                         .eq(ChapterGenerationEvaluationReportEntity::getDeleted, 0)
                         .orderByDesc(ChapterGenerationEvaluationReportEntity::getId)
                         .last("LIMIT 1"));

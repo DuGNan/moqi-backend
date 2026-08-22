@@ -35,6 +35,7 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
+import com.dugnan.moqi.chapter.event.ChapterGenerationCompletedEvent;
 import com.dugnan.moqi.chapter.generator.ChapterContentGenerator;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
@@ -186,6 +187,7 @@ class ChapterGenerationServiceImplTest {
         verify(aiTaskMapper).updateById(org.mockito.ArgumentMatchers.<AiTaskEntity>argThat(task ->
                 "succeeded".equals(task.getTaskStatus())
                         && Long.valueOf(7001L).equals(task.getResultGenerationId())));
+        verify(eventPublisher).publishEvent(new ChapterGenerationCompletedEvent(12L, 7001L));
         verify(briefMapper).findLatestByChapterIdAndStatus(12L, "confirmed");
     }
 
