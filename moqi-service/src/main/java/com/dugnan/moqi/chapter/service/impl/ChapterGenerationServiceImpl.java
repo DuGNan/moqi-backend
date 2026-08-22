@@ -30,6 +30,7 @@ import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.event.ChapterGenerationAcceptedEvent;
+import com.dugnan.moqi.chapter.event.ChapterGenerationCompletedEvent;
 import com.dugnan.moqi.chapter.generator.ChapterContentGenerator;
 import com.dugnan.moqi.chapter.generator.ChapterContentGenerator.GenerationInput;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
@@ -485,6 +486,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
         task.setResultGenerationId(generation.getId());
         task.setTaskStatus(TASK_STATUS_SUCCEEDED);
         aiTaskMapper.updateById(task);
+        eventPublisher.publishEvent(
+                new ChapterGenerationCompletedEvent(generation.getChapterId(), generation.getId()));
     }
 
     private GenerationOptions options(
