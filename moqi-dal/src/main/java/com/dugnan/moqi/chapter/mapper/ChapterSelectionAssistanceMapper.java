@@ -93,4 +93,25 @@ public interface ChapterSelectionAssistanceMapper extends BaseMapper<ChapterSele
             @Param("targetHash") String targetHash,
             @Param("resultVersion") Integer resultVersion,
             @Param("resultHash") String resultHash);
+
+    /**
+     * 锁定阻塞候选采纳的全部待确认正文提案。
+     *
+     * @param chapterId 章节 ID
+     * @param candidateId 候选 ID
+     * @return 已锁定的待确认正文提案
+     */
+    @Select("""
+            SELECT * FROM chapter_selection_assistance
+            WHERE chapter_id = #{chapterId}
+              AND (target_candidate_id = #{candidateId} OR created_candidate_id = #{candidateId})
+              AND request_status IN ('ready', 'review_required')
+              AND proposal_status = 'ready'
+              AND deleted = 0
+            ORDER BY id
+            FOR UPDATE
+            """)
+    List<ChapterSelectionAssistanceEntity> selectPendingForAdoption(
+            @Param("chapterId") Long chapterId,
+            @Param("candidateId") Long candidateId);
 }

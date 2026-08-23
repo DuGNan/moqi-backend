@@ -37,6 +37,9 @@ import com.dugnan.moqi.chapter.selection.ProsePlanningChangeService;
 import com.dugnan.moqi.chapter.selection.ProseProposalSettlementService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
+import com.dugnan.moqi.chapter.service.ProseCandidateAdoptionService;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.AdoptionReadiness;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.sourcechain.mapper.ChapterAssetSourceSnapshotMapper;
@@ -250,6 +253,63 @@ class ProseWorkspaceServiceImplTest {
                 eq(12L), eq(fixture.candidate), eq(List.of(9L)), eq(5), anyString());
     }
 
+    @Test
+    void projectsOnlyFrozenAuthorVisibleBasisAndMarksEditedCandidate() {
+        Fixture fixture = new Fixture();
+        fixture.sourceGeneration.setGeneratedContent("创建时正文");
+        fixture.sourceGeneration.setBasisSnapshotJson("""
+                {"temperature":0.8,"executionConfig":{"secret":"hidden"},
+                 "chapterGenerationBrief":{"workId":1,"content":"完整 Prompt", "fingerprint":"internal",
+                   "chapterPurpose":"推进调查","chapterGoal":"找到线索","coreConflict":"是否信任证人",
+                   "openingConditions":["雨夜"],"requiredEndingState":["拿到钥匙"],
+                   "eventCausality":["追踪导致暴露"],"stateChanges":["主角开始怀疑"],
+                   "characterConstraints":["林风保持克制"],
+                   "entityExplanations":[{"sourceId":99,"type":"地点","name":"旧站","explanation":"封闭车站"}],
+                   "creativeFreedom":["允许调整节奏"],"prohibitedInventions":["不得新增超能力"]},
+                 "currentProseBasis":{"content":"前文","contentHash":"previous-hash"}}
+                """);
+        when(fixture.candidateMapper.selectOne(any())).thenReturn(fixture.candidate);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(fixture.sourceGeneration);
+
+        var basis = fixture.service.getCandidateBasis(12L, 8L);
+
+        assertThat(basis.basisStatus()).isEqualTo("complete");
+        assertThat(basis.editedAfterCreation()).isTrue();
+        assertThat(basis.outline().toString()).contains("推进调查").doesNotContain("workId", "Prompt");
+        assertThat(basis.worldSettings().toString()).contains("旧站").doesNotContain("sourceId");
+        assertThat(basis.previousProse().toString()).contains("前文", "previous-hash");
+        assertThat(basis.toString()).doesNotContain("temperature", "executionConfig", "fingerprint");
+    }
+
+    @Test
+    void legacyBasisDoesNotReadCurrentMaterialsToFillMissingFields() {
+        Fixture fixture = new Fixture();
+        fixture.sourceGeneration.setGeneratedContent("旧候选");
+        fixture.sourceGeneration.setBasisSnapshotJson("{\"outlineContent\":\"旧格式章纲\"}");
+        fixture.candidate.setContentHash(contentHash("旧候选"));
+        when(fixture.candidateMapper.selectOne(any())).thenReturn(fixture.candidate);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(fixture.sourceGeneration);
+
+        var basis = fixture.service.getCandidateBasis(12L, 8L);
+
+        assertThat(basis.basisStatus()).isEqualTo("legacy_limited");
+        assertThat(basis.editedAfterCreation()).isFalse();
+        assertThat(basis.outline().isEmpty()).isTrue();
+    }
+
+    @Test
+    void comparesFormalAndStableRootCandidateWithModifiedTime() {
+        Fixture fixture = new Fixture();
+        when(fixture.candidateMapper.selectOne(any())).thenReturn(fixture.candidate);
+
+        var comparison = fixture.service.compare(12L, "formal:12", "candidate:8");
+
+        assertThat(comparison.left().objectKind()).isEqualTo("formal");
+        assertThat(comparison.right().rootCandidateId()).isEqualTo(8L);
+        assertThat(comparison.right().sourceGenerationId()).isEqualTo(3L);
+        assertThat(comparison.right().modifiedAt()).isEqualTo(fixture.candidate.getGmtModified());
+    }
+
     private static String contentHash(String value) {
         try {
             return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
@@ -275,6 +335,7 @@ class ProseWorkspaceServiceImplTest {
         private final ProsePlanningChangeService planningChangeService = mock(ProsePlanningChangeService.class);
         private final ProseProposalSettlementService proposalSettlementService =
                 mock(ProseProposalSettlementService.class);
+        private final ProseCandidateAdoptionService adoptionService = mock(ProseCandidateAdoptionService.class);
         private final ChapterEntity chapter = chapter();
         private final ChapterProseCandidateEntity candidate = candidate();
         private final ChapterGenerationEntity sourceGeneration = generation();
@@ -285,6 +346,11 @@ class ProseWorkspaceServiceImplTest {
         private Fixture() {
             service.setPlanningChangeService(planningChangeService);
             service.setProposalSettlementService(proposalSettlementService);
+            service.setAdoptionService(adoptionService);
+            service.setObjectMapper(new ObjectMapper());
+            when(adoptionService.readiness(any())).thenReturn(
+                    new AdoptionReadiness(false, "direct_formal", null, List.of("quality_report_missing"),
+                            List.of("resolve_quality_gate")));
             when(chapterMapper.selectById(12L)).thenReturn(chapter);
         }
 

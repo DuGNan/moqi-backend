@@ -1,6 +1,10 @@
 package com.dugnan.moqi.chapter.service;
 
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateDetail;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateAdoptionView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateBasisView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseComparisonView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.AdoptProseCandidateRequest;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseWorkspaceView;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.SaveProseCandidateRequest;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.SaveWorkspaceSelectionRequest;
@@ -48,4 +52,36 @@ public interface ProseWorkspaceService {
      * @return 保存后的候选详情
      */
     ProseCandidateDetail saveCandidate(Long chapterId, Long candidateId, SaveProseCandidateRequest request);
+
+    /**
+     * 读取候选创建时冻结依据的作者可见白名单投影。
+     *
+     * @param chapterId 章节 ID
+     * @param candidateId 候选 ID
+     * @return 创建时冻结依据的作者可见投影
+     */
+    ProseCandidateBasisView getCandidateBasis(Long chapterId, Long candidateId);
+
+    /**
+     * 读取正式正文、根候选或任意候选的稳定比较输入。
+     *
+     * @param chapterId 章节 ID
+     * @param leftObjectId 左侧稳定对象 ID
+     * @param rightObjectId 右侧稳定对象 ID
+     * @return 稳定正文比较输入
+     */
+    ProseComparisonView compare(Long chapterId, String leftObjectId, String rightObjectId);
+
+    /**
+     * 委托唯一采纳服务执行候选采纳门禁。
+     *
+     * @param chapterId 章节 ID
+     * @param candidateId 候选 ID
+     * @param request 显式采纳请求
+     * @return 采纳结果
+     */
+    ProseCandidateAdoptionView adoptCandidate(
+            Long chapterId,
+            Long candidateId,
+            AdoptProseCandidateRequest request);
 }

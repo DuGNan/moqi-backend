@@ -5,6 +5,8 @@ import java.util.List;
 import com.dugnan.moqi.release.StoryReleaseModels.AbandonRevisionRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.AbandonWorkspaceRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.BindEvaluationRequest;
+import com.dugnan.moqi.release.StoryReleaseModels.CandidateAdoptionDraft;
+import com.dugnan.moqi.release.StoryReleaseModels.CandidateAdoptionDraftRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.CreateRevisionRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.CreateWorkspaceRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.PrepareWorkspaceRequest;
@@ -32,6 +34,19 @@ public interface StoryReleaseService {
      * @return 正文 revision
      */
     RevisionView createRevision(Long workId, Long chapterId, CreateRevisionRequest request);
+
+    /**
+     * 为已发布章节原子创建或复用候选采纳的 revision 和活动工作区。
+     *
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID
+     * @param request 候选采纳的 revision/workspace 冻结请求
+     * @return 创建或复用的 revision 与活动工作区
+     */
+    CandidateAdoptionDraft ensureCandidateAdoptionDraft(
+            Long workId,
+            Long chapterId,
+            CandidateAdoptionDraftRequest request);
 
     /**
      * 查询单个正文 revision。

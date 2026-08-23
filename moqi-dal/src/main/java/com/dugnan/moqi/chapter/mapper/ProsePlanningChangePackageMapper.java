@@ -5,6 +5,8 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import java.util.List;
+
 import com.dugnan.moqi.chapter.entity.ProsePlanningChangePackageEntity;
 
 /**
@@ -59,4 +61,22 @@ public interface ProsePlanningChangePackageMapper extends BaseMapper<ProsePlanni
             @Param("candidateHash") String candidateHash,
             @Param("resultScenePlanId") Long resultScenePlanId,
             @Param("baseVersion") Integer baseVersion);
+
+    /**
+     * 锁定阻塞候选采纳的全部候选态规划包。
+     *
+     * @param chapterId 章节 ID
+     * @param candidateId 候选 ID
+     * @return 已锁定的候选态规划包
+     */
+    @Select("""
+            SELECT * FROM prose_planning_change_packages
+            WHERE chapter_id = #{chapterId} AND target_candidate_id = #{candidateId}
+              AND package_status = 'candidate' AND deleted = 0
+            ORDER BY id
+            FOR UPDATE
+            """)
+    List<ProsePlanningChangePackageEntity> selectPendingForAdoption(
+            @Param("chapterId") Long chapterId,
+            @Param("candidateId") Long candidateId);
 }

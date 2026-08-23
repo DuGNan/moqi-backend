@@ -29,7 +29,6 @@ import com.dugnan.moqi.chapter.dto.ChapterGenerationModels.SaveContentRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
-import com.dugnan.moqi.chapter.event.ChapterGenerationAcceptedEvent;
 import com.dugnan.moqi.chapter.event.ChapterGenerationCompletedEvent;
 import com.dugnan.moqi.chapter.generator.ChapterContentGenerator;
 import com.dugnan.moqi.chapter.generator.ChapterContentGenerator.GenerationInput;
@@ -62,13 +61,11 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     private static final String STATUS_DRAFT = "draft";
     private static final String STATUS_CONFIRMED = "confirmed";
     private static final String STATUS_PREVIEW = "preview";
-    private static final String STATUS_ACCEPTED = "accepted";
     private static final String STATUS_REJECTED = "rejected";
     private static final String TASK_TYPE = "chapter_generation";
     private static final String TASK_STATUS_QUEUED = "queued";
     private static final String TASK_STATUS_SUCCEEDED = "succeeded";
     private static final String CUSTOM_LENGTH_PRESET = "custom";
-    private static final String REPLACE_APPLY_MODE = "replace";
     private static final int MINIMUM_CUSTOM_WORD_COUNT = 1;
     private static final int MAXIMUM_CUSTOM_WORD_COUNT = 100000;
     private static final char JSON_CONTROL_CHARACTER_LIMIT = 0x20;
@@ -81,7 +78,6 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     private static final char JSON_TAB = '\t';
     private static final Set<String> GENERATION_MODES = Set.of("full_draft", "segmented_draft");
     private static final Set<String> LENGTH_PRESETS = Set.of("about_3000", "custom");
-    private static final Set<String> APPLY_MODES = Set.of("replace", "append");
     private static final Set<String> SAVE_SOURCES =
             Set.of("manual", "auto_save", "generation_accept", "patch_apply");
 
@@ -239,37 +235,8 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public GenerationAccepted acceptGeneration(Long generationId, AcceptGenerationRequest request) {
-        ChapterGenerationEntity generation = requireGeneration(generationId);
-        if (STATUS_ACCEPTED.equals(generation.getGenerationStatus())) {
-            eventPublisher.publishEvent(
-                    new ChapterGenerationAcceptedEvent(generation.getChapterId(), generation.getId()));
-            return accepted(generation, requireChapter(generation.getChapterId()));
-        }
-        requirePreview(generation);
-        requirePassedEvaluation(generation);
-        ChapterEntity chapter = requireChapter(generation.getChapterId());
-        String applyMode = requiredAllowed(
-                request == null ? null : request.applyMode(),
-                APPLY_MODES,
-                "applyMode");
-        Integer baseVersion = request == null ? null : request.baseVersion();
-        if (baseVersion == null) {
-            throw badRequest("baseVersion 不能为空");
-        }
-        String content = applyContent(chapter.getContent(), generation.getGeneratedContent(), applyMode);
-        if (generationMapper.updateStatusIfCurrent(generationId, STATUS_PREVIEW, STATUS_ACCEPTED) != 1) {
-            throw statusConflict();
-        }
-        if (chapterMapper.updateContentIfVersion(chapter.getId(), content, baseVersion) != 1) {
-            throw versionConflict(requireChapter(chapter.getId()));
-        }
-        generationMapper.supersedeOlderPreviews(chapter.getId(), generationId);
-        if (materializationService != null) {
-            materializationService.synchronizeChapterStatuses(chapter.getId());
-        }
-        generation.setGenerationStatus(STATUS_ACCEPTED);
-        eventPublisher.publishEvent(new ChapterGenerationAcceptedEvent(chapter.getId(), generation.getId()));
-        return accepted(generation, requireChapter(chapter.getId()));
+        throw new BusinessException(ErrorCode.PROSE_ADOPTION_CONFLICT,
+                "生成稿不能直接覆盖正式正文，请从统一正文工作区采纳对应候选");
     }
 
     @Override
@@ -605,19 +572,6 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
                 generation.getGmtModified());
     }
 
-    private GenerationAccepted accepted(
-            ChapterGenerationEntity generation,
-            ChapterEntity chapter) {
-        return new GenerationAccepted(
-                chapter.getWorkId(),
-                chapter.getId(),
-                generation.getId(),
-                STATUS_ACCEPTED,
-                chapter.getVersion(),
-                chapter.getWorkflowStatus(),
-                chapter.getGmtModified());
-    }
-
     private ChapterContent chapterContent(ChapterEntity chapter) {
         return new ChapterContent(
                 chapter.getWorkId(),
@@ -670,14 +624,6 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
 
     private String optionalText(String value) {
         return StringUtils.hasText(value) ? value.trim() : "";
-    }
-
-    private String applyContent(String current, String generated, String applyMode) {
-        String generatedContent = generated == null ? "" : generated;
-        if (REPLACE_APPLY_MODE.equals(applyMode) || !StringUtils.hasText(current)) {
-            return generatedContent;
-        }
-        return current + "\n\n" + generatedContent;
     }
 
     private String stringValue(Object value) {

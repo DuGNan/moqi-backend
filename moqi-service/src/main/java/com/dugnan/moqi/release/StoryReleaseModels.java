@@ -59,6 +59,21 @@ public final class StoryReleaseModels {
     public record CreateWorkspaceRequest(String idempotencyKey) {
     }
 
+    public record CandidateAdoptionDraftRequest(
+            Long parentRevisionId,
+            Long sourceGenerationId,
+            String content,
+            Long evaluationReportId,
+            Integer expectedFormalVersion,
+            String idempotencyKey) {
+    }
+
+    public record CandidateAdoptionDraft(
+            Long revisionId,
+            Long workspaceId,
+            Integer workspaceVersion) {
+    }
+
     public record PutWorkspaceChapterRequest(Long proseRevisionId, Integer expectedVersion) {
     }
 

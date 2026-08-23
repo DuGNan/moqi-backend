@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -24,6 +25,11 @@ import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateDetail;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseWorkspaceView;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.QualitySummary;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.WorkspaceSelectionView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateAdoptionView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateBasisView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseComparisonView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ComparisonSide;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.dugnan.moqi.chapter.service.ProseWorkspaceService;
 
 /**
@@ -70,6 +76,41 @@ class ProseWorkspaceControllerTest {
                 .andExpect(jsonPath("$.data.contentVersion").value(5));
 
         verify(service).saveCandidate(eq(2L), eq(8L), any());
+    }
+
+    @Test
+    void exposesBasisComparisonAndUniqueAdoptionRoutes() throws Exception {
+        LocalDateTime now = LocalDateTime.now();
+        ObjectMapper objectMapper = new ObjectMapper();
+        when(service.getCandidateBasis(2L, 8L)).thenReturn(new ProseCandidateBasisView(
+                "complete", false, 5L, "source-hash", "source-hash",
+                objectMapper.createObjectNode(), objectMapper.createObjectNode(), objectMapper.createArrayNode(),
+                objectMapper.createObjectNode(), objectMapper.createArrayNode(), objectMapper.createObjectNode()));
+        ComparisonSide formal = new ComparisonSide("formal", "formal:2", "正文", 3, "formal-hash", 2,
+                null, null, "formal", null, null, now);
+        ComparisonSide candidate = new ComparisonSide("candidate", "candidate:8", "候选", 4, "hash", 2,
+                8L, null, "generation", 5L, null, now);
+        when(service.compare(2L, "formal:2", "candidate:8"))
+                .thenReturn(new ProseComparisonView(formal, candidate));
+        when(service.adoptCandidate(eq(2L), eq(8L), any())).thenReturn(new ProseCandidateAdoptionView(
+                7L, 2L, 8L, 4, "hash", "direct_formal", "completed", 4,
+                null, null, null, now));
+
+        mvc.perform(get("/api/chapters/2/prose-candidates/8/basis"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.basisStatus").value("complete"));
+        mvc.perform(get("/api/chapters/2/prose-comparison")
+                        .param("leftObjectId", "formal:2").param("rightObjectId", "candidate:8"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.right.objectId").value("candidate:8"));
+        mvc.perform(post("/api/chapters/2/prose-candidates/8/adopt")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"candidateVersion":4,"contentHash":"hash","expectedFormalVersion":3,
+                                 "qualityReportId":9,"idempotencyKey":"adopt-1","userConfirmed":true}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.adoptionMode").value("direct_formal"));
     }
 
     private ProseCandidateDetail candidate() {
