@@ -64,6 +64,10 @@ public enum ErrorCode {
     PROSE_CANDIDATE_NOT_FOUND,
     /** 正文候选内容版本或稳定来源发生冲突。 */
     PROSE_CANDIDATE_CONFLICT,
+    /** 正文候选采纳输入、门禁或幂等记录发生冲突。 */
+    PROSE_ADOPTION_CONFLICT,
+    /** 正文候选尚未满足质量、提案或规划采纳门禁。 */
+    PROSE_ADOPTION_BLOCKED,
     /** 正文工作区选择记录发生版本或对象冲突。 */
     PROSE_WORKSPACE_CONFLICT,
     WORK_VERSION_CONFLICT,

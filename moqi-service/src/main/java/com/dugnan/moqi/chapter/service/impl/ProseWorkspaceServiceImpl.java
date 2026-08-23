@@ -6,6 +6,10 @@ import java.util.List;
 import java.util.Objects;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +21,11 @@ import org.springframework.util.StringUtils;
 
 import com.dugnan.moqi.chapter.dto.GenerationEvaluationModels.CreateEvaluationRequest;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.FormalProseView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.AdoptProseCandidateRequest;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ComparisonSide;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateAdoptionView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateBasisView;
+import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseComparisonView;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateDetail;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseCandidateSummary;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.ProseWorkspaceView;
@@ -37,6 +46,7 @@ import com.dugnan.moqi.chapter.selection.ProsePlanningChangeService;
 import com.dugnan.moqi.chapter.selection.ProseProposalSettlementService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
+import com.dugnan.moqi.chapter.service.ProseCandidateAdoptionService;
 import com.dugnan.moqi.chapter.service.ProseWorkspaceService;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -69,6 +79,8 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     private final ProseCandidateMaterializationService materializationService;
     private ProsePlanningChangeService planningChangeService;
     private ProseProposalSettlementService proposalSettlementService;
+    private ProseCandidateAdoptionService adoptionService;
+    private ObjectMapper objectMapper;
 
     public ProseWorkspaceServiceImpl(
             ChapterMapper chapterMapper,
@@ -97,6 +109,16 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     @Autowired
     public void setProposalSettlementService(ProseProposalSettlementService proposalSettlementService) {
         this.proposalSettlementService = proposalSettlementService;
+    }
+
+    @Autowired
+    public void setAdoptionService(ProseCandidateAdoptionService adoptionService) {
+        this.adoptionService = adoptionService;
+    }
+
+    @Autowired
+    public void setObjectMapper(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -214,6 +236,43 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         }
         scheduleEvaluationAfterCommit(chapterId, candidateId, request.baseVersion() + 1, snapshot.getId(), contentHash);
         return detail(requireCandidate(chapterId, candidateId));
+    }
+
+    @Override
+    public ProseCandidateBasisView getCandidateBasis(Long chapterId, Long candidateId) {
+        requireChapter(chapterId);
+        ChapterProseCandidateEntity candidate = requireCandidate(chapterId, candidateId);
+        ChapterGenerationEntity source = candidate.getSourceGenerationId() == null
+                ? null : generationMapper.selectById(candidate.getSourceGenerationId());
+        if (source == null || Integer.valueOf(1).equals(source.getDeleted())) {
+            throw conflict(ErrorCode.PROSE_CANDIDATE_CONFLICT, "正文候选缺少创建时生成依据");
+        }
+        JsonNode basis = readBasis(source);
+        JsonNode brief = basis.path("chapterGenerationBrief");
+        boolean complete = brief.isObject() && List.of("chapterPurpose", "chapterGoal", "coreConflict",
+                "openingConditions", "requiredEndingState", "eventCausality", "stateChanges",
+                "characterConstraints", "entityExplanations", "creativeFreedom", "prohibitedInventions")
+                .stream().allMatch(brief::has);
+        String sourceHash = hash(source.getGeneratedContent());
+        return new ProseCandidateBasisView(complete ? "complete" : "legacy_limited",
+                !Objects.equals(sourceHash, candidate.getContentHash()), source.getId(), sourceHash,
+                candidate.getContentHash(), basisOutline(brief), basisScenes(brief), authorValue(brief,
+                        "characterConstraints"), previousProse(basis), worldSettings(brief), basisConstraints(brief));
+    }
+
+    @Override
+    public ProseComparisonView compare(Long chapterId, String leftObjectId, String rightObjectId) {
+        ChapterEntity chapter = requireChapter(chapterId);
+        return new ProseComparisonView(comparisonSide(chapter, leftObjectId),
+                comparisonSide(chapter, rightObjectId));
+    }
+
+    @Override
+    public ProseCandidateAdoptionView adoptCandidate(
+            Long chapterId,
+            Long candidateId,
+            AdoptProseCandidateRequest request) {
+        return adoptionService.adopt(chapterId, candidateId, request);
     }
 
     private void scheduleEvaluationAfterCommit(
@@ -357,7 +416,8 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         return new ProseCandidateSummary(
                 item.getId(), candidateId(item.getId()), rootId(item), item.getParentCandidateId(), item.getSourceKind(),
                 item.getCandidateStatus(), item.getAdoptionStatus(), item.getVersion(), item.getContentHash(),
-                item.getWordCount(), quality(item), item.getGmtCreate(), item.getGmtModified());
+                item.getWordCount(), quality(item), adoptionService.readiness(item),
+                item.getGmtCreate(), item.getGmtModified());
     }
 
     private ProseCandidateDetail detail(ChapterProseCandidateEntity item) {
@@ -365,7 +425,80 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
                 item.getChapterId(), item.getId(), candidateId(item.getId()), rootId(item), item.getParentCandidateId(),
                 item.getSourceKind(), item.getCandidateStatus(), item.getAdoptionStatus(), item.getContent(),
                 item.getVersion(), item.getContentHash(), item.getWordCount(), quality(item),
+                adoptionService.readiness(item),
                 item.getGmtCreate(), item.getGmtModified());
+    }
+
+    private ComparisonSide comparisonSide(ChapterEntity chapter, String objectId) {
+        if (formalId(chapter.getId()).equals(objectId)) {
+            String content = Objects.requireNonNullElse(chapter.getContent(), "");
+            return new ComparisonSide(OBJECT_FORMAL, objectId, content, chapter.getVersion(), hash(content),
+                    wordCount(content), null, null, "formal", null, null, chapter.getGmtModified());
+        }
+        Long parsedId = parseCandidateId(objectId);
+        ChapterProseCandidateEntity candidate = requireCandidate(chapter.getId(), parsedId);
+        return new ComparisonSide(OBJECT_CANDIDATE, candidateId(candidate.getId()), candidate.getContent(),
+                candidate.getVersion(), candidate.getContentHash(), candidate.getWordCount(), rootId(candidate),
+                candidate.getParentCandidateId(), candidate.getSourceKind(), candidate.getSourceGenerationId(),
+                candidate.getSourceBoundedRevisionId(), candidate.getGmtModified());
+    }
+
+    private JsonNode readBasis(ChapterGenerationEntity source) {
+        try {
+            return StringUtils.hasText(source.getBasisSnapshotJson())
+                    ? objectMapper.readTree(source.getBasisSnapshotJson()) : objectMapper.createObjectNode();
+        } catch (Exception exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "生成依据快照暂时无法读取", exception);
+        }
+    }
+
+    private ObjectNode basisOutline(JsonNode brief) {
+        return selectedObject(brief, "chapterPurpose", "chapterGoal", "coreConflict",
+                "openingConditions", "requiredEndingState");
+    }
+
+    private ObjectNode basisScenes(JsonNode brief) {
+        return selectedObject(brief, "eventCausality", "stateChanges");
+    }
+
+    private ObjectNode basisConstraints(JsonNode brief) {
+        return selectedObject(brief, "creativeFreedom", "prohibitedInventions");
+    }
+
+    private ObjectNode selectedObject(JsonNode source, String... fields) {
+        ObjectNode result = objectMapper.createObjectNode();
+        for (String field : fields) {
+            if (source.has(field)) {
+                result.set(field, source.get(field).deepCopy());
+            }
+        }
+        return result;
+    }
+
+    private JsonNode authorValue(JsonNode source, String field) {
+        return source.has(field) ? source.get(field).deepCopy() : objectMapper.createArrayNode();
+    }
+
+    private ObjectNode previousProse(JsonNode basis) {
+        JsonNode frozen = basis.path("currentProseBasis").isObject()
+                ? basis.path("currentProseBasis") : basis.path("baseGeneration");
+        return selectedObject(frozen, "content", "contentHash");
+    }
+
+    private ArrayNode worldSettings(JsonNode brief) {
+        ArrayNode result = objectMapper.createArrayNode();
+        JsonNode entities = brief.path("entityExplanations");
+        if (!entities.isArray()) {
+            return result;
+        }
+        for (JsonNode entity : entities) {
+            if (entity.isObject()) {
+                result.add(selectedObject(entity, "type", "name", "explanation"));
+            } else if (entity.isTextual()) {
+                result.add(entity.textValue());
+            }
+        }
+        return result;
     }
 
     private QualitySummary quality(ChapterProseCandidateEntity candidate) {

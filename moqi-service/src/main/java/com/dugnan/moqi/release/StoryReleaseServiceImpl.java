@@ -33,6 +33,8 @@ import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.release.StoryReleaseModels.AbandonRevisionRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.AbandonWorkspaceRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.BindEvaluationRequest;
+import com.dugnan.moqi.release.StoryReleaseModels.CandidateAdoptionDraft;
+import com.dugnan.moqi.release.StoryReleaseModels.CandidateAdoptionDraftRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.CreateRevisionRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.CreateWorkspaceRequest;
 import com.dugnan.moqi.release.StoryReleaseModels.PrepareWorkspaceRequest;
@@ -179,6 +181,52 @@ public class StoryReleaseServiceImpl implements StoryReleaseService {
         item.setVersion(0);
         proseRevisionMapper.insert(item);
         return revisionView(item);
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public CandidateAdoptionDraft ensureCandidateAdoptionDraft(
+            Long workId,
+            Long chapterId,
+            CandidateAdoptionDraftRequest request) {
+        if (request == null || request.parentRevisionId() == null || request.sourceGenerationId() == null
+                || request.evaluationReportId() == null || request.expectedFormalVersion() == null
+                || !StringUtils.hasText(request.idempotencyKey())) {
+            throw badRequest("已发布正文采纳缺少 revision、评价、正式正文版本或幂等键");
+        }
+        WorkEntity work = requireWorkForUpdate(workId);
+        ChapterEntity chapter = requireChapterForUpdate(workId, chapterId);
+        if (!Objects.equals(chapter.getVersion(), request.expectedFormalVersion())
+                || !Objects.equals(chapter.getCurrentProseRevisionId(), request.parentRevisionId())) {
+            throw conflict(ErrorCode.CHAPTER_VERSION_CONFLICT, "正式正文版本或发布 revision 已变化");
+        }
+        RevisionView revision = createRevision(workId, chapterId, new CreateRevisionRequest(
+                request.parentRevisionId(), request.sourceGenerationId(), null,
+                request.content(), request.idempotencyKey() + ":revision"));
+        if (!Objects.equals(revision.evaluationReportId(), request.evaluationReportId())) {
+            revision = bindEvaluation(workId, chapterId, revision.id(),
+                    new BindEvaluationRequest(request.evaluationReportId(), revision.version()));
+        }
+        WorkRevisionWorkspaceEntity active = workspaceMapper.selectOne(
+                new LambdaQueryWrapper<WorkRevisionWorkspaceEntity>()
+                        .eq(WorkRevisionWorkspaceEntity::getWorkId, workId)
+                        .eq(WorkRevisionWorkspaceEntity::getCurrentMarker, 1)
+                        .eq(WorkRevisionWorkspaceEntity::getDeleted, 0));
+        WorkspaceView workspace;
+        if (active == null) {
+            workspace = createWorkspace(workId,
+                    new CreateWorkspaceRequest(request.idempotencyKey() + ":workspace"));
+        } else {
+            if (!STATUS_DRAFT.equals(active.getWorkspaceStatus())
+                    || !Objects.equals(active.getBaselineReleaseId(), work.getCurrentStoryReleaseId())
+                    || !Objects.equals(active.getBaselineWorkVersion(), work.getVersion())) {
+                throw conflict(ErrorCode.REVISION_WORKSPACE_CONFLICT, "活动修订工作区不允许加入新的正文 revision");
+            }
+            workspace = workspaceView(active);
+        }
+        WorkspaceView updated = putWorkspaceChapter(workId, workspace.id(), chapterId,
+                new PutWorkspaceChapterRequest(revision.id(), workspace.version()));
+        return new CandidateAdoptionDraft(revision.id(), updated.id(), updated.version());
     }
 
     @Override

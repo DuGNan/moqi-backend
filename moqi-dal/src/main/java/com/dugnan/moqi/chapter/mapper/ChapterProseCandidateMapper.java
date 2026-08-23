@@ -82,6 +82,8 @@ public interface ChapterProseCandidateMapper extends BaseMapper<ChapterProseCand
                     ELSE 'active'
                 END,
                 candidate.adoption_status = CASE
+                    WHEN candidate.adoption_status IN ('adopted', 'release_pending')
+                        THEN candidate.adoption_status
                     WHEN generation.generation_status = 'accepted' THEN 'adopted'
                     WHEN generation.generation_status = 'superseded' THEN 'replaced'
                     ELSE 'unadopted'
@@ -110,4 +112,27 @@ public interface ChapterProseCandidateMapper extends BaseMapper<ChapterProseCand
     int updateQualityRequestStatus(
             @Param("generationId") Long generationId,
             @Param("requestStatus") String requestStatus);
+
+    /**
+     * 以候选版本和内容哈希为 CAS 条件推进采纳状态。
+     *
+     * @param chapterId 章节 ID
+     * @param candidateId 候选 ID
+     * @param candidateVersion 候选版本
+     * @param contentHash 候选正文哈希
+     * @param adoptionStatus 目标采纳状态
+     * @return 更新行数
+     */
+    @Update("""
+            UPDATE chapter_prose_candidates
+            SET adoption_status = #{adoptionStatus}, gmt_modified = CURRENT_TIMESTAMP
+            WHERE id = #{candidateId} AND chapter_id = #{chapterId} AND version = #{candidateVersion}
+              AND content_hash = #{contentHash} AND adoption_status = 'unadopted' AND deleted = 0
+            """)
+    int markAdoptionStatus(
+            @Param("chapterId") Long chapterId,
+            @Param("candidateId") Long candidateId,
+            @Param("candidateVersion") Integer candidateVersion,
+            @Param("contentHash") String contentHash,
+            @Param("adoptionStatus") String adoptionStatus);
 }

@@ -468,97 +468,15 @@ class ChapterGenerationServiceImplTest {
                 .doesNotContain("generated_content", "basis_snapshot_json");
     }
 
-    /**
-     * 验证采纳生成稿支持替换正文。
-     */
     @Test
-    void acceptsPreviewByReplacingContent() {
-        ChapterEntity current = chapter(12L, "旧正文", 3);
-        ChapterEntity saved = chapter(12L, "预览正文", 4);
-        when(generationMapper.selectById(7001L)).thenReturn(generation(7001L, "preview", "预览正文"));
-        when(chapterMapper.selectById(12L)).thenReturn(current, saved);
-        when(generationMapper.updateStatusIfCurrent(7001L, "preview", "accepted")).thenReturn(1);
-        when(chapterMapper.updateContentIfVersion(12L, "预览正文", 3)).thenReturn(1);
-
-        var result = service.acceptGeneration(7001L, new AcceptGenerationRequest("replace", 3));
-
-        assertThat(result.generationStatus()).isEqualTo("accepted");
-        assertThat(result.version()).isEqualTo(4);
-        verify(chapterMapper).updateContentIfVersion(12L, "预览正文", 3);
-        verify(generationMapper).supersedeOlderPreviews(12L, 7001L);
-        verify(eventPublisher).publishEvent(
-                new com.dugnan.moqi.chapter.event.ChapterGenerationAcceptedEvent(12L, 7001L));
-    }
-
-    @Test
-    void rejectsReadyCandidateWhenCurrentEvaluationGateIsMissing() {
-        when(generationMapper.selectById(7001L))
-                .thenReturn(generation(7001L, "preview", "预览正文"));
-        org.mockito.Mockito.doThrow(new BusinessException(
-                ErrorCode.GENERATION_STATUS_CONFLICT, "质量评价尚未通过"))
-                .when(evaluationService).requireAdoptable(12L, 7001L);
-
+    void rejectsLegacyGenerationAcceptanceInFavorOfCandidateAdoptionEntry() {
         assertThatThrownBy(() -> service.acceptGeneration(
                 7001L, new AcceptGenerationRequest("replace", 3)))
                 .isInstanceOfSatisfying(BusinessException.class, exception ->
-                        assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.GENERATION_STATUS_CONFLICT));
+                        assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.PROSE_ADOPTION_CONFLICT));
+
         verify(chapterMapper, never()).updateContentIfVersion(any(), any(), any());
-    }
-
-    /**
-     * 验证采纳生成稿支持追加正文。
-     */
-    @Test
-    void acceptsPreviewByAppendingContent() {
-        ChapterEntity current = chapter(12L, "旧正文", 3);
-        ChapterEntity saved = chapter(12L, "旧正文\n\n预览正文", 4);
-        when(generationMapper.selectById(7001L)).thenReturn(generation(7001L, "preview", "预览正文"));
-        when(chapterMapper.selectById(12L)).thenReturn(current, saved);
-        when(generationMapper.updateStatusIfCurrent(7001L, "preview", "accepted")).thenReturn(1);
-        when(chapterMapper.updateContentIfVersion(12L, "旧正文\n\n预览正文", 3)).thenReturn(1);
-
-        service.acceptGeneration(7001L, new AcceptGenerationRequest("append", 3));
-
-        verify(chapterMapper).updateContentIfVersion(12L, "旧正文\n\n预览正文", 3);
-    }
-
-    /**
-     * 验证重复采纳不会再次写入章节正文。
-     */
-    @Test
-    void repeatedAcceptDoesNotWriteContentTwice() {
-        when(generationMapper.selectById(7001L)).thenReturn(generation(7001L, "accepted", "预览正文"));
-        when(chapterMapper.selectById(12L)).thenReturn(chapter(12L, "预览正文", 4));
-
-        var result = service.acceptGeneration(7001L, new AcceptGenerationRequest("replace", 3));
-
-        assertThat(result.version()).isEqualTo(4);
-        verify(chapterMapper, never()).updateContentIfVersion(any(), any(), any());
-    }
-
-    /**
-     * 验证采纳版本冲突返回服务端正文、版本和保存时间。
-     */
-    @Test
-    void returnsServerStateWhenAcceptVersionConflicts() {
-        ChapterEntity current = chapter(12L, "旧正文", 3);
-        ChapterEntity server = chapter(12L, "服务端正文", 4);
-        server.setGmtModified(LocalDateTime.of(2026, 7, 18, 20, 30));
-        when(generationMapper.selectById(7001L)).thenReturn(generation(7001L, "preview", "预览正文"));
-        when(chapterMapper.selectById(12L)).thenReturn(current, server);
-        when(generationMapper.updateStatusIfCurrent(7001L, "preview", "accepted")).thenReturn(1);
-        when(chapterMapper.updateContentIfVersion(12L, "预览正文", 3)).thenReturn(0);
-
-        assertThatThrownBy(() -> service.acceptGeneration(
-                7001L,
-                new AcceptGenerationRequest("replace", 3)))
-                .isInstanceOfSatisfying(BusinessException.class, exception -> {
-                    assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.CHAPTER_VERSION_CONFLICT);
-                    assertThat(exception.getData())
-                            .containsEntry("serverContent", "服务端正文")
-                            .containsEntry("version", 4)
-                            .containsEntry("serverSavedAt", server.getGmtModified());
-                });
+        verify(generationMapper, never()).updateStatusIfCurrent(any(), any(), any());
     }
 
     /**
@@ -573,7 +491,7 @@ class ChapterGenerationServiceImplTest {
                 new AcceptGenerationRequest("replace", 3)))
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode")
-                .isEqualTo(ErrorCode.GENERATION_STATUS_CONFLICT);
+                .isEqualTo(ErrorCode.PROSE_ADOPTION_CONFLICT);
         assertThatThrownBy(() -> service.rejectGeneration(
                 7001L,
                 new RejectGenerationRequest("继续讨论")))
