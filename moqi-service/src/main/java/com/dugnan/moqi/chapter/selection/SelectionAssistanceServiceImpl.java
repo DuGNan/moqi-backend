@@ -38,7 +38,8 @@ import com.dugnan.moqi.chapter.mapper.ChapterSelectionAssistanceMapper;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.AcceptRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ContinueRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreateRequest;
-import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreatePlanningChangePackageRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ModelPlanningProposal;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningContext;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningChangePackageView;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.RetryRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.TextDiff;
@@ -164,9 +165,11 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                     target.selectionEnd(), target.selectedText());
         }
         GenerationBriefPreview brief = briefService.preview(chapterId, null);
-        String fingerprint = inputFingerprint(chapter, request, target, parent, brief);
+        PlanningContext planningContext = OPERATION_DISCUSS.equals(request.operation())
+                ? null : planningChangeService.freezeContext(chapterId);
+        String fingerprint = inputFingerprint(chapter, request, target, parent, brief, planningContext);
         return persistAssistanceRun(chapter, request, normalizedKey, parent, target,
-                createdCandidate, brief, fingerprint);
+                createdCandidate, brief, fingerprint, planningContext);
     }
 
     private View persistAssistanceRun(
@@ -177,10 +180,12 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             Target target,
             ChapterProseCandidateEntity createdCandidate,
             GenerationBriefPreview brief,
-            String fingerprint) {
+            String fingerprint,
+            PlanningContext planningContext) {
         AiTaskEntity task = createTask(chapter, request, fingerprint);
         ChapterSelectionAssistanceEntity entity = createAssistanceEntity(
-                chapter, request, idempotencyKey, parent, target, createdCandidate, brief, fingerprint, task.getId());
+                chapter, request, idempotencyKey, parent, target, createdCandidate, brief, fingerprint,
+                planningContext, task.getId());
         if (isTargetRequest(request) && OPERATION_DISCUSS.equals(request.operation())) {
             persistDiscussionUserMessage(chapter, entity);
         }
@@ -211,6 +216,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             ChapterProseCandidateEntity createdCandidate,
             GenerationBriefPreview brief,
             String fingerprint,
+            PlanningContext planningContext,
             Long taskId) {
         ChapterSelectionAssistanceEntity entity = new ChapterSelectionAssistanceEntity();
         entity.setWorkId(chapter.getWorkId());
@@ -244,6 +250,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         entity.setBriefFingerprint(brief.fingerprint());
         entity.setBriefContent(brief.content());
         entity.setInputFingerprint(fingerprint);
+        entity.setPlanningContextJson(planningContext == null ? null : json(planningContext));
         entity.setDeleted(0);
         entity.setVersion(0);
         return entity;
@@ -390,13 +397,6 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     }
 
     @Override
-    public PlanningChangePackageView createPlanningChangePackage(
-            Long requestId,
-            CreatePlanningChangePackageRequest request) {
-        return planningChangeService.create(requestId, request);
-    }
-
-    @Override
     public PlanningChangePackageView getPlanningChangePackage(Long requestId) {
         return planningChangeService.getByAssistance(requestId);
     }
@@ -418,19 +418,29 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         updateTaskStatus(entity.getAiTaskId(), STATUS_RUNNING, null, null);
     }
 
-    /** 构造仅含选区、有限相邻段落和只读 Brief 的模型输入。 */
-    public Map<String, Object> modelInput(Long requestId) {
+    /** 构造仅含选区、有限相邻段落、只读 Brief 和冻结规划的自然语言模型输入。 */
+    public String modelPrompt(Long requestId) {
         ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
         String sourceText = sourceText(entity);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("operation", entity.getOperationType());
-        result.put("selectedText", sourceText);
-        result.put("adjacentBefore", entity.getAdjacentBefore());
-        result.put("adjacentAfter", entity.getAdjacentAfter());
-        result.put("instruction", entity.getUserInstruction());
-        result.put("chapterGenerationBrief", entity.getBriefContent());
-        result.put("candidateBoundary", "模型结果仅为候选，不得确认、发布或更新故事事实");
-        return result;
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("本轮任务：").append(operationInstruction(entity.getOperationType())).append('\n');
+        prompt.append("作者要求：").append(entity.getUserInstruction()).append("\n\n");
+        prompt.append("需要处理的正文：\n").append(sourceText).append("\n\n");
+        prompt.append("正文前方的有限上下文：\n").append(entity.getAdjacentBefore()).append("\n\n");
+        prompt.append("正文后方的有限上下文：\n").append(entity.getAdjacentAfter()).append("\n\n");
+        prompt.append("以下是只读的章节生成 Brief，不能把其中候选信息当成作者确认：\n")
+                .append(entity.getBriefContent()).append("\n\n");
+        PlanningContext planningContext = readPlanningContext(entity);
+        if (planningContext == null) {
+            prompt.append("当前没有可用的权威场景规划，因此本轮不得返回规划提案。\n");
+        } else {
+            prompt.append("当前权威场景规划摘要（规划提案的 beforeSummary 必须原样复制这一行）：\n")
+                    .append(planningContext.beforeSummary()).append("\n\n");
+            prompt.append("当前完整场景规划 JSON；只有正文改写确实要求改变规划时，才返回修改后的完整 scenes：\n")
+                    .append(json(planningContext.scenes())).append('\n');
+        }
+        prompt.append("所有正文和规划输出都只是候选，不得宣称已经保存、确认或发布。");
+        return prompt.toString();
     }
 
     /** 返回模型调用的冻结来源指纹。 */
@@ -445,13 +455,19 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
 
     /** 持久化经过结构校验的模型候选。 */
     @Transactional(rollbackFor = RuntimeException.class)
-    public void complete(Long requestId, String resultContent, String factRiskStatus, List<String> reasons,
+    public void complete(
+            Long requestId,
+            String resultContent,
+            String factRiskStatus,
+            List<String> reasons,
+            ModelPlanningProposal planningProposal,
             String modelCallRef) {
         ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
         if (!StringUtils.hasText(resultContent) || resultContent.length() > MAX_SELECTED_LENGTH) {
             throw badRequest("模型结果为空或超过局部候选长度限制");
         }
-        String normalizedRisk = "safe".equals(factRiskStatus) ? "safe" : STATUS_REVIEW_REQUIRED;
+        String normalizedRisk = planningProposal == null && "safe".equals(factRiskStatus)
+                ? "safe" : STATUS_REVIEW_REQUIRED;
         List<String> safeReasons = reasons == null ? List.of() : reasons.stream()
                 .filter(StringUtils::hasText).limit(20).map(value -> value.substring(0, Math.min(300, value.length()))).toList();
         String normalizedContent = resultContent.trim();
@@ -460,6 +476,9 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         String diff = OPERATION_DISCUSS.equals(entity.getOperationType()) ? null
                 : json(new TextDiff(originalForDiff, normalizedContent,
                         originalForDiff.length(), normalizedContent.length()));
+        if (planningProposal != null) {
+            planningChangeService.createCandidate(requestId, planningProposal);
+        }
         int updated = assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", requestId).eq("request_status", STATUS_RUNNING)
                 .set("request_status", status).set("result_content", normalizedContent)
@@ -572,7 +591,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     }
 
     private String inputFingerprint(ChapterEntity chapter, CreateRequest request, Target target,
-            ChapterSelectionAssistanceEntity parent, GenerationBriefPreview brief) {
+            ChapterSelectionAssistanceEntity parent, GenerationBriefPreview brief, PlanningContext planningContext) {
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("chapterId", chapter.getId());
         input.put("targetKind", target.kind());
@@ -588,7 +607,26 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         input.put("parentId", parent == null ? null : parent.getId());
         input.put("parentResult", parent == null ? null : parent.getResultContent());
         input.put("briefFingerprint", brief.fingerprint());
+        input.put("planningContext", planningContext);
         return hash(json(input));
+    }
+
+    private String operationInstruction(String operation) {
+        return switch (operation) {
+            case OPERATION_DISCUSS -> "分析作者引用的正文并给出建议，不生成替换正文";
+            case "rewrite" -> "按作者要求重写正文";
+            case "polish" -> "润色正文，但不擅自改变情节事实";
+            case "expand" -> "扩写正文，并保持既有事实边界";
+            case "compress" -> "压缩正文，同时保留必要信息";
+            default -> throw new IllegalStateException("正文协助操作缺少自然语言映射");
+        };
+    }
+
+    private PlanningContext readPlanningContext(ChapterSelectionAssistanceEntity entity) {
+        if (!StringUtils.hasText(entity.getPlanningContextJson())) {
+            return null;
+        }
+        return read(entity.getPlanningContextJson(), new TypeReference<>() { });
     }
 
     private Target resolveTarget(
@@ -910,7 +948,8 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 entity.getTargetObjectId(), entity.getTargetContentVersion(), entity.getTargetContentHash(),
                 entity.getReferenceScope(), entity.getReferenceTextHash(), entity.getReferenceSentenceCount(),
                 referenceStale(entity), entity.getCreatedCandidateId(), candidateObjectId(entity.getCreatedCandidateId()),
-                entity.getProposalStatus(), entity.getConversationId(), entity.getUserMessageId(),
+                entity.getProposalStatus(), entity.getAppliedCandidateVersion(), entity.getAppliedCandidateHash(),
+                entity.getConversationId(), entity.getUserMessageId(),
                 entity.getAssistantMessageId(), planningPackage == null ? null : planningPackage.id());
     }
 

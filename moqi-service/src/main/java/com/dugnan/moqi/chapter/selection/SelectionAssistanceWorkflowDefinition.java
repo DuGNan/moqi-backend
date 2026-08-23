@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Component;
 import com.dugnan.moqi.agent.AgentWorkflowDefinition;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ModelPlanningProposal;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.llm.LlmCallContext;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
@@ -32,11 +34,12 @@ import com.dugnan.moqi.llm.LlmRole;
 @Component
 public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefinition {
 
-    private static final String TEMPLATE_VERSION = "selection-assistance-v1";
+    private static final String TEMPLATE_VERSION = "selection-assistance-v2";
     private static final String OPERATION_DISCUSS = "discuss";
     private static final String HIDDEN_REASONING_FIELD = "reasoning";
     private static final String CHAIN_OF_THOUGHT_FIELD = "chainOfThought";
-    private static final int MAX_OUTPUT_FIELDS = 3;
+    private static final int MAX_OUTPUT_FIELDS = 4;
+    private static final int MAX_PLANNING_PROPOSAL_FIELDS = 4;
     private static final int MAX_RISK_REASONS = 20;
     private final SelectionAssistanceServiceImpl assistanceService;
     private final LlmProviderFactory providerFactory;
@@ -96,10 +99,11 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
                         .build());
         LlmResponse response = provider.generate(new LlmRequest(List.of(
                 new LlmMessage(LlmRole.SYSTEM, systemInstruction(operation)),
-                new LlmMessage(LlmRole.USER, objectMapper.writeValueAsString(assistanceService.modelInput(assistanceId)))),
+                new LlmMessage(LlmRole.USER, assistanceService.modelPrompt(assistanceId))),
                 new LlmOptions(4096, null, List.of(), LlmResponseFormat.JSON_OBJECT)));
         ParsedResult parsed = parse(operation, response == null ? null : response.structuredContent());
-        assistanceService.complete(assistanceId, parsed.content(), parsed.factRisk(), parsed.reasons(), logicalCallRef);
+        assistanceService.complete(assistanceId, parsed.content(), parsed.factRisk(), parsed.reasons(),
+                parsed.planningProposal(), logicalCallRef);
         return AgentStepResult.completed(Map.of("assistanceId", assistanceId, "operation", operation),
                 Map.of("assistanceId", assistanceId), null);
     }
@@ -126,10 +130,17 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
         }
         String resultField = OPERATION_DISCUSS.equals(operation) ? "advice" : "replacement";
         JsonNode content = output.get(resultField);
-        if (content == null || !content.isTextual() || !org.springframework.util.StringUtils.hasText(content.textValue())) {
+        if (content == null || !content.isTextual()
+                || !org.springframework.util.StringUtils.hasText(content.textValue())) {
             throw new IllegalArgumentException("模型未返回有效的局部结果字段");
         }
-        if (output.size() > MAX_OUTPUT_FIELDS || output.has(HIDDEN_REASONING_FIELD)
+        Set<String> allowedFields = OPERATION_DISCUSS.equals(operation)
+                ? Set.of("advice", "factRisk", "factRiskReasons")
+                : Set.of("replacement", "factRisk", "factRiskReasons", "planningProposal");
+        boolean hasUnknownField = output.propertyStream()
+                .map(Map.Entry::getKey)
+                .anyMatch(field -> !allowedFields.contains(field));
+        if (output.size() > MAX_OUTPUT_FIELDS || hasUnknownField || output.has(HIDDEN_REASONING_FIELD)
                 || output.has(CHAIN_OF_THOUGHT_FIELD)) {
             throw new IllegalArgumentException("模型结果包含契约外字段");
         }
@@ -148,7 +159,25 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
                 reasons.add(item.textValue());
             });
         }
-        return new ParsedResult(content.textValue(), risk, List.copyOf(reasons));
+        ModelPlanningProposal planningProposal = parsePlanningProposal(operation, output.get("planningProposal"));
+        return new ParsedResult(content.textValue(), risk, List.copyOf(reasons), planningProposal);
+    }
+
+    private ModelPlanningProposal parsePlanningProposal(String operation, JsonNode proposalNode) {
+        if (proposalNode == null || proposalNode.isNull()) {
+            return null;
+        }
+        if (OPERATION_DISCUSS.equals(operation) || !proposalNode.isObject()
+                || proposalNode.size() != MAX_PLANNING_PROPOSAL_FIELDS
+                || !proposalNode.has("changeReason") || !proposalNode.has("beforeSummary")
+                || !proposalNode.has("afterSummary") || !proposalNode.has("scenes")) {
+            throw new IllegalArgumentException("模型规划提案不符合结构化契约");
+        }
+        try {
+            return objectMapper.treeToValue(proposalNode, ModelPlanningProposal.class);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            throw new IllegalArgumentException("模型规划提案无法解析", exception);
+        }
     }
 
     private String systemInstruction(String operation) {
@@ -157,7 +186,12 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
                     + "\"factRiskReasons\":[]}。仅给出写作建议，不生成替换正文，不确认任何故事事实。";
         }
         return "只输出 JSON 对象 {\"replacement\":\"...\",\"factRisk\":\"safe|review_required\","
-                + "\"factRiskReasons\":[]}。只改写给定选区，结果始终是待人工采纳候选；不得更新规划、知识或发布状态。";
+                + "\"factRiskReasons\":[],\"planningProposal\":null}。只改写给定选区，结果始终是待作者应用和保存的候选；"
+                + "不得更新规划、知识或发布状态。只有改写确实要求改变当前场景规划时，才把 planningProposal 替换为对象，"
+                + "对象必须且只能包含 changeReason、beforeSummary、afterSummary、scenes 四个字段。"
+                + "changeReason 说明修改规划的必要性；beforeSummary 必须原样复制输入中的当前规划摘要；"
+                + "afterSummary 概括修改后的完整规划；scenes 必须给出修改后的全部场景，不能只给差异。"
+                + "规划提案也只是待作者确认的候选，绝不能宣称已经生效。";
     }
 
     private Long assistanceId(AgentStepExecutionContext context) {
@@ -172,6 +206,10 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
         return value instanceof Number number ? number.longValue() : null;
     }
 
-    private record ParsedResult(String content, String factRisk, List<String> reasons) {
+    private record ParsedResult(
+            String content,
+            String factRisk,
+            List<String> reasons,
+            ModelPlanningProposal planningProposal) {
     }
 }

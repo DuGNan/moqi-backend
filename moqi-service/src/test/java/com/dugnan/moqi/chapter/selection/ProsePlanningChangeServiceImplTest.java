@@ -21,7 +21,8 @@ import com.dugnan.moqi.chapter.entity.ProsePlanningChangePackageEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterSelectionAssistanceMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ProsePlanningChangePackageMapper;
-import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreatePlanningChangePackageRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ModelPlanningProposal;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningContext;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.planning.PlanningContentCodec;
 import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
@@ -40,11 +41,24 @@ import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
 class ProsePlanningChangeServiceImplTest {
 
     @Test
+    void freezesCurrentPlanningContextForSameModelCall() {
+        Fixture fixture = new Fixture();
+
+        PlanningContext context = fixture.service.freezeContext(2L);
+
+        assertThat(context.baseOutlineId()).isEqualTo(10L);
+        assertThat(context.baseScenePlanId()).isEqualTo(20L);
+        assertThat(context.beforeSummary()).contains("第一场");
+        assertThat(context.scenes()).hasSize(1);
+    }
+
+    @Test
     void createsAndAppliesPlanningPackageAsNewPublishedVersion() {
         Fixture fixture = new Fixture();
-        var created = fixture.service.create(9L, fixture.request());
+        var created = fixture.service.createCandidate(9L, fixture.proposal());
 
-        Long resultPlanId = fixture.service.apply(2L, fixture.candidate, created.id(), 5, "new-hash");
+        Long resultPlanId = fixture.service.apply(
+                2L, fixture.candidate, created.id(), 5, "new-hash", List.of(9L));
 
         assertThat(resultPlanId).isEqualTo(21L);
         verify(fixture.planMapper).supersedeCurrentIfVersion(20L, 4);
@@ -56,10 +70,11 @@ class ProsePlanningChangeServiceImplTest {
     @Test
     void rejectsStaleOutlineBeforeChangingCandidateOrPlan() {
         Fixture fixture = new Fixture();
-        fixture.service.create(9L, fixture.request());
+        fixture.service.createCandidate(9L, fixture.proposal());
         fixture.outline.setVersion(4);
 
-        assertThatThrownBy(() -> fixture.service.apply(2L, fixture.candidate, 30L, 5, "new-hash"))
+        assertThatThrownBy(() -> fixture.service.apply(
+                2L, fixture.candidate, 30L, 5, "new-hash", List.of(9L)))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("来源已过期");
 
@@ -69,13 +84,39 @@ class ProsePlanningChangeServiceImplTest {
     }
 
     @Test
+    void rejectsModelPlanningProposalWhenFrozenSourceExpiredWithoutCreatingPackage() {
+        Fixture fixture = new Fixture();
+        fixture.outline.setVersion(4);
+
+        assertThatThrownBy(() -> fixture.service.createCandidate(9L, fixture.proposal()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("来源已过期");
+
+        verify(fixture.packageMapper, never()).insert(any(ProsePlanningChangePackageEntity.class));
+        verify(fixture.planMapper, never()).supersedeCurrentIfVersion(any(), any());
+    }
+
+    @Test
+    void planningApplyRequiresItsSourceProposalToBeExplicitlyApplied() {
+        Fixture fixture = new Fixture();
+        fixture.service.createCandidate(9L, fixture.proposal());
+
+        assertThatThrownBy(() -> fixture.service.apply(
+                2L, fixture.candidate, 30L, 5, "new-hash", List.of(10L)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("同时结算");
+
+        verify(fixture.planMapper, never()).supersedeCurrentIfVersion(any(), any());
+    }
+
+    @Test
     void rejectsDifferentIdempotencyKeyForSameAssistanceAsBusinessConflict() {
         Fixture fixture = new Fixture();
-        fixture.service.create(9L, fixture.request());
+        fixture.service.createCandidate(9L, fixture.proposal());
         when(fixture.packageMapper.selectOne(any())).thenReturn(fixture.changePackage);
 
-        assertThatThrownBy(() -> fixture.service.create(9L,
-                new CreatePlanningChangePackageRequest("调整场景", List.of(Fixture.scene()), "planning-2")))
+        assertThatThrownBy(() -> fixture.service.createCandidate(9L,
+                new ModelPlanningProposal("另一原因", "共 1 场", "另一摘要", List.of(Fixture.scene()))))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("已经绑定不同");
 
@@ -85,12 +126,12 @@ class ProsePlanningChangeServiceImplTest {
     @Test
     void replaysSamePlanningPackageAfterJsonStorageNormalizationWithoutSecondInsert() throws Exception {
         Fixture fixture = new Fixture();
-        var first = fixture.service.create(9L, fixture.request());
+        var first = fixture.service.createCandidate(9L, fixture.proposal());
         fixture.changePackage.setProposedScenesJson(
                 fixture.objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(List.of(Fixture.scene())));
         when(fixture.packageMapper.selectOne(any())).thenReturn(fixture.changePackage);
 
-        var replay = fixture.service.create(9L, fixture.request());
+        var replay = fixture.service.createCandidate(9L, fixture.proposal());
 
         assertThat(replay.id()).isEqualTo(first.id());
         assertThat(replay.targetObjectId()).isEqualTo("candidate:8");
@@ -100,11 +141,12 @@ class ProsePlanningChangeServiceImplTest {
     @Test
     void rejectsPackageWhenCandidateChangedBeforeAtomicSave() {
         Fixture fixture = new Fixture();
-        fixture.service.create(9L, fixture.request());
+        fixture.service.createCandidate(9L, fixture.proposal());
         fixture.candidate.setVersion(5);
         fixture.candidate.setContentHash("changed-hash");
 
-        assertThatThrownBy(() -> fixture.service.apply(2L, fixture.candidate, 30L, 6, "saved-hash"))
+        assertThatThrownBy(() -> fixture.service.apply(
+                2L, fixture.candidate, 30L, 6, "saved-hash", List.of(9L)))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("正文候选已在规划确认后变化");
 
@@ -118,9 +160,11 @@ class ProsePlanningChangeServiceImplTest {
         Fixture fixture = new Fixture();
         ChapterSelectionAssistanceEntity unbound = Fixture.assistance();
         unbound.setTargetCandidateId(null);
+        unbound.setPlanningContextJson(fixture.json(new PlanningContext(
+                10L, 2, 3, 20L, 4, "共 1 场", List.of(Fixture.scene()))));
         when(fixture.assistanceMapper.selectById(9L)).thenReturn(unbound);
 
-        assertThatThrownBy(() -> fixture.service.create(9L, fixture.request()))
+        assertThatThrownBy(() -> fixture.service.createCandidate(9L, fixture.proposal()))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("尚未绑定稳定候选");
 
@@ -144,11 +188,18 @@ class ProsePlanningChangeServiceImplTest {
                 new PlanningContentCodec(), objectMapper);
 
         private Fixture() {
-            when(assistanceMapper.selectById(9L)).thenReturn(assistance());
-            when(assistanceMapper.selectByIdForUpdate(9L)).thenReturn(assistance());
+            ChapterSelectionAssistanceEntity assistance = assistance();
+            assistance.setPlanningContextJson(json(new PlanningContext(
+                    10L, 2, 3, 20L, 4, "共 1 场", List.of(scene()))));
+            when(assistanceMapper.selectById(9L)).thenReturn(assistance);
+            when(assistanceMapper.selectByIdForUpdate(9L)).thenReturn(assistance);
             when(candidateMapper.selectByIdForUpdate(2L, 8L)).thenReturn(candidate);
             when(outlineMapper.findLatest(2L)).thenReturn(outline);
             when(planMapper.selectOne(any())).thenReturn(plan);
+            ScenePlanVersionEntity persistedScene = new ScenePlanVersionEntity();
+            persistedScene.setContentJson(json(scene()));
+            persistedScene.setDeleted(0);
+            when(sceneMapper.findAllByPlanId(20L)).thenReturn(List.of(persistedScene));
             when(outlineMapper.findLatestForUpdate(2L)).thenReturn(outline);
             when(planMapper.selectCurrentForUpdate(2L)).thenReturn(plan);
             doAnswer(invocation -> {
@@ -169,8 +220,16 @@ class ProsePlanningChangeServiceImplTest {
             when(packageMapper.markApplied(30L, 5, "new-hash", 21L, 0)).thenReturn(1);
         }
 
-        private CreatePlanningChangePackageRequest request() {
-            return new CreatePlanningChangePackageRequest("调整场景目标", List.of(scene()), "planning-1");
+        private ModelPlanningProposal proposal() {
+            return new ModelPlanningProposal("调整场景目标", "共 1 场", "调整后的场景", List.of(scene()));
+        }
+
+        private String json(Object value) {
+            try {
+                return objectMapper.writeValueAsString(value);
+            } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+                throw new IllegalStateException(exception);
+            }
         }
 
         private static ChapterSelectionAssistanceEntity assistance() {

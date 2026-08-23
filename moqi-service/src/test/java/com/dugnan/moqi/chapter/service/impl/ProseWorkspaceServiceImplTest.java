@@ -34,6 +34,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseWorkspaceSelectionMapper;
 import com.dugnan.moqi.chapter.selection.ProsePlanningChangeService;
+import com.dugnan.moqi.chapter.selection.ProseProposalSettlementService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.common.api.ErrorCode;
@@ -177,12 +178,34 @@ class ProseWorkspaceServiceImplTest {
         when(fixture.reportMapper.selectList(any())).thenReturn(List.of());
 
         fixture.service.saveCandidate(12L, 8L,
-                new SaveProseCandidateRequest("联动候选", 4, 7L, true));
+                new SaveProseCandidateRequest("联动候选", 4, 7L, true, List.of(9L)));
 
         verify(fixture.planningChangeService).apply(
-                eq(12L), eq(fixture.candidate), eq(7L), eq(5), anyString());
+                eq(12L), eq(fixture.candidate), eq(7L), eq(5), anyString(), eq(List.of(9L)));
         verify(fixture.candidateMapper).updateContentIfVersion(
                 eq(12L), eq(8L), eq("联动候选"), anyString(), anyInt(), eq(99L), eq(4));
+    }
+
+    @Test
+    void settlesExplicitAppliedProposalsWithSavedCandidateResult() {
+        Fixture fixture = new Fixture();
+        when(fixture.candidateMapper.selectByIdForUpdate(12L, 8L)).thenReturn(fixture.candidate);
+        when(fixture.candidateMapper.selectOne(any())).thenReturn(fixture.candidate);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(fixture.sourceGeneration);
+        when(fixture.generationMapper.insert(any(ChapterGenerationEntity.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, ChapterGenerationEntity.class).setId(99L);
+            return 1;
+        });
+        when(fixture.candidateMapper.updateContentIfVersion(
+                anyLong(), anyLong(), anyString(), anyString(), anyInt(), anyLong(), anyInt()))
+                .thenReturn(1);
+
+        fixture.service.saveCandidate(12L, 8L,
+                new SaveProseCandidateRequest("应用提案后的候选", 4, null, false, List.of(9L)));
+
+        verify(fixture.proposalSettlementService).validateForSave(12L, fixture.candidate, List.of(9L));
+        verify(fixture.proposalSettlementService).markApplied(
+                eq(12L), eq(fixture.candidate), eq(List.of(9L)), eq(5), anyString());
     }
 
     @Test
@@ -195,12 +218,12 @@ class ProseWorkspaceServiceImplTest {
         when(fixture.reportMapper.selectList(any())).thenReturn(List.of());
 
         fixture.service.saveCandidate(12L, 8L,
-                new SaveProseCandidateRequest("联动候选", 4, 7L, true));
+                new SaveProseCandidateRequest("联动候选", 4, 7L, true, List.of(9L)));
 
         verify(fixture.planningChangeService).requireApplied(
-                12L, 8L, 7L, 5, contentHash("联动候选"));
+                12L, 8L, 7L, 5, contentHash("联动候选"), List.of(9L));
         verify(fixture.generationMapper, never()).insert(any(ChapterGenerationEntity.class));
-        verify(fixture.planningChangeService, never()).apply(any(), any(), any(), any(), any());
+        verify(fixture.planningChangeService, never()).apply(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -217,12 +240,14 @@ class ProseWorkspaceServiceImplTest {
                 anyLong(), anyLong(), anyString(), anyString(), anyInt(), anyLong(), anyInt())).thenReturn(0);
 
         assertThatThrownBy(() -> fixture.service.saveCandidate(12L, 8L,
-                new SaveProseCandidateRequest("联动冲突", 4, 7L, true)))
+                new SaveProseCandidateRequest("联动冲突", 4, 7L, true, List.of(9L))))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("候选已被更新");
 
         verify(fixture.planningChangeService).apply(
-                eq(12L), eq(fixture.candidate), eq(7L), eq(5), anyString());
+                eq(12L), eq(fixture.candidate), eq(7L), eq(5), anyString(), eq(List.of(9L)));
+        verify(fixture.proposalSettlementService).markApplied(
+                eq(12L), eq(fixture.candidate), eq(List.of(9L)), eq(5), anyString());
     }
 
     private static String contentHash(String value) {
@@ -248,6 +273,8 @@ class ProseWorkspaceServiceImplTest {
         private final ProseCandidateMaterializationService materializationService =
                 mock(ProseCandidateMaterializationService.class);
         private final ProsePlanningChangeService planningChangeService = mock(ProsePlanningChangeService.class);
+        private final ProseProposalSettlementService proposalSettlementService =
+                mock(ProseProposalSettlementService.class);
         private final ChapterEntity chapter = chapter();
         private final ChapterProseCandidateEntity candidate = candidate();
         private final ChapterGenerationEntity sourceGeneration = generation();
@@ -257,6 +284,7 @@ class ProseWorkspaceServiceImplTest {
 
         private Fixture() {
             service.setPlanningChangeService(planningChangeService);
+            service.setProposalSettlementService(proposalSettlementService);
             when(chapterMapper.selectById(12L)).thenReturn(chapter);
         }
 

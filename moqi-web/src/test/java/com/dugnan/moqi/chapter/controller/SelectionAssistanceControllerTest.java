@@ -105,18 +105,13 @@ class SelectionAssistanceControllerTest {
     }
 
     @Test
-    void createsAndReloadsPlanningChangePackage() throws Exception {
+    void reloadsServerGeneratedPlanningChangePackageWithoutClientScenesEndpoint() throws Exception {
         PlanningChangePackageView planning = new PlanningChangePackageView(
                 30L, "candidate:8", 4, "candidate", "调整场景", "变更前摘要", "变更后摘要", 2, 3,
                 4, List.of(), null, 0, null, null);
-        when(service.createPlanningChangePackage(eq(9L), any())).thenReturn(planning);
         when(service.getPlanningChangePackage(9L)).thenReturn(planning);
 
-        mvc.perform(post("/api/selection-assistance/9/planning-change-package")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"changeSummary":"调整场景","scenes":[],"idempotencyKey":"planning-1"}
-                                """))
+        mvc.perform(get("/api/selection-assistance/9/planning-change-package"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.id").value(30))
                 .andExpect(jsonPath("$.data.targetObjectId").value("candidate:8"))
@@ -126,22 +121,16 @@ class SelectionAssistanceControllerTest {
                 .andExpect(jsonPath("$.data.chapterId").doesNotExist())
                 .andExpect(jsonPath("$.data.baseOutlineId").doesNotExist())
                 .andExpect(jsonPath("$.data.baseScenePlanId").doesNotExist())
-                .andExpect(jsonPath("$.data.resultScenePlanId").doesNotExist());
-        mvc.perform(get("/api/selection-assistance/9/planning-change-package"))
-                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.resultScenePlanId").doesNotExist())
                 .andExpect(jsonPath("$.data.status").value("candidate"));
     }
 
     @Test
     void returnsSafePlanningConflictWithoutInternalIdentifiersOrContent() throws Exception {
-        when(service.createPlanningChangePackage(eq(9L), any()))
+        when(service.getPlanningChangePackage(9L))
                 .thenThrow(new BusinessException(ErrorCode.SCENE_PLAN_CONFLICT, "正文修改提案尚未绑定稳定候选"));
 
-        mvc.perform(post("/api/selection-assistance/9/planning-change-package")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"changeSummary":"调整场景","scenes":[],"idempotencyKey":"planning-1"}
-                                """))
+        mvc.perform(get("/api/selection-assistance/9/planning-change-package"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("SCENE_PLAN_CONFLICT"))
                 .andExpect(jsonPath("$.data").isEmpty())

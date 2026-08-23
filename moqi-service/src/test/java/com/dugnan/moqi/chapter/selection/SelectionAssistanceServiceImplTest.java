@@ -25,9 +25,15 @@ import org.junit.jupiter.params.provider.ValueSource;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterSelectionAssistanceEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterSelectionAssistanceMapper;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.AcceptRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreateRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ModelPlanningProposal;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningContext;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefPreview;
 import com.dugnan.moqi.agent.AgentRuntime;
@@ -43,6 +49,29 @@ import com.dugnan.moqi.work.mapper.ChapterMapper;
  * @description 验证选区候选的发布边界、正文一致性校验和乐观锁采纳。
  */
 class SelectionAssistanceServiceImplTest {
+
+    @Test
+    void compilesNaturalLanguageModelPromptWithoutInternalRoutingEnums() throws Exception {
+        Fixture fixture = new Fixture();
+        ChapterSelectionAssistanceEntity assistance = fixture.candidate("原文", "候选");
+        assistance.setOperationType("rewrite");
+        assistance.setUserInstruction("让冲突更集中");
+        assistance.setAdjacentBefore("前文");
+        assistance.setAdjacentAfter("后文");
+        assistance.setBriefContent("作者已确认本章目标，其他内容仍为候选。");
+        assistance.setPlanningContextJson(new ObjectMapper().writeValueAsString(
+                new PlanningContext(10L, 2, 3, 20L, 4, "共 1 场", List.of())));
+        when(fixture.assistanceMapper.selectById(9L)).thenReturn(assistance);
+
+        String prompt = fixture.service.modelPrompt(9L);
+
+        assertThat(prompt)
+                .contains("本轮任务：按作者要求重写正文")
+                .contains("作者要求：让冲突更集中")
+                .contains("当前权威场景规划摘要")
+                .contains("所有正文和规划输出都只是候选")
+                .doesNotContain("operation", "rewrite", "targetKind", "requestStatus", "baseScenePlanId");
+    }
 
     @Test
     void rejectsModificationForPublishedChapterBeforeCallingModel() {
@@ -274,7 +303,7 @@ class SelectionAssistanceServiceImplTest {
         when(fixture.assistanceMapper.update(any(), any())).thenReturn(1);
 
         fixture.service.markRunning(9L);
-        fixture.service.complete(9L, "重试后的候选", "safe", List.of(), "model-call-retry");
+        fixture.service.complete(9L, "重试后的候选", "safe", List.of(), null, "model-call-retry");
 
         ArgumentCaptor<UpdateWrapper<ChapterSelectionAssistanceEntity>> updates = updateCaptor();
         verify(fixture.assistanceMapper, org.mockito.Mockito.times(2))
@@ -283,6 +312,29 @@ class SelectionAssistanceServiceImplTest {
                 .containsValue("running")
                 .containsValue("pending");
         assertThat(updates.getAllValues().get(1).getParamNameValuePairs())
+                .containsValue("ready");
+        verify(fixture.planningChangeService, never()).createCandidate(any(), any());
+    }
+
+    @Test
+    void planningProposalAlwaysRequiresAuthorReviewAndRollsIntoSameCompletionTransaction() {
+        Fixture fixture = new Fixture();
+        ChapterSelectionAssistanceEntity running = fixture.candidate("原文", "候选");
+        running.setRequestStatus("running");
+        when(fixture.assistanceMapper.selectById(9L)).thenReturn(running);
+        when(fixture.assistanceMapper.update(any(), any())).thenReturn(1);
+        ModelPlanningProposal proposal = new ModelPlanningProposal(
+                "需要同步场景结果", "变更前", "变更后", List.of());
+
+        fixture.service.complete(9L, "新候选", "safe", List.of(), proposal, "model-call-planning");
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(
+                fixture.planningChangeService, fixture.assistanceMapper);
+        order.verify(fixture.planningChangeService).createCandidate(9L, proposal);
+        ArgumentCaptor<UpdateWrapper<ChapterSelectionAssistanceEntity>> update = updateCaptor();
+        order.verify(fixture.assistanceMapper).update(org.mockito.ArgumentMatchers.isNull(), update.capture());
+        assertThat(update.getValue().getParamNameValuePairs())
+                .containsValue("review_required")
                 .containsValue("ready");
     }
 
@@ -400,8 +452,18 @@ class SelectionAssistanceServiceImplTest {
         private final ChapterSelectionAssistanceMapper assistanceMapper = mock(ChapterSelectionAssistanceMapper.class);
         private final AiTaskMapper taskMapper = mock(AiTaskMapper.class);
         private final ChapterGenerationBriefService briefService = mock(ChapterGenerationBriefService.class);
+        private final ChapterProseCandidateMapper candidateMapper = mock(ChapterProseCandidateMapper.class);
+        private final ChapterGenerationMapper generationMapper = mock(ChapterGenerationMapper.class);
+        private final ChapterConversationMapper conversationMapper = mock(ChapterConversationMapper.class);
+        private final ChapterConversationMessageMapper messageMapper = mock(ChapterConversationMessageMapper.class);
+        private final ProsePlanningChangeService planningChangeService = mock(ProsePlanningChangeService.class);
         private final SelectionAssistanceServiceImpl service = new SelectionAssistanceServiceImpl(chapterMapper,
                 assistanceMapper, taskMapper, briefService, new ObjectMapper());
+
+        private Fixture() {
+            service.setWorkspaceDependencies(candidateMapper, generationMapper, conversationMapper,
+                    messageMapper, planningChangeService);
+        }
 
         private ChapterEntity chapter(String workflowStatus, String content) {
             ChapterEntity chapter = new ChapterEntity();
