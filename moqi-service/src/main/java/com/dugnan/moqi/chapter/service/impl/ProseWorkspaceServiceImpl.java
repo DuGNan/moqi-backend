@@ -34,6 +34,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseWorkspaceSelectionMapper;
 import com.dugnan.moqi.chapter.selection.ProsePlanningChangeService;
+import com.dugnan.moqi.chapter.selection.ProseProposalSettlementService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.chapter.service.ProseWorkspaceService;
@@ -67,6 +68,7 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     private final GenerationEvaluationService evaluationService;
     private final ProseCandidateMaterializationService materializationService;
     private ProsePlanningChangeService planningChangeService;
+    private ProseProposalSettlementService proposalSettlementService;
 
     public ProseWorkspaceServiceImpl(
             ChapterMapper chapterMapper,
@@ -90,6 +92,11 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     @Autowired
     public void setPlanningChangeService(ProsePlanningChangeService planningChangeService) {
         this.planningChangeService = planningChangeService;
+    }
+
+    @Autowired
+    public void setProposalSettlementService(ProseProposalSettlementService proposalSettlementService) {
+        this.proposalSettlementService = proposalSettlementService;
     }
 
     @Override
@@ -162,12 +169,16 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         if (candidate == null) {
             throw conflict(ErrorCode.PROSE_CANDIDATE_NOT_FOUND, "正文候选不存在");
         }
+        List<Long> appliedProposalIds = request.appliedProposalIds() == null
+                ? List.of() : request.appliedProposalIds();
         String contentHash = hash(request.content());
         if (Objects.equals(candidate.getVersion(), request.baseVersion() + 1)
                 && Objects.equals(candidate.getContentHash(), contentHash)) {
+            proposalSettlementService.requireApplied(chapterId, candidateId, appliedProposalIds,
+                    candidate.getVersion(), contentHash);
             if (hasPlanningPackage) {
                 planningChangeService.requireApplied(chapterId, candidateId, request.planningChangePackageId(),
-                        candidate.getVersion(), contentHash);
+                        candidate.getVersion(), contentHash, appliedProposalIds);
             }
             scheduleEvaluationAfterCommit(chapterId, candidateId, candidate.getVersion(),
                     candidate.getQualityGenerationId(), contentHash);
@@ -176,6 +187,7 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         if (!Objects.equals(candidate.getVersion(), request.baseVersion())) {
             throw candidateVersionConflict(candidate);
         }
+        proposalSettlementService.validateForSave(chapterId, candidate, appliedProposalIds);
         ChapterGenerationEntity source = requireQualitySource(candidate);
         ChapterGenerationEntity snapshot = qualitySnapshot(
                 source, candidateId, request.baseVersion() + 1, request.content(), contentHash);
@@ -186,8 +198,10 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         }
         if (hasPlanningPackage) {
             planningChangeService.apply(chapterId, candidate, request.planningChangePackageId(),
-                    request.baseVersion() + 1, contentHash);
+                    request.baseVersion() + 1, contentHash, appliedProposalIds);
         }
+        proposalSettlementService.markApplied(chapterId, candidate, appliedProposalIds,
+                request.baseVersion() + 1, contentHash);
         if (candidateMapper.updateContentIfVersion(
                 chapterId,
                 candidateId,

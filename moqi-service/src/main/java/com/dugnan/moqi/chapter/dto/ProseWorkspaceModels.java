@@ -90,7 +90,17 @@ public final class ProseWorkspaceModels {
             String content,
             Integer baseVersion,
             Long planningChangePackageId,
-            Boolean planningConfirmed) {
+            Boolean planningConfirmed,
+            List<Long> appliedProposalIds) {
+
+        /** 兼容尚未提交修改提案结算字段的调用。 */
+        public SaveProseCandidateRequest(
+                String content,
+                Integer baseVersion,
+                Long planningChangePackageId,
+                Boolean planningConfirmed) {
+            this(content, baseVersion, planningChangePackageId, planningConfirmed, List.of());
+        }
     }
 
     public record RunningTaskSummary(

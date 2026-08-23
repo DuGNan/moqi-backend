@@ -101,6 +101,8 @@ public final class SelectionAssistanceModels {
             Long createdCandidateId,
             String createdCandidateObjectId,
             String proposalStatus,
+            Integer appliedCandidateVersion,
+            String appliedCandidateHash,
             Long conversationId,
             Long userMessageId,
             Long assistantMessageId,
@@ -121,14 +123,25 @@ public final class SelectionAssistanceModels {
                     briefFingerprint, inputFingerprint, resultContent, diff, factRiskStatus, factRiskReasons,
                     canAccept, planningChangeSuggestion, errorCode, errorMessage, acceptedChapterVersion,
                     version, createdAt, modifiedAt, null, null, null, null, null, null, null, null,
-                    false, null, null, null, null, null, null, null);
+                    false, null, null, null, null, null, null, null, null, null);
         }
     }
 
-    public record CreatePlanningChangePackageRequest(
-            String changeSummary,
-            List<ScenePlanContent> scenes,
-            String idempotencyKey) {
+    public record PlanningContext(
+            Long baseOutlineId,
+            Integer baseOutlineRevision,
+            Integer baseOutlineVersion,
+            Long baseScenePlanId,
+            Integer baseScenePlanVersion,
+            String beforeSummary,
+            List<ScenePlanContent> scenes) {
+    }
+
+    public record ModelPlanningProposal(
+            String changeReason,
+            String beforeSummary,
+            String afterSummary,
+            List<ScenePlanContent> scenes) {
     }
 
     public record PlanningChangePackageView(

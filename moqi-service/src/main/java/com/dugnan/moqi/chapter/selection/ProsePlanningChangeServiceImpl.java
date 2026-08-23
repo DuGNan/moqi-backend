@@ -19,7 +19,8 @@ import com.dugnan.moqi.chapter.entity.ProsePlanningChangePackageEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterSelectionAssistanceMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ProsePlanningChangePackageMapper;
-import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreatePlanningChangePackageRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ModelPlanningProposal;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningContext;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningChangePackageView;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -40,11 +41,12 @@ import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
 @Service
 public class ProsePlanningChangeServiceImpl implements ProsePlanningChangeService {
 
-    private static final Set<String> READY_ASSISTANCE = Set.of("ready", "review_required");
+    private static final Set<String> PACKAGE_SOURCE_STATUSES = Set.of("running", "ready", "review_required");
     private static final String PACKAGE_CANDIDATE = "candidate";
     private static final String PACKAGE_APPLIED = "applied";
     private static final String OPERATION_DISCUSS = "discuss";
     private static final String LOCAL_USER = "local-user";
+    private static final String MODEL_PACKAGE_KEY_PREFIX = "assistance-model:";
     private static final int MAX_SUMMARY_LENGTH = 1000;
 
     private final ChapterSelectionAssistanceMapper assistanceMapper;
@@ -76,49 +78,71 @@ public class ProsePlanningChangeServiceImpl implements ProsePlanningChangeServic
     }
 
     @Override
+    public PlanningContext freezeContext(Long chapterId) {
+        ChapterOutlineEntity outline = outlineMapper.findLatest(chapterId);
+        ChapterPlanVersionEntity plan = planMapper.selectOne(new LambdaQueryWrapper<ChapterPlanVersionEntity>()
+                .eq(ChapterPlanVersionEntity::getChapterId, chapterId)
+                .eq(ChapterPlanVersionEntity::getCurrentMarker, 1)
+                .eq(ChapterPlanVersionEntity::getDeleted, 0));
+        if (outline == null || plan == null) {
+            return null;
+        }
+        if (!Objects.equals(plan.getOutlineId(), outline.getId())
+                || !Objects.equals(plan.getOutlineRevision(), outline.getRevision())) {
+            return null;
+        }
+        List<ScenePlanContent> scenes = planScenes(plan.getId());
+        return new PlanningContext(outline.getId(), outline.getRevision(), outline.getVersion(),
+                plan.getId(), plan.getVersion(), summarizeScenes(scenes), scenes);
+    }
+
+    @Override
     @Transactional(rollbackFor = RuntimeException.class)
-    public PlanningChangePackageView create(
+    public PlanningChangePackageView createCandidate(
             Long assistanceId,
-            CreatePlanningChangePackageRequest request) {
+            ModelPlanningProposal proposal) {
         ChapterSelectionAssistanceEntity assistance = requireAssistance(assistanceId);
-        validateCreateRequest(assistance, request);
-        List<ScenePlanContent> scenes = planningCodec.scenes(request.scenes());
-        String normalizedKey = request.idempotencyKey().trim();
+        PlanningContext frozenContext = planningContext(assistance);
+        validateModelProposal(assistance, proposal, frozenContext);
+        List<ScenePlanContent> scenes = planningCodec.scenes(proposal.scenes());
+        String normalizedKey = MODEL_PACKAGE_KEY_PREFIX + assistanceId;
         String scenesJson = json(scenes);
-        String afterSummary = summarizeScenes(scenes);
+        String changeReason = proposal.changeReason().trim();
+        String afterSummary = proposal.afterSummary().trim();
         ProsePlanningChangePackageEntity assistancePackage = findByAssistance(assistanceId);
         if (assistancePackage != null) {
             return reuseAssistancePackage(assistancePackage, normalizedKey, scenes,
-                    request.changeSummary().trim(), afterSummary);
+                    changeReason, afterSummary);
         }
         ProsePlanningChangePackageEntity existing = findByIdempotency(assistance.getChapterId(), normalizedKey);
         if (existing != null) {
             if (!Objects.equals(existing.getAssistanceId(), assistanceId)
                     || !sameScenes(existing, scenes)
-                    || !Objects.equals(existing.getChangeSummary(), request.changeSummary().trim())) {
+                    || !Objects.equals(existing.getChangeSummary(), changeReason)
+                    || !Objects.equals(existing.getAfterSummary(), afterSummary)) {
                 throw conflict("规划变更包幂等键已绑定不同输入");
             }
             return view(existing);
         }
+        ChapterProseCandidateEntity candidate = candidateMapper.selectByIdForUpdate(
+                assistance.getChapterId(), targetCandidateId(assistance));
         assistance = requireLockedAssistance(assistanceId);
-        validateCreateRequest(assistance, request);
-        ChapterProseCandidateEntity candidate = requireFrozenCandidate(assistance);
+        frozenContext = planningContext(assistance);
+        validateModelProposal(assistance, proposal, frozenContext);
+        requireFrozenCandidate(assistance, candidate);
         ChapterOutlineEntity outline = outlineMapper.findLatestForUpdate(assistance.getChapterId());
         ChapterPlanVersionEntity plan = planMapper.selectCurrentForUpdate(assistance.getChapterId());
-        if (outline == null || plan == null || !Objects.equals(plan.getOutlineId(), outline.getId())
-                || !Objects.equals(plan.getOutlineRevision(), outline.getRevision())) {
-            throw conflict("当前章纲或场景规划不存在，或两者来源已经不一致");
-        }
+        requireFrozenSources(frozenContext, outline, plan);
         assistancePackage = findByAssistance(assistanceId);
         if (assistancePackage != null) {
             return reuseAssistancePackage(assistancePackage, normalizedKey, scenes,
-                    request.changeSummary().trim(), afterSummary);
+                    changeReason, afterSummary);
         }
         existing = findByIdempotency(assistance.getChapterId(), normalizedKey);
         if (existing != null) {
             if (!Objects.equals(existing.getAssistanceId(), assistanceId)
                     || !sameScenes(existing, scenes)
-                    || !Objects.equals(existing.getChangeSummary(), request.changeSummary().trim())
+                    || !Objects.equals(existing.getChangeSummary(), changeReason)
                     || !Objects.equals(existing.getAfterSummary(), afterSummary)) {
                 throw conflict("规划变更包幂等键已绑定不同输入");
             }
@@ -131,8 +155,8 @@ public class ProsePlanningChangeServiceImpl implements ProsePlanningChangeServic
         entity.setTargetCandidateId(targetCandidateId(assistance));
         entity.setIdempotencyKey(normalizedKey);
         entity.setPackageStatus(PACKAGE_CANDIDATE);
-        entity.setChangeSummary(request.changeSummary().trim());
-        entity.setBeforeSummary(summarizePlanScenes(plan.getId()));
+        entity.setChangeSummary(changeReason);
+        entity.setBeforeSummary(frozenContext.beforeSummary());
         entity.setAfterSummary(afterSummary);
         entity.setTargetCandidateVersion(candidate.getVersion());
         entity.setTargetCandidateHash(candidate.getContentHash());
@@ -165,8 +189,10 @@ public class ProsePlanningChangeServiceImpl implements ProsePlanningChangeServic
             ChapterProseCandidateEntity candidate,
             Long packageId,
             Integer savedCandidateVersion,
-            String savedCandidateHash) {
+            String savedCandidateHash,
+            List<Long> appliedProposalIds) {
         ProsePlanningChangePackageEntity changePackage = requireLockedPackage(chapterId, packageId);
+        requireSourceProposalIncluded(changePackage, appliedProposalIds);
         if (PACKAGE_APPLIED.equals(changePackage.getPackageStatus())) {
             requireApplied(changePackage, candidate.getId(), savedCandidateVersion, savedCandidateHash);
             return changePackage.getResultScenePlanId();
@@ -201,9 +227,19 @@ public class ProsePlanningChangeServiceImpl implements ProsePlanningChangeServic
             Long candidateId,
             Long packageId,
             Integer savedCandidateVersion,
-            String savedCandidateHash) {
-        requireApplied(requireLockedPackage(chapterId, packageId), candidateId,
-                savedCandidateVersion, savedCandidateHash);
+            String savedCandidateHash,
+            List<Long> appliedProposalIds) {
+        ProsePlanningChangePackageEntity changePackage = requireLockedPackage(chapterId, packageId);
+        requireSourceProposalIncluded(changePackage, appliedProposalIds);
+        requireApplied(changePackage, candidateId, savedCandidateVersion, savedCandidateHash);
+    }
+
+    private void requireSourceProposalIncluded(
+            ProsePlanningChangePackageEntity changePackage,
+            List<Long> appliedProposalIds) {
+        if (appliedProposalIds == null || !appliedProposalIds.contains(changePackage.getAssistanceId())) {
+            throw conflict("规划联动保存必须同时结算生成该规划包的正文修改提案");
+        }
     }
 
     private void requireApplied(
@@ -281,21 +317,53 @@ public class ProsePlanningChangeServiceImpl implements ProsePlanningChangeServic
         }
     }
 
-    private void validateCreateRequest(
+    private void validateModelProposal(
             ChapterSelectionAssistanceEntity assistance,
-            CreatePlanningChangePackageRequest request) {
-        if (request == null || !StringUtils.hasText(request.changeSummary())
-                || request.changeSummary().trim().length() > 500
-                || !StringUtils.hasText(request.idempotencyKey())
-                || request.idempotencyKey().trim().length() > 128) {
+            ModelPlanningProposal proposal,
+            PlanningContext frozenContext) {
+        if (proposal == null || !StringUtils.hasText(proposal.changeReason())
+                || proposal.changeReason().trim().length() > 500
+                || !StringUtils.hasText(proposal.beforeSummary())
+                || proposal.beforeSummary().trim().length() > MAX_SUMMARY_LENGTH
+                || !StringUtils.hasText(proposal.afterSummary())
+                || proposal.afterSummary().trim().length() > MAX_SUMMARY_LENGTH
+                || frozenContext == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST,
-                    "changeSummary、scenes 和 idempotencyKey 必须符合规划变更契约");
+                    "模型规划提案的原因、摘要和场景必须符合结构化契约");
         }
         if (OPERATION_DISCUSS.equals(assistance.getOperationType())
-                || !READY_ASSISTANCE.contains(assistance.getRequestStatus())) {
+                || !PACKAGE_SOURCE_STATUSES.contains(assistance.getRequestStatus())) {
             throw conflict("只有已完成的正文修改提案可以创建规划变更包");
         }
+        if (!Objects.equals(frozenContext.beforeSummary(), proposal.beforeSummary().trim())) {
+            throw conflict("模型规划提案的变更前摘要与冻结来源不一致");
+        }
         targetCandidateId(assistance);
+    }
+
+    private PlanningContext planningContext(ChapterSelectionAssistanceEntity assistance) {
+        if (!StringUtils.hasText(assistance.getPlanningContextJson())) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(assistance.getPlanningContextJson(), PlanningContext.class);
+        } catch (JsonProcessingException exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "正文协助的规划来源快照无法读取", exception);
+        }
+    }
+
+    private void requireFrozenSources(
+            PlanningContext frozenContext,
+            ChapterOutlineEntity outline,
+            ChapterPlanVersionEntity plan) {
+        if (outline == null || plan == null
+                || !Objects.equals(frozenContext.baseOutlineId(), outline.getId())
+                || !Objects.equals(frozenContext.baseOutlineRevision(), outline.getRevision())
+                || !Objects.equals(frozenContext.baseOutlineVersion(), outline.getVersion())
+                || !Objects.equals(frozenContext.baseScenePlanId(), plan.getId())
+                || !Objects.equals(frozenContext.baseScenePlanVersion(), plan.getVersion())) {
+            throw conflict("模型规划提案来源已过期，请重新发起正文修改");
+        }
     }
 
     private Long targetCandidateId(ChapterSelectionAssistanceEntity assistance) {
@@ -315,20 +383,21 @@ public class ProsePlanningChangeServiceImpl implements ProsePlanningChangeServic
         return entity;
     }
 
-    private ChapterProseCandidateEntity requireFrozenCandidate(ChapterSelectionAssistanceEntity assistance) {
+    private void requireFrozenCandidate(
+            ChapterSelectionAssistanceEntity assistance,
+            ChapterProseCandidateEntity candidate) {
         Long candidateId = targetCandidateId(assistance);
-        ChapterProseCandidateEntity candidate = candidateMapper.selectByIdForUpdate(
-                assistance.getChapterId(), candidateId);
         if (candidate == null
+                || !Objects.equals(candidate.getId(), candidateId)
                 || !Objects.equals(candidate.getVersion(), assistance.getTargetContentVersion())
                 || !Objects.equals(candidate.getContentHash(), assistance.getTargetContentHash())) {
             throw conflict("正文候选版本或哈希已变化，不能创建规划变更包");
         }
-        return candidate;
     }
 
     private ChapterSelectionAssistanceEntity requireAssistance(Long assistanceId) {
-        ChapterSelectionAssistanceEntity entity = assistanceId == null ? null : assistanceMapper.selectById(assistanceId);
+        ChapterSelectionAssistanceEntity entity = assistanceId == null
+                ? null : assistanceMapper.selectById(assistanceId);
         if (entity == null || Integer.valueOf(1).equals(entity.getDeleted())) {
             throw new BusinessException(ErrorCode.BUSINESS_ERROR, "正文修改提案不存在");
         }
@@ -388,12 +457,11 @@ public class ProsePlanningChangeServiceImpl implements ProsePlanningChangeServic
         return Objects.equals(scenes(changePackage.getProposedScenesJson()), requestedScenes);
     }
 
-    private String summarizePlanScenes(Long planId) {
-        List<ScenePlanContent> sourceScenes = sceneMapper.findAllByPlanId(planId).stream()
+    private List<ScenePlanContent> planScenes(Long planId) {
+        return sceneMapper.findAllByPlanId(planId).stream()
                 .filter(entity -> !Integer.valueOf(1).equals(entity.getDeleted()))
                 .map(entity -> readScene(entity.getContentJson()))
                 .toList();
-        return summarizeScenes(sourceScenes);
     }
 
     private ScenePlanContent readScene(String value) {
