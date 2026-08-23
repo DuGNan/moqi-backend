@@ -11,6 +11,8 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.AcceptRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ContinueRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreateRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreatePlanningChangePackageRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningChangePackageView;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.RetryRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.View;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceService;
@@ -64,5 +66,17 @@ public class SelectionAssistanceController {
     @PostMapping("/selection-assistance/{requestId}/accept")
     public ApiResponse<View> accept(@PathVariable Long requestId, @RequestBody AcceptRequest request) {
         return ApiResponse.success(assistanceService.accept(requestId, request));
+    }
+
+    @PostMapping("/selection-assistance/{requestId}/planning-change-package")
+    public ApiResponse<PlanningChangePackageView> createPlanningChangePackage(
+            @PathVariable Long requestId,
+            @RequestBody CreatePlanningChangePackageRequest request) {
+        return ApiResponse.success(assistanceService.createPlanningChangePackage(requestId, request));
+    }
+
+    @GetMapping("/selection-assistance/{requestId}/planning-change-package")
+    public ApiResponse<PlanningChangePackageView> planningChangePackage(@PathVariable Long requestId) {
+        return ApiResponse.success(assistanceService.getPlanningChangePackage(requestId));
     }
 }

@@ -24,12 +24,22 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.RetryAgentStepCommand;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.StartAgentRunCommand;
 import com.dugnan.moqi.chapter.dto.ChapterGenerationBriefModels.GenerationBriefPreview;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
+import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
+import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
+import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
+import com.dugnan.moqi.chapter.entity.ChapterProseCandidateEntity;
 import com.dugnan.moqi.chapter.entity.ChapterSelectionAssistanceEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterSelectionAssistanceMapper;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.AcceptRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ContinueRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreateRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreatePlanningChangePackageRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningChangePackageView;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.RetryRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.TextDiff;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.View;
@@ -59,7 +69,15 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private static final String STATUS_FAILED = "failed";
     private static final String OPERATION_DISCUSS = "discuss";
     private static final String WORKFLOW_CO_CREATION = "co_creation";
-    private static final int MAX_SELECTED_LENGTH = 20000;
+    private static final String TARGET_FORMAL = "formal";
+    private static final String TARGET_CANDIDATE = "candidate";
+    private static final String SCOPE_SELECTION = "selection";
+    private static final String SCOPE_WHOLE = "whole";
+    private static final String CANDIDATE_PREFIX = "candidate:";
+    private static final String FORMAL_PREFIX = "formal:";
+    private static final String SHARED_CONVERSATION = "chapter_co_creation";
+    private static final int TARGET_CONTRACT_VERSION = 2;
+    private static final int MAX_SELECTED_LENGTH = 100000;
     private static final int MAX_INSTRUCTION_LENGTH = 2000;
     private static final Set<String> OPERATIONS = Set.of(
             OPERATION_DISCUSS, "rewrite", "polish", "expand", "compress");
@@ -71,6 +89,11 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private final ChapterGenerationBriefService briefService;
     private final ObjectMapper objectMapper;
     private AgentRuntime agentRuntime;
+    private ChapterProseCandidateMapper candidateMapper;
+    private ChapterGenerationMapper generationMapper;
+    private ChapterConversationMapper conversationMapper;
+    private ChapterConversationMessageMapper messageMapper;
+    private ProsePlanningChangeService planningChangeService;
 
     public SelectionAssistanceServiceImpl(
             ChapterMapper chapterMapper,
@@ -90,6 +113,20 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         this.agentRuntime = agentRuntime;
     }
 
+    @Autowired
+    public void setWorkspaceDependencies(
+            ChapterProseCandidateMapper candidateMapper,
+            ChapterGenerationMapper generationMapper,
+            ChapterConversationMapper conversationMapper,
+            ChapterConversationMessageMapper messageMapper,
+            ProsePlanningChangeService planningChangeService) {
+        this.candidateMapper = candidateMapper;
+        this.generationMapper = generationMapper;
+        this.conversationMapper = conversationMapper;
+        this.messageMapper = messageMapper;
+        this.planningChangeService = planningChangeService;
+    }
+
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public View create(Long chapterId, CreateRequest request) {
@@ -103,36 +140,105 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             }
             return view(existing);
         }
+        ChapterProseCandidateEntity lockedCandidate = null;
+        if (isTargetRequest(request)) {
+            chapter = requireLockedChapter(chapterId);
+            if (TARGET_CANDIDATE.equals(request.targetKind())) {
+                lockedCandidate = requireLockedCandidate(chapterId, parseCandidateId(request.targetId()));
+            }
+            existing = findByIdempotency(chapterId, normalizedKey);
+            if (existing != null) {
+                if (!matchesRequest(existing, request)) {
+                    throw conflict("幂等键已经绑定不同的选区输入");
+                }
+                return view(existing);
+            }
+        }
         ChapterSelectionAssistanceEntity parent = requireParent(chapter, request.parentId());
-        validateCurrentChapter(chapter, request);
+        Target target = resolveTarget(chapter, request, lockedCandidate);
+        validateTarget(request, target);
+        ChapterProseCandidateEntity createdCandidate = createFormalModificationCandidate(
+                chapter, request, target, normalizedKey);
+        if (createdCandidate != null) {
+            target = candidateTarget(createdCandidate, target.scope(), target.selectionStart(),
+                    target.selectionEnd(), target.selectedText());
+        }
         GenerationBriefPreview brief = briefService.preview(chapterId, null);
-        String fingerprint = inputFingerprint(chapter, request, parent, brief);
+        String fingerprint = inputFingerprint(chapter, request, target, parent, brief);
+        return persistAssistanceRun(chapter, request, normalizedKey, parent, target,
+                createdCandidate, brief, fingerprint);
+    }
 
+    private View persistAssistanceRun(
+            ChapterEntity chapter,
+            CreateRequest request,
+            String idempotencyKey,
+            ChapterSelectionAssistanceEntity parent,
+            Target target,
+            ChapterProseCandidateEntity createdCandidate,
+            GenerationBriefPreview brief,
+            String fingerprint) {
+        AiTaskEntity task = createTask(chapter, request, fingerprint);
+        ChapterSelectionAssistanceEntity entity = createAssistanceEntity(
+                chapter, request, idempotencyKey, parent, target, createdCandidate, brief, fingerprint, task.getId());
+        if (isTargetRequest(request) && OPERATION_DISCUSS.equals(request.operation())) {
+            persistDiscussionUserMessage(chapter, entity);
+        }
+        assistanceMapper.insert(entity);
+        startRun(chapter, idempotencyKey, task.getId(), entity);
+        return get(entity.getId());
+    }
+
+    private AiTaskEntity createTask(ChapterEntity chapter, CreateRequest request, String fingerprint) {
         AiTaskEntity task = new AiTaskEntity();
         task.setTaskType(WORKFLOW_TYPE);
         task.setTaskStatus(STATUS_QUEUED);
         task.setWorkId(chapter.getWorkId());
-        task.setChapterId(chapterId);
+        task.setChapterId(chapter.getId());
         task.setTaskInputJson(json(Map.of("inputFingerprint", fingerprint, "operation", request.operation())));
         task.setDeleted(0);
         task.setVersion(0);
         taskMapper.insert(task);
+        return task;
+    }
 
+    private ChapterSelectionAssistanceEntity createAssistanceEntity(
+            ChapterEntity chapter,
+            CreateRequest request,
+            String idempotencyKey,
+            ChapterSelectionAssistanceEntity parent,
+            Target target,
+            ChapterProseCandidateEntity createdCandidate,
+            GenerationBriefPreview brief,
+            String fingerprint,
+            Long taskId) {
         ChapterSelectionAssistanceEntity entity = new ChapterSelectionAssistanceEntity();
         entity.setWorkId(chapter.getWorkId());
-        entity.setChapterId(chapterId);
+        entity.setChapterId(chapter.getId());
         entity.setParentId(parent == null ? null : parent.getId());
-        entity.setAiTaskId(task.getId());
-        entity.setIdempotencyKey(normalizedKey);
+        entity.setAiTaskId(taskId);
+        entity.setIdempotencyKey(idempotencyKey);
         entity.setOperationType(request.operation());
         entity.setRequestStatus(STATUS_QUEUED);
+        entity.setTargetKind(target.kind());
+        entity.setRequestContractVersion(isTargetRequest(request) ? TARGET_CONTRACT_VERSION : 1);
+        entity.setTargetObjectId(target.objectId());
+        entity.setTargetCandidateId(target.candidateId());
+        entity.setTargetContentVersion(target.version());
+        entity.setTargetContentHash(target.contentHash());
+        entity.setReferenceScope(target.scope());
         entity.setBaseChapterVersion(chapter.getVersion());
-        entity.setBaseContentHash(request.contentHash());
-        entity.setSelectionStart(request.selectionStart());
-        entity.setSelectionEnd(request.selectionEnd());
-        entity.setSelectedText(request.selectedText());
-        entity.setAdjacentBefore(adjacentBefore(chapter.getContent(), request.selectionStart()));
-        entity.setAdjacentAfter(adjacentAfter(chapter.getContent(), request.selectionEnd()));
+        entity.setBaseContentHash(target.contentHash());
+        entity.setSelectionStart(target.selectionStart());
+        entity.setSelectionEnd(target.selectionEnd());
+        entity.setSelectedText(target.selectedText());
+        entity.setReferenceTextHash(hash(target.selectedText()));
+        entity.setReferenceSentenceCount(sentenceCount(target.selectedText()));
+        entity.setReferenceSnapshot(target.selectedText());
+        entity.setCreatedCandidateId(createdCandidate == null ? null : createdCandidate.getId());
+        entity.setProposalStatus(OPERATION_DISCUSS.equals(request.operation()) ? "discussion" : "pending");
+        entity.setAdjacentBefore(adjacentBefore(target.content(), target.selectionStart()));
+        entity.setAdjacentAfter(adjacentAfter(target.content(), target.selectionEnd()));
         entity.setUserInstruction(normalizeInstruction(request.instruction()));
         entity.setBriefTemplateVersion(brief.templateVersion());
         entity.setBriefFingerprint(brief.fingerprint());
@@ -140,19 +246,24 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         entity.setInputFingerprint(fingerprint);
         entity.setDeleted(0);
         entity.setVersion(0);
-        assistanceMapper.insert(entity);
+        return entity;
+    }
 
+    private void startRun(
+            ChapterEntity chapter,
+            String idempotencyKey,
+            Long taskId,
+            ChapterSelectionAssistanceEntity entity) {
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("assistanceId", entity.getId());
         input.put("workId", chapter.getWorkId());
-        input.put("chapterId", chapterId);
-        input.put("aiTaskId", task.getId());
-        AgentRunView run = agentRuntime.start(new StartAgentRunCommand(LOCAL_USER, chapter.getWorkId(), chapterId,
-                WORKFLOW_TYPE, normalizedKey, chapter.getVersion().longValue(), input, task.getId()));
+        input.put("chapterId", chapter.getId());
+        input.put("aiTaskId", taskId);
+        AgentRunView run = agentRuntime.start(new StartAgentRunCommand(LOCAL_USER, chapter.getWorkId(), chapter.getId(),
+                WORKFLOW_TYPE, idempotencyKey, chapter.getVersion().longValue(), input, taskId));
         assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", entity.getId()).eq("version", 0)
                 .set("agent_run_id", run.runId()).setSql("version = version + 1"));
-        return get(entity.getId());
     }
 
     @Override
@@ -183,7 +294,8 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         AgentRunView run = agentRuntime.cancel(entity.getAgentRunId());
         assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", entity.getId()).in("request_status", STATUS_QUEUED, STATUS_RUNNING)
-                .set("request_status", "canceled").setSql("version = version + 1"));
+                .set("request_status", "canceled").set("proposal_status", "canceled")
+                .setSql("version = version + 1"));
         updateTaskStatus(entity.getAiTaskId(), "canceled", null, null);
         return run;
     }
@@ -197,7 +309,8 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         }
         int rejected = assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", entity.getId()).eq("version", entity.getVersion())
-                .set("request_status", "rejected").setSql("version = version + 1"));
+                .set("request_status", "rejected").set("proposal_status", "rejected")
+                .setSql("version = version + 1"));
         if (rejected != 1) {
             throw conflict("候选状态已经变化，请刷新后重试");
         }
@@ -214,9 +327,16 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         if (request == null) {
             throw badRequest("继续修改请求不能为空");
         }
-        CreateRequest createRequest = new CreateRequest(parent.getBaseChapterVersion(), parent.getBaseContentHash(),
-                parent.getSelectionStart(), parent.getSelectionEnd(), parent.getSelectedText(), parent.getOperationType(),
-                request.instruction(), parent.getId(), request.idempotencyKey());
+        CreateRequest createRequest = Integer.valueOf(TARGET_CONTRACT_VERSION)
+                .equals(parent.getRequestContractVersion())
+                ? new CreateRequest(parent.getBaseChapterVersion(), parent.getBaseContentHash(),
+                        parent.getSelectionStart(), parent.getSelectionEnd(), parent.getSelectedText(),
+                        parent.getOperationType(), request.instruction(), parent.getId(), request.idempotencyKey(),
+                        parent.getTargetKind(), parent.getTargetObjectId(), parent.getTargetContentVersion(),
+                        parent.getReferenceScope())
+                : new CreateRequest(parent.getBaseChapterVersion(), parent.getBaseContentHash(),
+                        parent.getSelectionStart(), parent.getSelectionEnd(), parent.getSelectedText(),
+                        parent.getOperationType(), request.instruction(), parent.getId(), request.idempotencyKey());
         return create(parent.getChapterId(), createRequest);
     }
 
@@ -224,6 +344,9 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     @Transactional(rollbackFor = RuntimeException.class)
     public View accept(Long requestId, AcceptRequest request) {
         ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
+        if (Integer.valueOf(TARGET_CONTRACT_VERSION).equals(entity.getRequestContractVersion())) {
+            throw conflict("新正文工作区的修改提案只能在客户端应用并显式保存候选");
+        }
         if (OPERATION_DISCUSS.equals(entity.getOperationType()) || !StringUtils.hasText(entity.getResultContent())
                 || !Set.of(STATUS_READY, STATUS_REVIEW_REQUIRED).contains(entity.getRequestStatus())) {
             throw conflict("当前记录不是可采纳的正文修改候选");
@@ -257,12 +380,25 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         int accepted = assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", entity.getId()).eq("version", entity.getVersion())
                 .in("request_status", STATUS_READY, STATUS_REVIEW_REQUIRED)
-                .set("request_status", "accepted").set("accepted_chapter_version", chapter.getVersion() + 1)
+                .set("request_status", "accepted").set("proposal_status", "accepted")
+                .set("accepted_chapter_version", chapter.getVersion() + 1)
                 .setSql("version = version + 1"));
         if (accepted != 1) {
             throw conflict("候选状态已变化，请刷新后重试");
         }
         return get(requestId);
+    }
+
+    @Override
+    public PlanningChangePackageView createPlanningChangePackage(
+            Long requestId,
+            CreatePlanningChangePackageRequest request) {
+        return planningChangeService.create(requestId, request);
+    }
+
+    @Override
+    public PlanningChangePackageView getPlanningChangePackage(Long requestId) {
+        return planningChangeService.getByAssistance(requestId);
     }
 
     /** 将候选标记为正在执行。 */
@@ -271,7 +407,10 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
         int updated = assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", requestId).in("request_status", STATUS_QUEUED, STATUS_FAILED)
-                .set("request_status", STATUS_RUNNING).set("error_code", null).set("error_message", null)
+                .set("request_status", STATUS_RUNNING)
+                .set("proposal_status", OPERATION_DISCUSS.equals(entity.getOperationType())
+                        ? "discussion" : "pending")
+                .set("error_code", null).set("error_message", null)
                 .setSql("version = version + 1"));
         if (updated != 1) {
             throw conflict("选区协助状态已经变化");
@@ -324,11 +463,16 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         int updated = assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", requestId).eq("request_status", STATUS_RUNNING)
                 .set("request_status", status).set("result_content", normalizedContent)
+                .set("proposal_status", OPERATION_DISCUSS.equals(entity.getOperationType())
+                        ? "discussion" : "ready")
                 .set("diff_json", diff).set("fact_risk_status", normalizedRisk)
                 .set("fact_risk_reasons_json", json(safeReasons)).set("model_call_ref", modelCallRef)
                 .setSql("version = version + 1"));
         if (updated != 1) {
             throw conflict("选区协助已被取消或状态已经变化");
+        }
+        if (isTargetDiscussion(entity)) {
+            persistDiscussionAssistantMessage(entity, normalizedContent);
         }
         updateTaskStatus(entity.getAiTaskId(), "completed", null, null);
     }
@@ -339,20 +483,30 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
         assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", requestId).notIn("request_status", "accepted", "rejected", "canceled")
-                .set("request_status", STATUS_FAILED).set("error_code", errorCode)
+                .set("request_status", STATUS_FAILED).set("proposal_status", STATUS_FAILED)
+                .set("error_code", errorCode)
                 .set("error_message", "选区协助模型调用失败，可按失败步骤重试")
                 .setSql("version = version + 1"));
         updateTaskStatus(entity.getAiTaskId(), STATUS_FAILED, errorCode, "选区协助模型调用失败");
     }
 
     private void validateBasicRequest(CreateRequest request) {
-        if (request == null || request.baseVersion() == null || !StringUtils.hasText(request.contentHash())
-                || request.selectionStart() == null || request.selectionEnd() == null
-                || request.selectedText() == null || !OPERATIONS.contains(request.operation())
+        if (request == null || !StringUtils.hasText(request.contentHash())
+                || !OPERATIONS.contains(request.operation())
                 || !StringUtils.hasText(request.idempotencyKey()) || request.idempotencyKey().length() > 128) {
             throw badRequest("选区、操作、正文版本、正文哈希和 idempotencyKey 必须符合契约");
         }
-        if (request.selectedText().length() > MAX_SELECTED_LENGTH) {
+        if (isTargetRequest(request)) {
+            if (invalidTargetContract(request)) {
+                throw badRequest("targetKind、targetId、targetVersion 和 referenceScope 不符合正文目标契约");
+            }
+        } else if (request.baseVersion() == null) {
+            throw badRequest("旧请求必须提交 baseVersion");
+        }
+        if (missingSelectionReference(request)) {
+            throw badRequest("选区引用必须提交偏移和原文");
+        }
+        if (request.selectedText() != null && request.selectedText().length() > MAX_SELECTED_LENGTH) {
             throw badRequest("选区原文超过局部候选长度限制");
         }
         if (request.instruction() != null && request.instruction().length() > MAX_INSTRUCTION_LENGTH) {
@@ -360,30 +514,48 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         }
     }
 
-    private void validateCurrentChapter(ChapterEntity chapter, CreateRequest request) {
-        String content = content(chapter);
-        if (!request.baseVersion().equals(chapter.getVersion()) || !request.contentHash().equals(hash(content))) {
-            throw new BusinessException(ErrorCode.CHAPTER_VERSION_CONFLICT, "章节正文版本或哈希已变化");
-        }
-        if (!validRange(content, request.selectionStart(), request.selectionEnd())
-                || !request.selectedText().equals(content.substring(request.selectionStart(), request.selectionEnd()))) {
-            throw badRequest("选区偏移与原文不匹配");
-        }
-        if (!OPERATION_DISCUSS.equals(request.operation())
-                && !WORKFLOW_CO_CREATION.equals(chapter.getWorkflowStatus())) {
-            throw conflict("已发布章节只允许讨论，局部修改需等待修订草稿");
-        }
-    }
-
     private boolean matchesRequest(ChapterSelectionAssistanceEntity existing, CreateRequest request) {
-        return Objects.equals(existing.getBaseChapterVersion(), request.baseVersion())
+        if (!matchesTargetIdentity(existing, request)) {
+            return false;
+        }
+        Integer requestedVersion = isTargetRequest(request) ? request.targetVersion() : request.baseVersion();
+        boolean formalClone = isTargetRequest(request) && TARGET_FORMAL.equals(request.targetKind())
+                && existing.getCreatedCandidateId() != null;
+        Integer existingVersion = !isTargetRequest(request) || formalClone
+                ? existing.getBaseChapterVersion() : existing.getTargetContentVersion();
+        return Objects.equals(existingVersion, requestedVersion)
                 && Objects.equals(existing.getBaseContentHash(), request.contentHash())
-                && Objects.equals(existing.getSelectionStart(), request.selectionStart())
+                && (SCOPE_WHOLE.equals(request.referenceScope())
+                || (Objects.equals(existing.getSelectionStart(), request.selectionStart())
                 && Objects.equals(existing.getSelectionEnd(), request.selectionEnd())
-                && Objects.equals(existing.getSelectedText(), request.selectedText())
+                && Objects.equals(existing.getSelectedText(), request.selectedText())))
                 && Objects.equals(existing.getOperationType(), request.operation())
                 && Objects.equals(existing.getUserInstruction(), normalizeInstruction(request.instruction()))
                 && Objects.equals(existing.getParentId(), request.parentId());
+    }
+
+    private boolean matchesTargetIdentity(
+            ChapterSelectionAssistanceEntity existing,
+            CreateRequest request) {
+        if (!isTargetRequest(request)) {
+            return !Integer.valueOf(TARGET_CONTRACT_VERSION).equals(existing.getRequestContractVersion());
+        }
+        if (!Integer.valueOf(TARGET_CONTRACT_VERSION).equals(existing.getRequestContractVersion())
+                || !Objects.equals(existing.getReferenceScope(), normalizedScope(request.referenceScope()))) {
+            return false;
+        }
+        if (existing.getCreatedCandidateId() != null) {
+            return TARGET_FORMAL.equals(request.targetKind())
+                    && Objects.equals(request.targetId(), FORMAL_PREFIX + existing.getChapterId())
+                    && Objects.equals(existing.getTargetCandidateId(), existing.getCreatedCandidateId())
+                    && Objects.equals(existing.getTargetObjectId(), candidateObjectId(existing.getCreatedCandidateId()));
+        }
+        return Objects.equals(existing.getTargetKind(), request.targetKind())
+                && Objects.equals(existing.getTargetObjectId(), request.targetId());
+    }
+
+    private String normalizedScope(String scope) {
+        return SCOPE_WHOLE.equals(scope) ? SCOPE_WHOLE : SCOPE_SELECTION;
     }
 
     private ChapterSelectionAssistanceEntity requireParent(ChapterEntity chapter, Long parentId) {
@@ -399,15 +571,18 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         return parent;
     }
 
-    private String inputFingerprint(ChapterEntity chapter, CreateRequest request,
+    private String inputFingerprint(ChapterEntity chapter, CreateRequest request, Target target,
             ChapterSelectionAssistanceEntity parent, GenerationBriefPreview brief) {
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("chapterId", chapter.getId());
-        input.put("baseVersion", request.baseVersion());
-        input.put("contentHash", request.contentHash());
-        input.put("selectionStart", request.selectionStart());
-        input.put("selectionEnd", request.selectionEnd());
-        input.put("selectedText", request.selectedText());
+        input.put("targetKind", target.kind());
+        input.put("targetId", target.objectId());
+        input.put("targetVersion", target.version());
+        input.put("contentHash", target.contentHash());
+        input.put("referenceScope", target.scope());
+        input.put("selectionStart", target.selectionStart());
+        input.put("selectionEnd", target.selectionEnd());
+        input.put("selectedText", target.selectedText());
         input.put("operation", request.operation());
         input.put("instruction", normalizeInstruction(request.instruction()));
         input.put("parentId", parent == null ? null : parent.getId());
@@ -416,8 +591,282 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         return hash(json(input));
     }
 
+    private Target resolveTarget(
+            ChapterEntity chapter,
+            CreateRequest request,
+            ChapterProseCandidateEntity lockedCandidate) {
+        if (!isTargetRequest(request)) {
+            String chapterContent = content(chapter);
+            if (!Objects.equals(request.baseVersion(), chapter.getVersion())
+                    || !Objects.equals(request.contentHash(), hash(chapterContent))) {
+                throw new BusinessException(ErrorCode.CHAPTER_VERSION_CONFLICT, "章节正文版本或哈希已变化");
+            }
+            return rangedTarget(TARGET_FORMAL, FORMAL_PREFIX + chapter.getId(), null, chapter.getVersion(),
+                    chapterContent, request);
+        }
+        if (TARGET_FORMAL.equals(request.targetKind())) {
+            String chapterContent = content(chapter);
+            if (!Objects.equals(request.targetId(), FORMAL_PREFIX + chapter.getId())
+                    || !Objects.equals(request.targetVersion(), chapter.getVersion())
+                    || !Objects.equals(request.contentHash(), hash(chapterContent))) {
+                throw new BusinessException(ErrorCode.CHAPTER_VERSION_CONFLICT, "正式正文目标版本或哈希已变化");
+            }
+            return rangedTarget(TARGET_FORMAL, request.targetId(), null, chapter.getVersion(), chapterContent, request);
+        }
+        Long candidateId = parseCandidateId(request.targetId());
+        ChapterProseCandidateEntity candidate = lockedCandidate == null
+                ? requireCandidate(chapter.getId(), candidateId) : lockedCandidate;
+        if (!Objects.equals(request.targetVersion(), candidate.getVersion())
+                || !Objects.equals(request.contentHash(), candidate.getContentHash())) {
+            throw new BusinessException(ErrorCode.PROSE_CANDIDATE_CONFLICT, "正文候选目标版本或哈希已变化");
+        }
+        return rangedTarget(TARGET_CANDIDATE, request.targetId(), candidateId, candidate.getVersion(),
+                candidate.getContent(), request);
+    }
+
+    private ChapterProseCandidateEntity requireLockedCandidate(Long chapterId, Long candidateId) {
+        ChapterProseCandidateEntity candidate = candidateMapper.selectByIdForUpdate(chapterId, candidateId);
+        if (candidate == null) {
+            throw new BusinessException(ErrorCode.PROSE_CANDIDATE_NOT_FOUND, "正文候选不存在");
+        }
+        return candidate;
+    }
+
+    private Target rangedTarget(
+            String kind,
+            String objectId,
+            Long candidateId,
+            Integer version,
+            String targetContent,
+            CreateRequest request) {
+        String scope = SCOPE_WHOLE.equals(request.referenceScope()) ? SCOPE_WHOLE : SCOPE_SELECTION;
+        int start = SCOPE_WHOLE.equals(scope) ? 0 : request.selectionStart();
+        int end = SCOPE_WHOLE.equals(scope) ? targetContent.length() : request.selectionEnd();
+        String selected = SCOPE_WHOLE.equals(scope) ? targetContent : request.selectedText();
+        if (!validRange(targetContent, start, end)
+                || !Objects.equals(selected, targetContent.substring(start, end))) {
+            throw badRequest("引用范围、偏移与目标正文不匹配");
+        }
+        if (selected.length() > MAX_SELECTED_LENGTH) {
+            throw badRequest("引用正文超过协助长度限制");
+        }
+        return new Target(kind, objectId, candidateId, version, hash(targetContent), targetContent,
+                scope, start, end, selected);
+    }
+
+    private void validateTarget(CreateRequest request, Target target) {
+        if (!Objects.equals(request.contentHash(), target.contentHash())) {
+            throw new BusinessException(ErrorCode.CHAPTER_VERSION_CONFLICT, "目标正文哈希已变化");
+        }
+        if (!isTargetRequest(request) && !OPERATION_DISCUSS.equals(request.operation())) {
+            ChapterEntity chapter = requireChapter(Long.valueOf(target.objectId().substring(FORMAL_PREFIX.length())));
+            if (!WORKFLOW_CO_CREATION.equals(chapter.getWorkflowStatus())) {
+                throw conflict("已发布章节只允许讨论，局部修改需等待修订草稿");
+            }
+        }
+    }
+
+    private ChapterProseCandidateEntity createFormalModificationCandidate(
+            ChapterEntity chapter,
+            CreateRequest request,
+            Target target,
+            String idempotencyKey) {
+        if (!isTargetRequest(request) || !TARGET_FORMAL.equals(target.kind())
+                || OPERATION_DISCUSS.equals(request.operation())) {
+            return null;
+        }
+        ChapterGenerationEntity source = new ChapterGenerationEntity();
+        source.setWorkId(chapter.getWorkId());
+        source.setChapterId(chapter.getId());
+        source.setGenerationStatus("candidate_snapshot");
+        source.setGenerationMode("assistance");
+        source.setSelectionMode("all");
+        source.setIdempotencyKey("formal-assistance:" + hash(idempotencyKey));
+        source.setGeneratedContent(target.content());
+        source.setContentAssemblyMode("formal_assistance");
+        source.setGenerationTemplateVersion("formal-assistance-v1");
+        source.setGenerationFinishReason("candidate_created");
+        source.setWordCount(target.content().codePointCount(0, target.content().length()));
+        source.setValidityStatus("current");
+        source.setDeleted(0);
+        source.setVersion(0);
+        generationMapper.insert(source);
+
+        ChapterProseCandidateEntity candidate = new ChapterProseCandidateEntity();
+        candidate.setWorkId(chapter.getWorkId());
+        candidate.setChapterId(chapter.getId());
+        candidate.setSourceKind("formal_assistance");
+        candidate.setSourceGenerationId(source.getId());
+        candidate.setQualityGenerationId(source.getId());
+        candidate.setQualityRequestStatus("unavailable");
+        candidate.setCandidateStatus("active");
+        candidate.setAdoptionStatus("unadopted");
+        candidate.setContent(target.content());
+        candidate.setContentHash(target.contentHash());
+        candidate.setWordCount(target.content().codePointCount(0, target.content().length()));
+        candidate.setDeleted(0);
+        candidate.setVersion(0);
+        candidateMapper.insert(candidate);
+        candidate.setRootCandidateId(candidate.getId());
+        int rooted = candidateMapper.update(null, new UpdateWrapper<ChapterProseCandidateEntity>()
+                .eq("id", candidate.getId()).isNull("root_candidate_id")
+                .set("root_candidate_id", candidate.getId()));
+        if (rooted != 1) {
+            throw conflict("正式正文修改候选初始化失败");
+        }
+        return candidate;
+    }
+
+    private Target candidateTarget(
+            ChapterProseCandidateEntity candidate,
+            String scope,
+            Integer selectionStart,
+            Integer selectionEnd,
+            String selectedText) {
+        return new Target(TARGET_CANDIDATE, CANDIDATE_PREFIX + candidate.getId(), candidate.getId(),
+                candidate.getVersion(), candidate.getContentHash(), candidate.getContent(), scope,
+                selectionStart, selectionEnd, selectedText);
+    }
+
+    private void persistDiscussionUserMessage(ChapterEntity chapter, ChapterSelectionAssistanceEntity assistance) {
+        ChapterConversationEntity conversation = findEditingConversation(chapter.getId());
+        if (conversation == null) {
+            conversation = new ChapterConversationEntity();
+            conversation.setWorkId(chapter.getWorkId());
+            conversation.setChapterId(chapter.getId());
+            conversation.setConversationType(SHARED_CONVERSATION);
+            conversation.setConversationStatus("active");
+            conversation.setDeleted(0);
+            conversation.setVersion(0);
+            conversationMapper.insert(conversation);
+        }
+        ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
+        message.setConversationId(conversation.getId());
+        message.setChapterId(chapter.getId());
+        message.setMessageRole("user");
+        message.setContent(StringUtils.hasText(assistance.getUserInstruction())
+                ? assistance.getUserInstruction() : "请分析当前正文引用");
+        message.setGenerationStatus("completed");
+        message.setDeleted(0);
+        message.setVersion(0);
+        messageMapper.insert(message);
+        assistance.setConversationId(conversation.getId());
+        assistance.setUserMessageId(message.getId());
+    }
+
+    private void persistDiscussionAssistantMessage(
+            ChapterSelectionAssistanceEntity assistance,
+            String resultContent) {
+        if (assistance.getConversationId() == null) {
+            return;
+        }
+        ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
+        message.setConversationId(assistance.getConversationId());
+        message.setChapterId(assistance.getChapterId());
+        message.setMessageRole("assistant");
+        message.setContent(resultContent);
+        message.setGenerationStatus("completed");
+        message.setAiTaskId(assistance.getAiTaskId());
+        message.setDeleted(0);
+        message.setVersion(0);
+        messageMapper.insert(message);
+        assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
+                .eq("id", assistance.getId()).isNull("assistant_message_id")
+                .set("assistant_message_id", message.getId()));
+    }
+
+    private ChapterConversationEntity findEditingConversation(Long chapterId) {
+        List<ChapterConversationEntity> conversations = conversationMapper.selectList(
+                new LambdaQueryWrapper<ChapterConversationEntity>()
+                        .eq(ChapterConversationEntity::getChapterId, chapterId)
+                        .eq(ChapterConversationEntity::getConversationType, SHARED_CONVERSATION)
+                        .eq(ChapterConversationEntity::getConversationStatus, "active")
+                        .eq(ChapterConversationEntity::getDeleted, 0)
+                        .orderByDesc(ChapterConversationEntity::getId)
+                        .last("LIMIT 1"));
+        return conversations.isEmpty() ? null : conversations.get(0);
+    }
+
+    private ChapterProseCandidateEntity requireCandidate(Long chapterId, Long candidateId) {
+        ChapterProseCandidateEntity candidate = candidateId == null ? null : candidateMapper.selectOne(
+                new LambdaQueryWrapper<ChapterProseCandidateEntity>()
+                        .eq(ChapterProseCandidateEntity::getId, candidateId)
+                        .eq(ChapterProseCandidateEntity::getChapterId, chapterId)
+                        .eq(ChapterProseCandidateEntity::getDeleted, 0));
+        if (candidate == null) {
+            throw new BusinessException(ErrorCode.PROSE_CANDIDATE_NOT_FOUND, "正文候选不存在");
+        }
+        return candidate;
+    }
+
+    private Long parseCandidateId(String objectId) {
+        try {
+            if (objectId == null || !objectId.startsWith(CANDIDATE_PREFIX)) {
+                throw new NumberFormatException();
+            }
+            return Long.valueOf(objectId.substring(CANDIDATE_PREFIX.length()));
+        } catch (NumberFormatException exception) {
+            throw badRequest("候选目标 ID 格式不正确");
+        }
+    }
+
+    private boolean isTargetRequest(CreateRequest request) {
+        return request != null && (StringUtils.hasText(request.targetKind())
+                || StringUtils.hasText(request.targetId())
+                || request.targetVersion() != null
+                || StringUtils.hasText(request.referenceScope()));
+    }
+
+    private boolean invalidTargetContract(CreateRequest request) {
+        if (!StringUtils.hasText(request.targetKind())
+                || !Set.of(TARGET_FORMAL, TARGET_CANDIDATE).contains(request.targetKind())) {
+            return true;
+        }
+        if (!StringUtils.hasText(request.targetId()) || request.targetVersion() == null) {
+            return true;
+        }
+        return request.referenceScope() != null
+                && !Set.of(SCOPE_SELECTION, SCOPE_WHOLE).contains(request.referenceScope());
+    }
+
+    private boolean missingSelectionReference(CreateRequest request) {
+        if (SCOPE_WHOLE.equals(request.referenceScope())) {
+            return false;
+        }
+        return request.selectionStart() == null
+                || request.selectionEnd() == null
+                || request.selectedText() == null;
+    }
+
+    private boolean isTargetDiscussion(ChapterSelectionAssistanceEntity entity) {
+        return Integer.valueOf(TARGET_CONTRACT_VERSION).equals(entity.getRequestContractVersion())
+                && OPERATION_DISCUSS.equals(entity.getOperationType());
+    }
+
+    private int sentenceCount(String value) {
+        if (!StringUtils.hasText(value)) {
+            return 0;
+        }
+        int count = 0;
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (character == '。' || character == '！' || character == '？' || character == '\n') {
+                count++;
+            }
+        }
+        return Math.max(1, count);
+    }
+
     private ChapterEntity requireChapter(Long chapterId) {
         ChapterEntity chapter = chapterId == null ? null : chapterMapper.selectById(chapterId);
+        if (chapter == null || Integer.valueOf(1).equals(chapter.getDeleted())) {
+            throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
+        }
+        return chapter;
+    }
+
+    private ChapterEntity requireLockedChapter(Long chapterId) {
+        ChapterEntity chapter = chapterId == null ? null : chapterMapper.selectByIdForUpdate(chapterId);
         if (chapter == null || Integer.valueOf(1).equals(chapter.getDeleted())) {
             throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
         }
@@ -442,8 +891,11 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private View view(ChapterSelectionAssistanceEntity entity) {
         TextDiff diff = read(entity.getDiffJson(), new TypeReference<>() { });
         List<String> reasons = read(entity.getFactRiskReasonsJson(), new TypeReference<>() { });
-        boolean canAccept = !OPERATION_DISCUSS.equals(entity.getOperationType())
+        boolean canAccept = !Integer.valueOf(TARGET_CONTRACT_VERSION).equals(entity.getRequestContractVersion())
+                && !OPERATION_DISCUSS.equals(entity.getOperationType())
                 && Set.of(STATUS_READY, STATUS_REVIEW_REQUIRED).contains(entity.getRequestStatus());
+        PlanningChangePackageView planningPackage = planningChangeService == null
+                ? null : planningChangeService.getByAssistance(entity.getId());
         return new View(entity.getId(), entity.getWorkId(), entity.getChapterId(), entity.getParentId(),
                 entity.getAiTaskId(), entity.getAgentRunId(), entity.getOperationType(), entity.getRequestStatus(),
                 entity.getBaseChapterVersion(), entity.getBaseContentHash(), entity.getSelectionStart(),
@@ -454,7 +906,32 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                         ? "如需改变故事事实，请提交为规划变更并重新生成候选" : null,
                 entity.getErrorCode(), safeErrorMessage(entity.getErrorCode(), entity.getErrorMessage()),
                 entity.getAcceptedChapterVersion(), entity.getVersion(), entity.getGmtCreate(), entity.getGmtModified(),
-                publicFailure(entity.getAiTaskId(), entity.getErrorCode()));
+                publicFailure(entity.getAiTaskId(), entity.getErrorCode()), entity.getTargetKind(),
+                entity.getTargetObjectId(), entity.getTargetContentVersion(), entity.getTargetContentHash(),
+                entity.getReferenceScope(), entity.getReferenceTextHash(), entity.getReferenceSentenceCount(),
+                referenceStale(entity), entity.getCreatedCandidateId(), candidateObjectId(entity.getCreatedCandidateId()),
+                entity.getProposalStatus(), entity.getConversationId(), entity.getUserMessageId(),
+                entity.getAssistantMessageId(), planningPackage == null ? null : planningPackage.id());
+    }
+
+    private boolean referenceStale(ChapterSelectionAssistanceEntity entity) {
+        if (!Integer.valueOf(TARGET_CONTRACT_VERSION).equals(entity.getRequestContractVersion())) {
+            return false;
+        }
+        if (TARGET_CANDIDATE.equals(entity.getTargetKind())) {
+            ChapterProseCandidateEntity candidate = entity.getTargetCandidateId() == null
+                    ? null : candidateMapper.selectById(entity.getTargetCandidateId());
+            return candidate == null || Integer.valueOf(1).equals(candidate.getDeleted())
+                    || !Objects.equals(candidate.getVersion(), entity.getTargetContentVersion())
+                    || !Objects.equals(candidate.getContentHash(), entity.getTargetContentHash());
+        }
+        ChapterEntity chapter = chapterMapper.selectById(entity.getChapterId());
+        return chapter == null || !Objects.equals(chapter.getVersion(), entity.getTargetContentVersion())
+                || !Objects.equals(hash(content(chapter)), entity.getTargetContentHash());
+    }
+
+    private String candidateObjectId(Long candidateId) {
+        return candidateId == null ? null : CANDIDATE_PREFIX + candidateId;
     }
 
     private PublicFailure publicFailure(Long taskId, String errorCode) {
@@ -547,5 +1024,18 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
 
     private BusinessException conflict(String message) {
         return new BusinessException(ErrorCode.CHAPTER_VERSION_CONFLICT, message);
+    }
+
+    private record Target(
+            String kind,
+            String objectId,
+            Long candidateId,
+            Integer version,
+            String contentHash,
+            String content,
+            String scope,
+            Integer selectionStart,
+            Integer selectionEnd,
+            String selectedText) {
     }
 }

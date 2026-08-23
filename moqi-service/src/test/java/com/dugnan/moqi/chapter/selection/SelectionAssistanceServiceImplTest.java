@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -207,6 +208,8 @@ class SelectionAssistanceServiceImplTest {
                 ArgumentCaptor.forClass(ChapterSelectionAssistanceEntity.class);
         verify(fixture.assistanceMapper).insert(captor.capture());
         org.assertj.core.api.Assertions.assertThat(captor.getValue().getParentId()).isEqualTo(9L);
+        org.assertj.core.api.Assertions.assertThat(captor.getValue().getRequestContractVersion()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(captor.getValue().getCreatedCandidateId()).isNull();
         org.assertj.core.api.Assertions.assertThat(parent.getResultContent()).isEqualTo("第一版候选");
     }
 
@@ -237,7 +240,69 @@ class SelectionAssistanceServiceImplTest {
         fixture.service.cancel(9L);
 
         verify(runtime).cancel(7L);
-        verify(fixture.assistanceMapper).update(any(), any());
+        ArgumentCaptor<UpdateWrapper<ChapterSelectionAssistanceEntity>> update = updateCaptor();
+        verify(fixture.assistanceMapper).update(org.mockito.ArgumentMatchers.isNull(), update.capture());
+        assertThat(update.getValue().getSqlSet()).contains("proposal_status");
+        assertThat(update.getValue().getParamNameValuePairs()).containsValue("canceled");
+    }
+
+    @Test
+    void failedRequestMarksProposalFailed() {
+        Fixture fixture = new Fixture();
+        ChapterSelectionAssistanceEntity candidate = fixture.candidate("原文", "候选");
+        when(fixture.assistanceMapper.selectById(9L)).thenReturn(candidate);
+        when(fixture.assistanceMapper.update(any(), any())).thenReturn(1);
+
+        fixture.service.fail(9L, "MODEL_FAILED");
+
+        ArgumentCaptor<UpdateWrapper<ChapterSelectionAssistanceEntity>> update = updateCaptor();
+        verify(fixture.assistanceMapper).update(org.mockito.ArgumentMatchers.isNull(), update.capture());
+        assertThat(update.getValue().getSqlSet()).contains("proposal_status");
+        assertThat(update.getValue().getParamNameValuePairs()).containsValue("failed");
+    }
+
+    @Test
+    void retriesFailedModificationWithConsistentProposalStates() {
+        Fixture fixture = new Fixture();
+        ChapterSelectionAssistanceEntity failed = fixture.candidate("原文", "候选");
+        failed.setRequestStatus("failed");
+        failed.setProposalStatus("failed");
+        ChapterSelectionAssistanceEntity running = fixture.candidate("原文", "候选");
+        running.setRequestStatus("running");
+        running.setProposalStatus("pending");
+        when(fixture.assistanceMapper.selectById(9L)).thenReturn(failed, running);
+        when(fixture.assistanceMapper.update(any(), any())).thenReturn(1);
+
+        fixture.service.markRunning(9L);
+        fixture.service.complete(9L, "重试后的候选", "safe", List.of(), "model-call-retry");
+
+        ArgumentCaptor<UpdateWrapper<ChapterSelectionAssistanceEntity>> updates = updateCaptor();
+        verify(fixture.assistanceMapper, org.mockito.Mockito.times(2))
+                .update(org.mockito.ArgumentMatchers.isNull(), updates.capture());
+        assertThat(updates.getAllValues().get(0).getParamNameValuePairs())
+                .containsValue("running")
+                .containsValue("pending");
+        assertThat(updates.getAllValues().get(1).getParamNameValuePairs())
+                .containsValue("ready");
+    }
+
+    @Test
+    void restoresDiscussionProposalStateWhenFailedRequestRunsAgain() {
+        Fixture fixture = new Fixture();
+        ChapterSelectionAssistanceEntity failed = fixture.candidate("原文", "候选");
+        failed.setOperationType("discuss");
+        failed.setRequestStatus("failed");
+        failed.setProposalStatus("failed");
+        when(fixture.assistanceMapper.selectById(9L)).thenReturn(failed);
+        when(fixture.assistanceMapper.update(any(), any())).thenReturn(1);
+
+        fixture.service.markRunning(9L);
+
+        ArgumentCaptor<UpdateWrapper<ChapterSelectionAssistanceEntity>> update = updateCaptor();
+        verify(fixture.assistanceMapper).update(org.mockito.ArgumentMatchers.isNull(), update.capture());
+        assertThat(update.getValue().getParamNameValuePairs())
+                .containsValue("running")
+                .containsValue("discussion");
     }
 
     @Test
@@ -294,6 +359,10 @@ class SelectionAssistanceServiceImplTest {
         fixture.service.accept(9L, new AcceptRequest(3, hash("开头原文结尾")));
 
         verify(fixture.chapterMapper).updateContentIfVersion(2L, "开头新文结尾", 3);
+        ArgumentCaptor<UpdateWrapper<ChapterSelectionAssistanceEntity>> update = updateCaptor();
+        verify(fixture.assistanceMapper).update(org.mockito.ArgumentMatchers.isNull(), update.capture());
+        assertThat(update.getValue().getSqlSet()).contains("proposal_status");
+        assertThat(update.getValue().getParamNameValuePairs()).containsValue("accepted");
     }
 
     @Test
@@ -317,6 +386,13 @@ class SelectionAssistanceServiceImplTest {
         } catch (Exception exception) {
             throw new IllegalStateException(exception);
         }
+    }
+
+    private static ArgumentCaptor<UpdateWrapper<ChapterSelectionAssistanceEntity>> updateCaptor() {
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<UpdateWrapper<ChapterSelectionAssistanceEntity>> captor =
+                ArgumentCaptor.forClass(UpdateWrapper.class);
+        return captor;
     }
 
     private static final class Fixture {

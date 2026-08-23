@@ -30,6 +30,21 @@ public interface ChapterOutlineQueryMapper extends BaseMapper<ChapterOutlineEnti
     ChapterOutlineEntity findLatest(@Param("chapterId") Long chapterId);
 
     /**
+     * 锁定章节最新权威大纲以验证规划变更来源。
+     *
+     * @param chapterId 章节 ID
+     * @return 最新大纲
+     */
+    @Select("""
+            SELECT * FROM chapter_outlines
+            WHERE chapter_id = #{chapterId} AND deleted = 0
+            ORDER BY revision DESC, id DESC
+            LIMIT 1
+            FOR UPDATE
+            """)
+    ChapterOutlineEntity findLatestForUpdate(@Param("chapterId") Long chapterId);
+
+    /**
      * 按业务修订和实体版本条件更新正式大纲，避免候选确认与手工保存相互覆盖。
      *
      * @param id 大纲 ID
