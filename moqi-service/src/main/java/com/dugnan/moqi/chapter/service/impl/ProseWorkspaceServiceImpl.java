@@ -8,6 +8,7 @@ import java.util.Objects;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -32,6 +33,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationEvaluationReportMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseWorkspaceSelectionMapper;
+import com.dugnan.moqi.chapter.selection.ProsePlanningChangeService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.chapter.service.ProseWorkspaceService;
@@ -64,6 +66,7 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     private final ChapterAssetSourceSnapshotMapper sourceSnapshotMapper;
     private final GenerationEvaluationService evaluationService;
     private final ProseCandidateMaterializationService materializationService;
+    private ProsePlanningChangeService planningChangeService;
 
     public ProseWorkspaceServiceImpl(
             ChapterMapper chapterMapper,
@@ -82,6 +85,11 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         this.sourceSnapshotMapper = sourceSnapshotMapper;
         this.evaluationService = evaluationService;
         this.materializationService = materializationService;
+    }
+
+    @Autowired
+    public void setPlanningChangeService(ProsePlanningChangeService planningChangeService) {
+        this.planningChangeService = planningChangeService;
     }
 
     @Override
@@ -145,8 +153,10 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         if (request == null || request.content() == null || request.baseVersion() == null) {
             throw badRequest("content 和 baseVersion 不能为空");
         }
-        if (request.planningChangePackageId() != null || Boolean.TRUE.equals(request.planningConfirmed())) {
-            throw badRequest("规划联动保存由后续规划变更契约处理，当前接口仅允许保存正文候选");
+        boolean hasPlanningPackage = request.planningChangePackageId() != null;
+        boolean isPlanningConfirmed = Boolean.TRUE.equals(request.planningConfirmed());
+        if (hasPlanningPackage != isPlanningConfirmed) {
+            throw badRequest("规划联动保存必须同时提交 planningChangePackageId 和 planningConfirmed=true");
         }
         ChapterProseCandidateEntity candidate = candidateMapper.selectByIdForUpdate(chapterId, candidateId);
         if (candidate == null) {
@@ -155,6 +165,10 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         String contentHash = hash(request.content());
         if (Objects.equals(candidate.getVersion(), request.baseVersion() + 1)
                 && Objects.equals(candidate.getContentHash(), contentHash)) {
+            if (hasPlanningPackage) {
+                planningChangeService.requireApplied(chapterId, candidateId, request.planningChangePackageId(),
+                        candidate.getVersion(), contentHash);
+            }
             scheduleEvaluationAfterCommit(chapterId, candidateId, candidate.getVersion(),
                     candidate.getQualityGenerationId(), contentHash);
             return detail(candidate);
@@ -169,6 +183,10 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         snapshot.setSourceSnapshotId(copySourceSnapshot(source, snapshot));
         if (snapshot.getSourceSnapshotId() != null) {
             generationMapper.updateById(snapshot);
+        }
+        if (hasPlanningPackage) {
+            planningChangeService.apply(chapterId, candidate, request.planningChangePackageId(),
+                    request.baseVersion() + 1, contentHash);
         }
         if (candidateMapper.updateContentIfVersion(
                 chapterId,

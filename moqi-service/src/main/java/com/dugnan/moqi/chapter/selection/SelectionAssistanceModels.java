@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import com.dugnan.moqi.common.api.PublicFailure;
+import com.dugnan.moqi.planning.PlanningModels.ScenePlanContent;
 
 /**
  * @author dgn
@@ -24,7 +25,26 @@ public final class SelectionAssistanceModels {
             String operation,
             String instruction,
             Long parentId,
-            String idempotencyKey) {
+            String idempotencyKey,
+            String targetKind,
+            String targetId,
+            Integer targetVersion,
+            String referenceScope) {
+
+        /** 兼容只面向章节正式正文的旧请求构造。 */
+        public CreateRequest(
+                Integer baseVersion,
+                String contentHash,
+                Integer selectionStart,
+                Integer selectionEnd,
+                String selectedText,
+                String operation,
+                String instruction,
+                Long parentId,
+                String idempotencyKey) {
+            this(baseVersion, contentHash, selectionStart, selectionEnd, selectedText, operation, instruction,
+                    parentId, idempotencyKey, null, null, null, null);
+        }
     }
 
     public record ContinueRequest(String instruction, String idempotencyKey) {
@@ -69,7 +89,22 @@ public final class SelectionAssistanceModels {
             Integer version,
             LocalDateTime createdAt,
             LocalDateTime modifiedAt,
-            PublicFailure failure) {
+            PublicFailure failure,
+            String targetKind,
+            String targetId,
+            Integer targetVersion,
+            String targetContentHash,
+            String referenceScope,
+            String referenceTextHash,
+            Integer referenceSentenceCount,
+            boolean referenceStale,
+            Long createdCandidateId,
+            String createdCandidateObjectId,
+            String proposalStatus,
+            Long conversationId,
+            Long userMessageId,
+            Long assistantMessageId,
+            Long planningChangePackageId) {
 
         /** 兼容公共失败字段发布前的构造调用。 */
         public View(
@@ -85,7 +120,32 @@ public final class SelectionAssistanceModels {
                     contentHash, selectionStart, selectionEnd, selectedText, instruction, briefTemplateVersion,
                     briefFingerprint, inputFingerprint, resultContent, diff, factRiskStatus, factRiskReasons,
                     canAccept, planningChangeSuggestion, errorCode, errorMessage, acceptedChapterVersion,
-                    version, createdAt, modifiedAt, null);
+                    version, createdAt, modifiedAt, null, null, null, null, null, null, null, null,
+                    false, null, null, null, null, null, null, null);
         }
+    }
+
+    public record CreatePlanningChangePackageRequest(
+            String changeSummary,
+            List<ScenePlanContent> scenes,
+            String idempotencyKey) {
+    }
+
+    public record PlanningChangePackageView(
+            Long id,
+            String targetObjectId,
+            Integer targetContentVersion,
+            String status,
+            String changeSummary,
+            String beforeSummary,
+            String afterSummary,
+            Integer baseOutlineRevision,
+            Integer baseOutlineVersion,
+            Integer baseScenePlanVersion,
+            List<ScenePlanContent> scenes,
+            Integer appliedCandidateVersion,
+            Integer version,
+            LocalDateTime createdAt,
+            LocalDateTime modifiedAt) {
     }
 }

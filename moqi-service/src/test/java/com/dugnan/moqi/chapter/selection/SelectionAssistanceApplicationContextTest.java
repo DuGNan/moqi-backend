@@ -16,6 +16,10 @@ import com.dugnan.moqi.agent.AgentRuntime;
 import com.dugnan.moqi.agent.AgentWorkflowDefinition;
 import com.dugnan.moqi.agent.AgentWorkflowRegistry;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
+import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterSelectionAssistanceMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.config.service.UserConfigService;
@@ -88,6 +92,31 @@ class SelectionAssistanceApplicationContextTest {
         @Bean
         AiTaskMapper taskMapper() {
             return mock(AiTaskMapper.class);
+        }
+
+        @Bean
+        ChapterProseCandidateMapper candidateMapper() {
+            return mock(ChapterProseCandidateMapper.class);
+        }
+
+        @Bean
+        ChapterGenerationMapper generationMapper() {
+            return mock(ChapterGenerationMapper.class);
+        }
+
+        @Bean
+        ChapterConversationMapper conversationMapper() {
+            return mock(ChapterConversationMapper.class);
+        }
+
+        @Bean
+        ChapterConversationMessageMapper messageMapper() {
+            return mock(ChapterConversationMessageMapper.class);
+        }
+
+        @Bean
+        ProsePlanningChangeService planningChangeService() {
+            return mock(ProsePlanningChangeService.class);
         }
 
         @Bean

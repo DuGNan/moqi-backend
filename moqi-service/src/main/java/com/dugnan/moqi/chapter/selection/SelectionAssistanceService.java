@@ -4,6 +4,8 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.AcceptRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ContinueRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreateRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreatePlanningChangePackageRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningChangePackageView;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.RetryRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.View;
 
@@ -73,4 +75,23 @@ public interface SelectionAssistanceService {
      * @return 采纳后的记录
      */
     View accept(Long requestId, AcceptRequest request);
+
+    /**
+     * 为已完成修改提案创建或复用待确认规划变更包。
+     *
+     * @param requestId 修改提案 ID
+     * @param request 规划变更内容
+     * @return 持久化规划变更包
+     */
+    PlanningChangePackageView createPlanningChangePackage(
+            Long requestId,
+            CreatePlanningChangePackageRequest request);
+
+    /**
+     * 读取可在服务重启后恢复的规划变更包。
+     *
+     * @param requestId 修改提案 ID
+     * @return 规划变更包
+     */
+    PlanningChangePackageView getPlanningChangePackage(Long requestId);
 }

@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -32,6 +33,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationEvaluationReportMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterProseWorkspaceSelectionMapper;
+import com.dugnan.moqi.chapter.selection.ProsePlanningChangeService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.common.api.ErrorCode;
@@ -140,6 +142,98 @@ class ProseWorkspaceServiceImplTest {
         assertThat(fixture.service.getWorkspace(12L).formal().editable()).isFalse();
     }
 
+    @Test
+    void rejectsIncompletePlanningConfirmationBeforeLockingCandidate() {
+        Fixture fixture = new Fixture();
+
+        assertThatThrownBy(() -> fixture.service.saveCandidate(
+                12L, 8L, new SaveProseCandidateRequest("候选正文", 4, 7L, false)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("必须同时提交");
+
+        verify(fixture.candidateMapper, never()).selectByIdForUpdate(anyLong(), anyLong());
+        verifyNoInteractions(fixture.planningChangeService);
+    }
+
+    @Test
+    void appliesConfirmedPlanningPackageInsideCandidateSave() {
+        Fixture fixture = new Fixture();
+        when(fixture.candidateMapper.selectByIdForUpdate(12L, 8L)).thenReturn(fixture.candidate);
+        when(fixture.candidateMapper.selectOne(any())).thenReturn(fixture.candidate);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(fixture.sourceGeneration);
+        when(fixture.generationMapper.insert(any(ChapterGenerationEntity.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, ChapterGenerationEntity.class).setId(99L);
+            return 1;
+        });
+        when(fixture.candidateMapper.updateContentIfVersion(
+                anyLong(), anyLong(), anyString(), anyString(), anyInt(), anyLong(), anyInt()))
+                .thenAnswer(invocation -> {
+                    fixture.candidate.setContent(invocation.getArgument(2));
+                    fixture.candidate.setContentHash(invocation.getArgument(3));
+                    fixture.candidate.setQualityGenerationId(invocation.getArgument(5));
+                    fixture.candidate.setVersion(5);
+                    return 1;
+                });
+        when(fixture.reportMapper.selectList(any())).thenReturn(List.of());
+
+        fixture.service.saveCandidate(12L, 8L,
+                new SaveProseCandidateRequest("联动候选", 4, 7L, true));
+
+        verify(fixture.planningChangeService).apply(
+                eq(12L), eq(fixture.candidate), eq(7L), eq(5), anyString());
+        verify(fixture.candidateMapper).updateContentIfVersion(
+                eq(12L), eq(8L), eq("联动候选"), anyString(), anyInt(), eq(99L), eq(4));
+    }
+
+    @Test
+    void idempotentPlanningRetryRequiresSameAppliedPackageWithoutNewSnapshot() {
+        Fixture fixture = new Fixture();
+        fixture.candidate.setContent("联动候选");
+        fixture.candidate.setContentHash(contentHash("联动候选"));
+        fixture.candidate.setVersion(5);
+        when(fixture.candidateMapper.selectByIdForUpdate(12L, 8L)).thenReturn(fixture.candidate);
+        when(fixture.reportMapper.selectList(any())).thenReturn(List.of());
+
+        fixture.service.saveCandidate(12L, 8L,
+                new SaveProseCandidateRequest("联动候选", 4, 7L, true));
+
+        verify(fixture.planningChangeService).requireApplied(
+                12L, 8L, 7L, 5, contentHash("联动候选"));
+        verify(fixture.generationMapper, never()).insert(any(ChapterGenerationEntity.class));
+        verify(fixture.planningChangeService, never()).apply(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void candidateCasFailureRaisesRollbackAfterPlanningApply() {
+        Fixture fixture = new Fixture();
+        when(fixture.candidateMapper.selectByIdForUpdate(12L, 8L)).thenReturn(fixture.candidate);
+        when(fixture.candidateMapper.selectOne(any())).thenReturn(fixture.candidate);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(fixture.sourceGeneration);
+        when(fixture.generationMapper.insert(any(ChapterGenerationEntity.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, ChapterGenerationEntity.class).setId(99L);
+            return 1;
+        });
+        when(fixture.candidateMapper.updateContentIfVersion(
+                anyLong(), anyLong(), anyString(), anyString(), anyInt(), anyLong(), anyInt())).thenReturn(0);
+
+        assertThatThrownBy(() -> fixture.service.saveCandidate(12L, 8L,
+                new SaveProseCandidateRequest("联动冲突", 4, 7L, true)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("候选已被更新");
+
+        verify(fixture.planningChangeService).apply(
+                eq(12L), eq(fixture.candidate), eq(7L), eq(5), anyString());
+    }
+
+    private static String contentHash(String value) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
     private static final class Fixture {
         private final ChapterMapper chapterMapper = mock(ChapterMapper.class);
         private final ChapterGenerationMapper generationMapper = mock(ChapterGenerationMapper.class);
@@ -153,6 +247,7 @@ class ProseWorkspaceServiceImplTest {
         private final GenerationEvaluationService evaluationService = mock(GenerationEvaluationService.class);
         private final ProseCandidateMaterializationService materializationService =
                 mock(ProseCandidateMaterializationService.class);
+        private final ProsePlanningChangeService planningChangeService = mock(ProsePlanningChangeService.class);
         private final ChapterEntity chapter = chapter();
         private final ChapterProseCandidateEntity candidate = candidate();
         private final ChapterGenerationEntity sourceGeneration = generation();
@@ -161,6 +256,7 @@ class ProseWorkspaceServiceImplTest {
                 evaluationService, materializationService);
 
         private Fixture() {
+            service.setPlanningChangeService(planningChangeService);
             when(chapterMapper.selectById(12L)).thenReturn(chapter);
         }
 

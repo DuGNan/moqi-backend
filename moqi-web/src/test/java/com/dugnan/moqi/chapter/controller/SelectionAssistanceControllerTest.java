@@ -19,8 +19,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.View;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningChangePackageView;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceService;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
+import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.exception.BusinessException;
+import com.dugnan.moqi.web.exception.GlobalExceptionHandler;
 
 /**
  * @author dgn
@@ -35,7 +39,9 @@ class SelectionAssistanceControllerTest {
     @BeforeEach
     void setUp() {
         service = mock(SelectionAssistanceService.class);
-        mvc = MockMvcBuilders.standaloneSetup(new SelectionAssistanceController(service)).build();
+        mvc = MockMvcBuilders.standaloneSetup(new SelectionAssistanceController(service))
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
     }
 
     @Test
@@ -96,6 +102,75 @@ class SelectionAssistanceControllerTest {
         verify(service).continueFrom(eq(9L), any());
         verify(service).cancel(9L);
         verify(service).retry(eq(9L), any());
+    }
+
+    @Test
+    void createsAndReloadsPlanningChangePackage() throws Exception {
+        PlanningChangePackageView planning = new PlanningChangePackageView(
+                30L, "candidate:8", 4, "candidate", "调整场景", "变更前摘要", "变更后摘要", 2, 3,
+                4, List.of(), null, 0, null, null);
+        when(service.createPlanningChangePackage(eq(9L), any())).thenReturn(planning);
+        when(service.getPlanningChangePackage(9L)).thenReturn(planning);
+
+        mvc.perform(post("/api/selection-assistance/9/planning-change-package")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"changeSummary":"调整场景","scenes":[],"idempotencyKey":"planning-1"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(30))
+                .andExpect(jsonPath("$.data.targetObjectId").value("candidate:8"))
+                .andExpect(jsonPath("$.data.beforeSummary").value("变更前摘要"))
+                .andExpect(jsonPath("$.data.afterSummary").value("变更后摘要"))
+                .andExpect(jsonPath("$.data.assistanceId").doesNotExist())
+                .andExpect(jsonPath("$.data.chapterId").doesNotExist())
+                .andExpect(jsonPath("$.data.baseOutlineId").doesNotExist())
+                .andExpect(jsonPath("$.data.baseScenePlanId").doesNotExist())
+                .andExpect(jsonPath("$.data.resultScenePlanId").doesNotExist());
+        mvc.perform(get("/api/selection-assistance/9/planning-change-package"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("candidate"));
+    }
+
+    @Test
+    void returnsSafePlanningConflictWithoutInternalIdentifiersOrContent() throws Exception {
+        when(service.createPlanningChangePackage(eq(9L), any()))
+                .thenThrow(new BusinessException(ErrorCode.SCENE_PLAN_CONFLICT, "正文修改提案尚未绑定稳定候选"));
+
+        mvc.perform(post("/api/selection-assistance/9/planning-change-package")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"changeSummary":"调整场景","scenes":[],"idempotencyKey":"planning-1"}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SCENE_PLAN_CONFLICT"))
+                .andExpect(jsonPath("$.data").isEmpty())
+                .andExpect(jsonPath("$.assistanceId").doesNotExist())
+                .andExpect(jsonPath("$.chapterId").doesNotExist())
+                .andExpect(jsonPath("$.content").doesNotExist())
+                .andExpect(jsonPath("$.failure.diagnosticRef").isNotEmpty());
+    }
+
+    @Test
+    void returnsSafeCandidateNotFoundWithoutReferenceContentOrInternalIdentifiers() throws Exception {
+        when(service.create(eq(2L), any())).thenThrow(
+                new BusinessException(ErrorCode.PROSE_CANDIDATE_NOT_FOUND, "正文候选不存在"));
+
+        mvc.perform(post("/api/chapters/2/selection-assistance")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"contentHash":"hash","selectionStart":0,"selectionEnd":2,
+                                 "selectedText":"不应回显","operation":"rewrite","idempotencyKey":"missing",
+                                 "targetKind":"candidate","targetId":"candidate:404","targetVersion":0,
+                                 "referenceScope":"selection"}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PROSE_CANDIDATE_NOT_FOUND"))
+                .andExpect(jsonPath("$.data").isEmpty())
+                .andExpect(jsonPath("$.selectedText").doesNotExist())
+                .andExpect(jsonPath("$.candidateId").doesNotExist())
+                .andExpect(jsonPath("$.chapterId").doesNotExist())
+                .andExpect(jsonPath("$.failure.diagnosticRef").isNotEmpty());
     }
 
     private View view() {
