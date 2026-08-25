@@ -159,7 +159,21 @@ public final class ProseWorkspaceModels {
             String status,
             String conclusion,
             String contentHash,
-            LocalDateTime evaluatedAt) {
+            LocalDateTime evaluatedAt,
+            Long generationId,
+            Long reportId,
+            Integer currentAttempt,
+            boolean retryable,
+            String failureDescription) {
+
+        /** 兼容安全重试摘要发布前的构造调用。 */
+        public QualitySummary(
+                String status,
+                String conclusion,
+                String contentHash,
+                LocalDateTime evaluatedAt) {
+            this(status, conclusion, contentHash, evaluatedAt, null, null, null, false, null);
+        }
     }
 
     public record WorkspaceSelectionView(

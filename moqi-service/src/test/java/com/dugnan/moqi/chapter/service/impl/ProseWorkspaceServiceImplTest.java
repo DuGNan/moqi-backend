@@ -36,6 +36,8 @@ import com.dugnan.moqi.chapter.mapper.ChapterProseWorkspaceSelectionMapper;
 import com.dugnan.moqi.chapter.selection.ProsePlanningChangeService;
 import com.dugnan.moqi.chapter.selection.ProseProposalSettlementService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateAdoptionService;
 import com.dugnan.moqi.chapter.dto.ProseWorkspaceModels.AdoptionReadiness;
@@ -59,15 +61,31 @@ class ProseWorkspaceServiceImplTest {
         ChapterGenerationEvaluationReportEntity report = new ChapterGenerationEvaluationReportEntity();
         report.setReportStatus("failed");
         report.setContentHash("candidate-hash");
+        report.setId(19L);
+        report.setWorkId(1L);
+        report.setChapterId(12L);
+        report.setGenerationId(3L);
+        report.setAgentRunId(21L);
+        report.setAiTaskId(22L);
+        report.setErrorCode("evaluation_failed");
         report.setGmtModified(LocalDateTime.now());
         when(fixture.candidateMapper.selectList(any())).thenReturn(List.of(fixture.candidate));
         when(fixture.generationMapper.selectList(any())).thenReturn(List.of());
         when(fixture.reportMapper.selectList(any())).thenReturn(List.of(report));
+        when(fixture.retryMetadataResolver.resolveOwned(
+                21L, "semantic_evaluate", "chapter_generation_evaluation_v1", 1L, 12L, 22L))
+                .thenReturn(new RetryMetadata("semantic_evaluate", 2, true));
 
         var workspace = fixture.service.getWorkspace(12L);
 
         assertThat(workspace.candidates()).hasSize(1);
         assertThat(workspace.candidates().get(0).quality().status()).isEqualTo("failed");
+        assertThat(workspace.candidates().get(0).quality().generationId()).isEqualTo(3L);
+        assertThat(workspace.candidates().get(0).quality().reportId()).isEqualTo(19L);
+        assertThat(workspace.candidates().get(0).quality().currentAttempt()).isEqualTo(2);
+        assertThat(workspace.candidates().get(0).quality().retryable()).isTrue();
+        assertThat(workspace.candidates().get(0).quality().failureDescription())
+                .isEqualTo("任务未能完成，请稍后重试");
         assertThat(workspace.formal().objectId()).isEqualTo("formal:12");
         @SuppressWarnings("unchecked")
         ArgumentCaptor<LambdaQueryWrapper<ChapterGenerationEvaluationReportEntity>> reportQuery =
@@ -78,6 +96,57 @@ class ProseWorkspaceServiceImplTest {
                 ChapterGenerationEvaluationReportEntity.class);
         assertThat(reportQuery.getValue().getSqlSegment()).contains("generation_scene_id IS NULL");
         verifyNoInteractions(fixture.evaluationService);
+    }
+
+    @Test
+    void doesNotExposeRetryMetadataForStaleCandidateHash() {
+        Fixture fixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity report = new ChapterGenerationEvaluationReportEntity();
+        report.setId(19L);
+        report.setReportStatus("failed");
+        report.setContentHash("old-hash");
+        report.setErrorCode("evaluation_failed");
+        report.setGmtModified(LocalDateTime.now());
+        when(fixture.candidateMapper.selectList(any())).thenReturn(List.of(fixture.candidate));
+        when(fixture.generationMapper.selectList(any())).thenReturn(List.of());
+        when(fixture.reportMapper.selectList(any())).thenReturn(List.of(report));
+
+        var quality = fixture.service.getWorkspace(12L).candidates().get(0).quality();
+
+        assertThat(quality.status()).isEqualTo("failed");
+        assertThat(quality.currentAttempt()).isNull();
+        assertThat(quality.retryable()).isFalse();
+        verifyNoInteractions(fixture.retryMetadataResolver);
+    }
+
+    @Test
+    void doesNotExposeRetryForRunningOrNonRetryableEvaluation() {
+        Fixture runningFixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity running = ownedReport("running");
+        when(runningFixture.candidateMapper.selectList(any())).thenReturn(List.of(runningFixture.candidate));
+        when(runningFixture.generationMapper.selectList(any())).thenReturn(List.of());
+        when(runningFixture.reportMapper.selectList(any())).thenReturn(List.of(running));
+
+        var runningQuality = runningFixture.service.getWorkspace(12L).candidates().get(0).quality();
+
+        assertThat(runningQuality.status()).isEqualTo("evaluating");
+        assertThat(runningQuality.currentAttempt()).isNull();
+        assertThat(runningQuality.retryable()).isFalse();
+        verifyNoInteractions(runningFixture.retryMetadataResolver);
+
+        Fixture exhaustedFixture = new Fixture();
+        ChapterGenerationEvaluationReportEntity exhausted = ownedReport("failed");
+        when(exhaustedFixture.candidateMapper.selectList(any())).thenReturn(List.of(exhaustedFixture.candidate));
+        when(exhaustedFixture.generationMapper.selectList(any())).thenReturn(List.of());
+        when(exhaustedFixture.reportMapper.selectList(any())).thenReturn(List.of(exhausted));
+        when(exhaustedFixture.retryMetadataResolver.resolveOwned(
+                21L, "semantic_evaluate", "chapter_generation_evaluation_v1", 1L, 12L, 22L))
+                .thenReturn(new RetryMetadata("semantic_evaluate", 3, false));
+
+        var exhaustedQuality = exhaustedFixture.service.getWorkspace(12L).candidates().get(0).quality();
+
+        assertThat(exhaustedQuality.currentAttempt()).isNull();
+        assertThat(exhaustedQuality.retryable()).isFalse();
     }
 
     @Test
@@ -319,6 +388,21 @@ class ProseWorkspaceServiceImplTest {
         }
     }
 
+    private static ChapterGenerationEvaluationReportEntity ownedReport(String status) {
+        ChapterGenerationEvaluationReportEntity report = new ChapterGenerationEvaluationReportEntity();
+        report.setId(19L);
+        report.setWorkId(1L);
+        report.setChapterId(12L);
+        report.setGenerationId(3L);
+        report.setAgentRunId(21L);
+        report.setAiTaskId(22L);
+        report.setReportStatus(status);
+        report.setContentHash("candidate-hash");
+        report.setErrorCode("evaluation_failed");
+        report.setGmtModified(LocalDateTime.now());
+        return report;
+    }
+
     private static final class Fixture {
         private final ChapterMapper chapterMapper = mock(ChapterMapper.class);
         private final ChapterGenerationMapper generationMapper = mock(ChapterGenerationMapper.class);
@@ -330,6 +414,8 @@ class ProseWorkspaceServiceImplTest {
         private final ChapterAssetSourceSnapshotMapper sourceSnapshotMapper =
                 mock(ChapterAssetSourceSnapshotMapper.class);
         private final GenerationEvaluationService evaluationService = mock(GenerationEvaluationService.class);
+        private final GenerationRetryMetadataResolver retryMetadataResolver =
+                mock(GenerationRetryMetadataResolver.class);
         private final ProseCandidateMaterializationService materializationService =
                 mock(ProseCandidateMaterializationService.class);
         private final ProsePlanningChangeService planningChangeService = mock(ProsePlanningChangeService.class);
@@ -341,7 +427,7 @@ class ProseWorkspaceServiceImplTest {
         private final ChapterGenerationEntity sourceGeneration = generation();
         private final ProseWorkspaceServiceImpl service = new ProseWorkspaceServiceImpl(
                 chapterMapper, generationMapper, reportMapper, candidateMapper, selectionMapper, sourceSnapshotMapper,
-                evaluationService, materializationService);
+                evaluationService, retryMetadataResolver, materializationService);
 
         private Fixture() {
             service.setPlanningChangeService(planningChangeService);

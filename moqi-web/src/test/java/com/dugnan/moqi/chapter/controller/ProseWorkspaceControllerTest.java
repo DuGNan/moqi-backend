@@ -79,6 +79,29 @@ class ProseWorkspaceControllerTest {
     }
 
     @Test
+    void exposesSafeQualityRetryFactsWithoutInternalRunIdentifiers() throws Exception {
+        LocalDateTime now = LocalDateTime.now();
+        ProseCandidateDetail candidate = new ProseCandidateDetail(
+                2L, 8L, "candidate:8", 8L, null, "generation", "active", "unadopted",
+                "新候选", 5, "hash", 3,
+                new QualitySummary("failed", null, "hash", now,
+                        31L, 41L, 2, true, "任务未能完成，请稍后重试"),
+                now, now);
+        when(service.getCandidate(2L, 8L)).thenReturn(candidate);
+
+        mvc.perform(get("/api/chapters/2/prose-candidates/8"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.quality.generationId").value(31))
+                .andExpect(jsonPath("$.data.quality.reportId").value(41))
+                .andExpect(jsonPath("$.data.quality.currentAttempt").value(2))
+                .andExpect(jsonPath("$.data.quality.retryable").value(true))
+                .andExpect(jsonPath("$.data.quality.failureDescription")
+                        .value("任务未能完成，请稍后重试"))
+                .andExpect(jsonPath("$.data.quality.agentRunId").doesNotExist())
+                .andExpect(jsonPath("$.data.quality.aiTaskId").doesNotExist());
+    }
+
+    @Test
     void exposesBasisComparisonAndUniqueAdoptionRoutes() throws Exception {
         LocalDateTime now = LocalDateTime.now();
         ObjectMapper objectMapper = new ObjectMapper();
