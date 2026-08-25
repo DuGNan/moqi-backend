@@ -45,10 +45,13 @@ import com.dugnan.moqi.chapter.mapper.ChapterProseWorkspaceSelectionMapper;
 import com.dugnan.moqi.chapter.selection.ProsePlanningChangeService;
 import com.dugnan.moqi.chapter.selection.ProseProposalSettlementService;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateAdoptionService;
 import com.dugnan.moqi.chapter.service.ProseWorkspaceService;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.sourcechain.entity.ChapterAssetSourceSnapshotEntity;
 import com.dugnan.moqi.sourcechain.mapper.ChapterAssetSourceSnapshotMapper;
@@ -68,6 +71,8 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     private static final String OBJECT_CANDIDATE = "candidate";
     private static final String CANDIDATE_PREFIX = "candidate:";
     private static final String SNAPSHOT_STATUS = "candidate_snapshot";
+    private static final String EVALUATION_STEP = "semantic_evaluate";
+    private static final String EVALUATION_WORKFLOW = "chapter_generation_evaluation_v1";
 
     private final ChapterMapper chapterMapper;
     private final ChapterGenerationMapper generationMapper;
@@ -76,6 +81,7 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     private final ChapterProseWorkspaceSelectionMapper selectionMapper;
     private final ChapterAssetSourceSnapshotMapper sourceSnapshotMapper;
     private final GenerationEvaluationService evaluationService;
+    private final GenerationRetryMetadataResolver retryMetadataResolver;
     private final ProseCandidateMaterializationService materializationService;
     private ProsePlanningChangeService planningChangeService;
     private ProseProposalSettlementService proposalSettlementService;
@@ -90,6 +96,7 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
             ChapterProseWorkspaceSelectionMapper selectionMapper,
             ChapterAssetSourceSnapshotMapper sourceSnapshotMapper,
             GenerationEvaluationService evaluationService,
+            GenerationRetryMetadataResolver retryMetadataResolver,
             ProseCandidateMaterializationService materializationService) {
         this.chapterMapper = chapterMapper;
         this.generationMapper = generationMapper;
@@ -98,6 +105,7 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         this.selectionMapper = selectionMapper;
         this.sourceSnapshotMapper = sourceSnapshotMapper;
         this.evaluationService = evaluationService;
+        this.retryMetadataResolver = retryMetadataResolver;
         this.materializationService = materializationService;
     }
 
@@ -503,7 +511,8 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
 
     private QualitySummary quality(ChapterProseCandidateEntity candidate) {
         if (candidate.getQualityGenerationId() == null) {
-            return new QualitySummary("unavailable", null, candidate.getContentHash(), null);
+            return new QualitySummary("unavailable", null, candidate.getContentHash(), null,
+                    null, null, null, false, null);
         }
         List<ChapterGenerationEvaluationReportEntity> reports = reportMapper.selectList(
                 new LambdaQueryWrapper<ChapterGenerationEvaluationReportEntity>()
@@ -515,7 +524,8 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
         if (reports.isEmpty()) {
             String requestStatus = "pending".equals(candidate.getQualityRequestStatus())
                     ? "pending" : "unavailable";
-            return new QualitySummary(requestStatus, null, candidate.getContentHash(), null);
+            return new QualitySummary(requestStatus, null, candidate.getContentHash(), null,
+                    candidate.getQualityGenerationId(), null, null, false, null);
         }
         ChapterGenerationEvaluationReportEntity report = reports.get(0);
         String status = switch (Objects.requireNonNullElse(report.getReportStatus(), "")) {
@@ -524,8 +534,28 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
             case "failed" -> "failed";
             default -> "unavailable";
         };
+        boolean exactReport = Objects.equals(candidate.getQualityGenerationId(), report.getGenerationId())
+                && Objects.equals(candidate.getWorkId(), report.getWorkId())
+                && Objects.equals(candidate.getChapterId(), report.getChapterId())
+                && Objects.equals(candidate.getContentHash(), report.getContentHash());
+        RetryMetadata resolved = "failed".equals(status) && exactReport
+                ? retryMetadataResolver.resolveOwned(report.getAgentRunId(), EVALUATION_STEP,
+                        EVALUATION_WORKFLOW, report.getWorkId(), report.getChapterId(), report.getAiTaskId())
+                : RetryMetadata.empty();
+        RetryMetadata metadata = resolved == null ? RetryMetadata.empty() : resolved;
+        boolean retryable = EVALUATION_STEP.equals(metadata.currentStepKey())
+                && Boolean.TRUE.equals(metadata.retryable());
+        String failureDescription = "failed".equals(status)
+                ? safeFailureDescription(report.getErrorCode(), report.getErrorMessage()) : null;
         return new QualitySummary(status, "ready".equals(status) ? report.getConclusion() : null,
-                report.getContentHash(), report.getGmtModified());
+                report.getContentHash(), report.getGmtModified(), candidate.getQualityGenerationId(),
+                report.getId(), retryable ? metadata.currentAttempt() : null, retryable, failureDescription);
+    }
+
+    private String safeFailureDescription(String errorCode, String errorMessage) {
+        return StringUtils.hasText(errorCode)
+                ? PublicFailureFactory.safeMessage(errorCode, errorMessage)
+                : "评价未能完成，请稍后重试";
     }
 
     private void validateSelection(Long chapterId, SaveWorkspaceSelectionRequest request) {
