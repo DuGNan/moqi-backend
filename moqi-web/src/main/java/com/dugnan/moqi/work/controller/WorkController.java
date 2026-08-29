@@ -137,7 +137,6 @@ public class WorkController {
     }
 
     public record CreateChapterRequest(
-            @NotBlank(message = "标题不能为空")
             @Size(max = 200, message = "标题不能超过 200 个字符")
             String title,
             String chapterType) {

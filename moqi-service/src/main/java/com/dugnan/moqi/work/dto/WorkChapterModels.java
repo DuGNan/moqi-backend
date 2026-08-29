@@ -18,6 +18,7 @@ public final class WorkChapterModels {
     private WorkChapterModels() {
     }
 
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     public record WorkSummary(
             Long id,
             String title,
@@ -25,6 +26,7 @@ public final class WorkChapterModels {
             Integer version,
             long chapterCount,
             Long latestChapterId,
+            Integer latestChapterNo,
             String latestChapterTitle,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {
