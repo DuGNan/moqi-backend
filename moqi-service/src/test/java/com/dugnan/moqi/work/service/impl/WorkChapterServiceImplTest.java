@@ -131,6 +131,50 @@ class WorkChapterServiceImplTest {
     }
 
     /**
+     * 验证暂缓取名只把标题保存为 null，章序仍由 chapterNo 独立分配。
+     */
+    @Test
+    void createsUnnamedChapterWithIndependentChapterNumber() {
+        when(workMapper.selectByIdForUpdate(1L)).thenReturn(work(1L));
+        when(chapterMapper.selectList(any())).thenReturn(List.of(chapter(3L, 1L, 1, null)));
+        when(chapterMapper.insert(any(ChapterEntity.class))).thenAnswer(invocation -> {
+            ChapterEntity entity = invocation.getArgument(0);
+            assertThat(entity.getTitle()).isNull();
+            assertThat(entity.getChapterNo()).isEqualTo(2);
+            entity.setId(4L);
+            entity.setVersion(0);
+            return 1;
+        });
+
+        var result = service.createChapter(1L, new CreateChapterCommand("   ", null));
+
+        assertThat(result.title()).isNull();
+        assertThat(result.chapterNo()).isEqualTo(2);
+    }
+
+    /**
+     * 验证作品摘要按章序选择最近章节，较早章节改名不会抢占继续写入口。
+     */
+    @Test
+    void selectsLatestChapterByChapterNumberInsteadOfModificationTime() {
+        WorkEntity work = work(1L);
+        ChapterEntity renamedFirst = chapter(2L, 1L, 1, "正文一");
+        renamedFirst.setTitle("刚刚重命名");
+        renamedFirst.setGmtModified(LocalDateTime.of(2026, 8, 29, 12, 0));
+        ChapterEntity unnamedThird = chapter(4L, 1L, 3, "正文三");
+        unnamedThird.setTitle(null);
+        unnamedThird.setGmtModified(LocalDateTime.of(2026, 8, 29, 10, 0));
+        when(workMapper.selectList(any())).thenReturn(List.of(work));
+        when(chapterMapper.selectList(any())).thenReturn(List.of(renamedFirst, unnamedThird));
+
+        var result = service.listWorks(null, null, null).works().get(0);
+
+        assertThat(result.latestChapterId()).isEqualTo(4L);
+        assertThat(result.latestChapterNo()).isEqualTo(3);
+        assertThat(result.latestChapterTitle()).isNull();
+    }
+
+    /**
      * 验证章节字数统计会排除 Unicode 空白字符。
      */
     @Test
