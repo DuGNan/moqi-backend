@@ -11,7 +11,7 @@ import com.fasterxml.jackson.annotation.JsonValue;
  * @description 区分上下文条目的权威、候选、待决、已否定与证据语义。
  */
 public enum StoryContextAuthorityStatus {
-    /** 用户已确认的权威事实。 */
+    /** 已经确认或正式生效的权威资料。 */
     CONFIRMED,
     /** 尚未确认的候选。 */
     CANDIDATE,

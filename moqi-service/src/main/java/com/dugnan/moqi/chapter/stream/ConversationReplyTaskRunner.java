@@ -21,10 +21,13 @@ import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
 import com.dugnan.moqi.chapter.interaction.DiscussionInteractionCodec;
 import com.dugnan.moqi.chapter.interaction.DiscussionInteractionCodec.AssistantResult;
+import com.dugnan.moqi.chapter.interaction.DiscussionInteractionCodec.StructuredOutputException;
+import com.dugnan.moqi.chapter.interaction.ConversationReplyContentSanitizer;
 import com.dugnan.moqi.chapter.focus.ChapterDiscussionFocusResolver;
 import com.dugnan.moqi.chapter.focus.ResolvedDiscussionFocus;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.policy.ConversationReplyPromptCompiler;
 import com.dugnan.moqi.chapter.policy.ConversationReplyTaskInputV1;
 import com.dugnan.moqi.chapter.policy.DefaultReplyPolicyResolver;
 import com.dugnan.moqi.chapter.policy.ReplyDepth;
@@ -65,16 +68,24 @@ import com.dugnan.moqi.llm.LlmExecutionConfig;
 @Component
 public class ConversationReplyTaskRunner {
 
+    private static final ConversationReplyPromptCompiler PROMPT_COMPILER =
+            new ConversationReplyPromptCompiler();
     private static final int DEFAULT_CONTEXT_WINDOW_TOKENS = 32768;
     private static final int MIN_CONTEXT_WINDOW_TOKENS = 2;
     private static final int MIN_INPUT_RESERVE_TOKENS = 1024;
+    private static final int SUMMARY_MAX_OUTPUT_TOKENS = 4096;
+    private static final int SUMMARY_BASE_OUTPUT_TOKENS = 1536;
+    private static final int SUMMARY_TOKENS_PER_MESSAGE = 64;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConversationReplyTaskRunner.class);
 
     private static final String TASK_TYPE = "conversation_reply";
+    private static final String FACT_CORRECTION = "fact_correction";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_RUNNING = "running";
     private static final String STATUS_CANCELING = "canceling";
+    private static final String FINISH_REASON_LENGTH = "length";
+    private static final String FINISH_REASON_MAX_TOKENS = "max_tokens";
     private static final String STATUS_SUCCEEDED = "succeeded";
     private static final String STATUS_FAILED = "failed";
 
@@ -236,6 +247,13 @@ public class ConversationReplyTaskRunner {
             stopCanceledTask(task, state);
         } catch (StoryContextTaskBindingException exception) {
             // 快照关联竞争失败时保持任务终态，不调用模型。
+        } catch (StructuredOutputException exception) {
+            LOGGER.warn(
+                    "章节讨论结构化回复无法安全恢复，taskId={}, chapterId={}, reason={}",
+                    task.getId(), task.getChapterId(), exception.getMessage());
+            fail(task, "CONVERSATION_REPLY_JSON_INVALID", exception.getMessage());
+        } catch (ConversationReplyTruncatedException exception) {
+            fail(task, "CONVERSATION_REPLY_TRUNCATED", exception.getMessage());
         } catch (LlmProviderException exception) {
             if (!stopCanceledTask(task, state)) {
                 fail(task, exception.getError().name(), exception.getMessage());
@@ -286,18 +304,31 @@ public class ConversationReplyTaskRunner {
                         .build());
         eventPublisher.publishEvent(ChapterReplyEvent.started(task.getChapterId(), task.getId()));
         boolean structured = isStructuredInteraction(taskInput.replyMode());
-        state.publishPartial = !structured;
+        boolean delayedOutput = structured || isCurrentFactCorrection(taskInput);
+        state.publishPartial = !delayedOutput;
         state.call = provider.stream(
                 contextSnapshot == null ? request(input, taskInput) : request(contextSnapshot, taskInput),
-                event -> appendDelta(task, response, event, !structured));
+                event -> appendDelta(task, state, event, !delayedOutput));
         callRegistry.register(task.getId(), state.call);
         LlmStreamResult streamResult = state.call.await();
         ensureCompleted(streamResult);
+        ensureNotTruncated(taskInput, streamResult);
         ensureRunning(task);
         AssistantResult result = structured
-                ? DiscussionInteractionCodec.parseAssistantEnvelope(response.toString(), objectMapper())
+                ? parseStructuredResult(task, taskInput, response.toString())
                 : new AssistantResult(response.toString(), null, null);
-        if (structured && StringUtils.hasText(result.content())) {
+        result = new AssistantResult(
+                ConversationReplyContentSanitizer.stripLeadingCandidateNotices(result.content()),
+                result.interaction(),
+                result.interactionJson(),
+                result.degradationReason());
+        result = normalizeFactCorrection(taskInput, result);
+        if (result.degradationReason() != null) {
+            LOGGER.warn(
+                    "章节讨论结构化回复已降级为普通文本，taskId={}, chapterId={}, reason={}",
+                    task.getId(), task.getChapterId(), result.degradationReason());
+        }
+        if (delayedOutput && StringUtils.hasText(result.content())) {
             eventPublisher.publishEvent(ChapterReplyEvent.delta(task.getChapterId(), task.getId(), result.content()));
         }
         Long messageId = persistenceService.complete(task, input, result.content(), result.interactionJson());
@@ -306,18 +337,27 @@ public class ConversationReplyTaskRunner {
 
     private void appendDelta(
             AiTaskEntity task,
-            StringBuilder response,
+            ProviderCallState state,
             LlmStreamEvent event,
             boolean publish) {
         if (event instanceof LlmStreamEvent.TextDelta delta
                 && !callRegistry.isCancellationRequested(task.getId())
                 && StringUtils.hasText(delta.text())) {
-            response.append(delta.text());
+            state.response.append(delta.text());
             if (publish) {
-                eventPublisher.publishEvent(ChapterReplyEvent.delta(
-                        task.getChapterId(), task.getId(), delta.text()));
+                publishVisibleDelta(task, state);
             }
         }
+    }
+
+    private void publishVisibleDelta(AiTaskEntity task, ProviderCallState state) {
+        String visibleContent = ConversationReplyContentSanitizer.visibleStreamingContent(state.response.toString());
+        if (visibleContent.length() <= state.publishedContentLength) {
+            return;
+        }
+        String delta = visibleContent.substring(state.publishedContentLength);
+        state.publishedContentLength = visibleContent.length();
+        eventPublisher.publishEvent(ChapterReplyEvent.delta(task.getChapterId(), task.getId(), delta));
     }
 
     private void ensureCompleted(LlmStreamResult streamResult) {
@@ -326,6 +366,19 @@ public class ConversationReplyTaskRunner {
         }
         if (streamResult.status() == LlmStreamStatus.FAILED) {
             throw new LlmProviderException(streamResult.error());
+        }
+    }
+
+    private void ensureNotTruncated(
+            ConversationReplyTaskInputV1 input,
+            LlmStreamResult streamResult) {
+        if (input.replyMode() != ReplyMode.CONVERGE || streamResult.metadata() == null) {
+            return;
+        }
+        String finishReason = streamResult.metadata().finishReason();
+        if (FINISH_REASON_LENGTH.equalsIgnoreCase(finishReason)
+                || FINISH_REASON_MAX_TOKENS.equalsIgnoreCase(finishReason)) {
+            throw new ConversationReplyTruncatedException("会话总结达到输出上限，未保存不完整结果");
         }
     }
 
@@ -438,7 +491,7 @@ public class ConversationReplyTaskRunner {
         if (contextWindow < MIN_CONTEXT_WINDOW_TOKENS) {
             throw new IllegalStateException("模型上下文窗口至少需要 2 tokens");
         }
-        int outputReserve = outputBudget(taskInput.replyMode(), taskInput.replyDepth());
+        int outputReserve = outputBudget(taskInput, input);
         if (provider.capabilities().maxOutputTokens() != null) {
             outputReserve = Math.min(outputReserve, provider.capabilities().maxOutputTokens());
         }
@@ -551,7 +604,7 @@ public class ConversationReplyTaskRunner {
                                 taskRule(taskInput)),
                         new LlmMessage(LlmRole.USER, input.getContent())),
                 new LlmOptions(
-                        outputBudget(taskInput.replyMode(), taskInput.replyDepth()),
+                        outputBudget(taskInput, input),
                         null,
                         List.of(),
                         responseFormat(taskInput.replyMode())));
@@ -563,6 +616,40 @@ public class ConversationReplyTaskRunner {
 
     private boolean isStructuredInteraction(ReplyMode mode) {
         return mode == ReplyMode.COMPARE || mode == ReplyMode.CLARIFY;
+    }
+
+    private AssistantResult normalizeFactCorrection(
+            ConversationReplyTaskInputV1 input,
+            AssistantResult result) {
+        if (!isCurrentFactCorrection(input)
+                || !StringUtils.hasText(input.replyScope().targetReference())) {
+            return result;
+        }
+        return new AssistantResult(
+                input.replyScope().targetReference().trim(),
+                null,
+                null,
+                result.degradationReason());
+    }
+
+    private boolean isCurrentFactCorrection(ConversationReplyTaskInputV1 input) {
+        return DefaultReplyPolicyResolver.POLICY_VERSION.equals(input.policyVersion())
+                && FACT_CORRECTION.equals(input.replyScope().allowedChanges());
+    }
+
+    private AssistantResult parseStructuredResult(
+            AiTaskEntity task,
+            ConversationReplyTaskInputV1 input,
+            String response) {
+        if (!DefaultReplyPolicyResolver.POLICY_VERSION.equals(input.policyVersion())) {
+            return DiscussionInteractionCodec.parseAssistantEnvelope(response, objectMapper());
+        }
+        String questionId = "task-" + task.getId();
+        if (input.replyMode() == ReplyMode.COMPARE) {
+            return DiscussionInteractionCodec.parseComparisonDraft(
+                    response, objectMapper(), questionId);
+        }
+        return DiscussionInteractionCodec.parseClarificationDraft(response, objectMapper(), questionId);
     }
 
     private ObjectMapper objectMapper() {
@@ -601,46 +688,7 @@ public class ConversationReplyTaskRunner {
     }
 
     private String taskRule(ConversationReplyTaskInputV1 input) {
-        String modeRule = switch (input.replyMode()) {
-            case EXPLORE -> "硬约束：先理解并综合作者刚表达的意图，再只沿最有价值的一条因果、人物动机、冲突或叙事后果线索展开成连贯讨论。用户没有要求选择时，严禁生成任何显式或隐式的多方案结构，包括‘候选方向’‘选项’‘方案 A/B’‘需要你决定’‘几条路径’‘几种质地’‘第一种/第二种/第三种’及其同义改写；不得用编号、项目符号或多个小标题陈列替代方向，不得列出让作者逐项作答的问题。只有确实能帮助作者继续形成自己想法时，结尾可以提出一个开放问题；整条回复最多出现一个问号，而且该问题不得内含‘还是’等并列选择。若无法同时满足，以不提问、继续综合拓展为准。";
-            case CLARIFY -> "只提出一个最影响方向的澄清问题，不自行扩写完整方案。";
-            case COMPARE -> "用户已明确要求候选或比较；给出差异明确的少量候选，也必须保留用户自行描述的空间。";
-            case CONVERGE -> "只总结已确认内容和剩余待决，不新增大范围设定。";
-            case PLAN -> "仅在请求范围内输出结构化规划，不生成正文。";
-            case DRAFT -> "仅在请求范围内生成正文草稿，不把草稿自动确认为正式内容。";
-        };
-        String depthRule = switch (input.replyDepth()) {
-            case BRIEF -> "保持简洁，优先约 150 至 400 字的体验基线。";
-            case BALANCED -> "给出足够决策的信息，避免跨阶段扩写。";
-            case DEEP -> "可以深入，但仍只处理本轮唯一主要意图。";
-        };
-        return "你是墨契的章节共创助手。"
-                + modeRule
-                + depthRule
-                + "本轮主要意图：" + input.replyScope().primaryIntent()
-                + "；允许修改：" + input.replyScope().allowedChanges()
-                + "；最多候选数：" + input.replyScope().maxCandidates()
-                + "。已确认内容才是权威事实；候选、待决、证据与已否定内容不得混用。"
-                + (input.consecutiveQuestionSuppressed()
-                        ? "上一轮已经提问或给出选项，本轮必须先综合用户回答并拓展思考，不得再次连续出题。" : "")
-                + (input.crossChapterRequested()
-                        ? "用户已明确要求跨章讨论，可以在请求范围内涉及后续章节。"
-                        : "只讨论当前章节，不得主动设计、追问或预设下一章。")
-                + "除非用户明确索要建议，不得输出‘我的倾向’或替作者做决定；不得用连续二选一代替共同思考。"
-                + "不得宣称已经确认、保存或更新任何 Brief、大纲、场景规划或正文。"
-                + (isStructuredInteraction(input.replyMode()) ? structuredInteractionRule(input.replyMode()) : "");
-    }
-
-    private String structuredInteractionRule(ReplyMode mode) {
-        String interactionRule = mode == ReplyMode.COMPARE
-                ? "interaction.type 必须为 single_choice，options 必须为 2 至 4 项，allowCustom 必须为 true。"
-                : "interaction.type 必须为 open_question，options 必须为空数组，allowCustom 必须为 true。";
-        return "只输出一个 JSON 对象，不要 Markdown 代码块。对象格式为："
-                + "{\"content\":\"给作者看的简短引导\",\"interaction\":{\"schemaVersion\":1,"
-                + "\"type\":\"single_choice 或 open_question\",\"questionId\":\"本问题稳定唯一 ID\","
-                + "\"question\":\"问题\",\"options\":[{\"optionId\":\"唯一 ID\",\"title\":\"标题\","
-                + "\"description\":\"说明\",\"tradeoffs\":\"取舍\"}],\"allowCustom\":true}}。"
-                + interactionRule;
+        return PROMPT_COMPILER.compile(input);
     }
 
     private int outputBudget(ReplyMode mode, ReplyDepth depth) {
@@ -651,6 +699,25 @@ public class ConversationReplyTaskRunner {
             return depth == ReplyDepth.BRIEF ? 1024 : depth == ReplyDepth.BALANCED ? 2048 : 4096;
         }
         return depth == ReplyDepth.BRIEF ? 768 : depth == ReplyDepth.BALANCED ? 1536 : 3072;
+    }
+
+    private int outputBudget(
+            ConversationReplyTaskInputV1 taskInput,
+            ChapterConversationMessageEntity input) {
+        int baseBudget = outputBudget(taskInput.replyMode(), taskInput.replyDepth());
+        if (taskInput.replyMode() != ReplyMode.CONVERGE
+                || !DefaultReplyPolicyResolver.POLICY_VERSION.equals(taskInput.policyVersion())) {
+            return baseBudget;
+        }
+        Long messageCount = messageMapper.selectCount(
+                new LambdaQueryWrapper<ChapterConversationMessageEntity>()
+                        .eq(ChapterConversationMessageEntity::getConversationId, input.getConversationId())
+                        .eq(ChapterConversationMessageEntity::getDeleted, 0));
+        long adaptiveBudget = SUMMARY_BASE_OUTPUT_TOKENS
+                + (messageCount == null ? 0L : messageCount * SUMMARY_TOKENS_PER_MESSAGE);
+        return (int) Math.min(
+                SUMMARY_MAX_OUTPUT_TOKENS,
+                Math.max(baseBudget, adaptiveBudget));
     }
 
     private String scopeSummary(ConversationReplyTaskInputV1 input) {
@@ -694,7 +761,9 @@ public class ConversationReplyTaskRunner {
         Long messageId = persistenceService.stop(
                 latest,
                 state.input,
-                state.publishPartial ? state.response.toString() : "");
+                state.publishPartial
+                        ? ConversationReplyContentSanitizer.visibleStreamingContent(state.response.toString())
+                        : "");
         eventPublisher.publishEvent(ChapterReplyEvent.canceled(
                 latest.getChapterId(), latest.getId(), messageId));
         return true;
@@ -716,6 +785,14 @@ public class ConversationReplyTaskRunner {
         private ChapterConversationMessageEntity input;
         private final StringBuilder response = new StringBuilder();
         private boolean publishPartial;
+        private int publishedContentLength;
+    }
+
+    private static final class ConversationReplyTruncatedException extends RuntimeException {
+
+        private ConversationReplyTruncatedException(String message) {
+            super(message);
+        }
     }
 
 }

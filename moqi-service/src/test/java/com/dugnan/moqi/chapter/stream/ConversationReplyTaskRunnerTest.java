@@ -39,6 +39,9 @@ import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmProviderRuntimeConfig;
 import com.dugnan.moqi.llm.LlmProviderCapabilities;
 import com.dugnan.moqi.llm.LlmRequest;
+import com.dugnan.moqi.llm.LlmResponseFormat;
+import com.dugnan.moqi.llm.LlmResponseMetadata;
+import com.dugnan.moqi.llm.LlmRole;
 import com.dugnan.moqi.llm.LlmStreamCall;
 import com.dugnan.moqi.llm.LlmStreamCallRegistry;
 import com.dugnan.moqi.llm.LlmStreamEvent;
@@ -365,6 +368,167 @@ class ConversationReplyTaskRunnerTest {
         assertThat(failedEvent.failure().category()).isEqualTo("service_unavailable");
     }
 
+    /**
+     * 验证总结达到输出上限时整轮失败，不保存可能遗漏内容的半截总结。
+     */
+    @Test
+    void rejectsTruncatedSummaryInsteadOfPersistingPartialContent() {
+        AiTaskEntity task = task("queued", 0);
+        task.setTaskInputJson("""
+                {
+                  "schemaVersion":3,
+                  "messageId":11,
+                  "conversationId":8,
+                  "replyMode":"converge",
+                  "replyDepth":"brief",
+                  "replyScope":{
+                    "primaryIntent":"converge_consensus",
+                    "targetType":"current_discussion",
+                    "targetReference":null,
+                    "allowedChanges":"confirmed_and_pending_summary",
+                    "maxCandidates":1,
+                    "allowNewTerms":false
+                  },
+                  "controlSource":"message",
+                  "policyVersion":"chapter-reply-policy-v5",
+                  "contextAuthorityVersion":"story-context-authority-v2",
+                  "convergenceApplied":true,
+                  "deferredReplyDepth":null
+                }
+                """);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            java.util.function.Consumer<LlmStreamEvent> consumer = invocation.getArgument(1);
+            consumer.accept(new LlmStreamEvent.TextDelta("尚未完整的总结"));
+            return new CompletedCall(new LlmResponseMetadata(
+                    "deepseek", "test-model", "max_tokens", 100, 200, 300, "request-1"));
+        }).when(provider).stream(any(), any());
+
+        new ConversationReplyTaskRunner(
+                taskMapper, messageMapper, userConfigService, providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher, new LlmStreamCallRegistry(), null, null, new ObjectMapper()).run(12L);
+
+        verify(messageMapper, never()).insert(any(ChapterConversationMessageEntity.class));
+        ArgumentCaptor<Object> eventCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher, org.mockito.Mockito.atLeastOnce()).publishEvent(eventCaptor.capture());
+        ChapterReplyEvent failedEvent = eventCaptor.getAllValues().stream()
+                .filter(ChapterReplyEvent.class::isInstance)
+                .map(ChapterReplyEvent.class::cast)
+                .filter(event -> "reply.failed".equals(event.type()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(failedEvent.errorCode()).isEqualTo("CONVERSATION_REPLY_TRUNCATED");
+    }
+
+    /**
+     * 验证无法恢复的结构化输出不会把原始 JSON 暴露为助手消息。
+     */
+    @Test
+    void failsMalformedStructuredOutputWithoutPersistingRawJson() {
+        AiTaskEntity task = task("queued", 0);
+        task.setTaskInputJson("""
+                {
+                  "schemaVersion":3,
+                  "messageId":11,
+                  "conversationId":8,
+                  "replyMode":"compare",
+                  "replyDepth":"balanced",
+                  "replyScope":{
+                    "primaryIntent":"compare_candidates",
+                    "targetType":"current_discussion",
+                    "targetReference":null,
+                    "allowedChanges":"candidate_summaries",
+                    "maxCandidates":1,
+                    "allowNewTerms":false
+                  },
+                  "controlSource":"message",
+                  "policyVersion":"chapter-reply-policy-v5",
+                  "contextAuthorityVersion":"story-context-authority-v2",
+                  "convergenceApplied":false,
+                  "deferredReplyDepth":null
+                }
+                """);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            java.util.function.Consumer<LlmStreamEvent> consumer = invocation.getArgument(1);
+            consumer.accept(new LlmStreamEvent.TextDelta("{\"回复\":"));
+            return new CompletedCall();
+        }).when(provider).stream(any(), any());
+
+        new ConversationReplyTaskRunner(
+                taskMapper, messageMapper, userConfigService, providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher, new LlmStreamCallRegistry(), null, null, new ObjectMapper()).run(12L);
+
+        verify(messageMapper, never()).insert(any(ChapterConversationMessageEntity.class));
+        ArgumentCaptor<Object> eventCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher, org.mockito.Mockito.atLeastOnce()).publishEvent(eventCaptor.capture());
+        ChapterReplyEvent failedEvent = eventCaptor.getAllValues().stream()
+                .filter(ChapterReplyEvent.class::isInstance)
+                .map(ChapterReplyEvent.class::cast)
+                .filter(event -> "reply.failed".equals(event.type()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(failedEvent.errorCode()).isEqualTo("CONVERSATION_REPLY_JSON_INVALID");
+    }
+
+    /**
+     * 验证 V5 总结按当前上下文消息数提高输出预算，采用深度仍保持简洁。
+     */
+    @Test
+    void expandsSummaryBudgetWithoutChangingResolvedDepth() {
+        AiTaskEntity task = task("queued", 0);
+        task.setTaskInputJson("""
+                {
+                  "schemaVersion":3,
+                  "messageId":11,
+                  "conversationId":8,
+                  "replyMode":"converge",
+                  "replyDepth":"brief",
+                  "replyScope":{
+                    "primaryIntent":"converge_consensus",
+                    "targetType":"current_discussion",
+                    "targetReference":null,
+                    "allowedChanges":"confirmed_and_pending_summary",
+                    "maxCandidates":1,
+                    "allowNewTerms":false
+                  },
+                  "controlSource":"message",
+                  "policyVersion":"chapter-reply-policy-v5",
+                  "contextAuthorityVersion":"story-context-authority-v2",
+                  "convergenceApplied":true,
+                  "deferredReplyDepth":null
+                }
+                """);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(messageMapper.selectCount(any())).thenReturn(20L);
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(provider.stream(any(), any())).thenReturn(new CompletedCall());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(99L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper, messageMapper, userConfigService, providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher, new LlmStreamCallRegistry(), null, null, new ObjectMapper()).run(12L);
+
+        ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).stream(requestCaptor.capture(), any());
+        assertThat(requestCaptor.getValue().options().maxOutputTokens()).isEqualTo(2816);
+        ArgumentCaptor<LlmCallContext> contextCaptor = ArgumentCaptor.forClass(LlmCallContext.class);
+        verify(providerFactory).createObserved(any(), contextCaptor.capture());
+        assertThat(contextCaptor.getValue().replyDepth()).isEqualTo("brief");
+    }
+
     @Test
     @SuppressWarnings({"rawtypes", "unchecked"})
     void retryQueueRejectionKeepsExistingDiagnosticReference() {
@@ -399,17 +563,32 @@ class ConversationReplyTaskRunnerTest {
                 new LlmProviderRuntimeConfig("deepseek", "https://api.deepseek.com", "test-key", "deepseek-v4-flash"));
         when(providerFactory.create(any())).thenReturn(provider);
         when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, true, false, 16384, 8192));
-        StoryContextSnapshot snapshot = new StoryContextSnapshot(
-                88L, "chapter_discussion:1:2:8", 1L, 2L, 8L,
-                StoryContextProfile.CHAPTER_DISCUSSION, 1, 1, 16384, 4096, 12288, 12,
-                "hash", List.of(
-                        new StoryContextItem(StoryContextSourceType.SYSTEM_RULE, "system", "v1", null,
-                                "SYSTEM", "系统规则", true, 1000, 0, 2, 2, "INCLUDED"),
-                        new StoryContextItem(StoryContextSourceType.USER_INPUT, "11", null, null,
-                                "USER", "讨论本章目标", true, 1000, 500, 3, 3, "INCLUDED")),
-                List.of(), null);
         when(contextBindingService.buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class)))
-                .thenReturn(snapshot);
+                .thenAnswer(invocation -> {
+                    StoryContextBuildCommand command = invocation.getArgument(0);
+                    return new StoryContextSnapshot(
+                            88L, "chapter_discussion:1:2:8", 1L, 2L, 8L,
+                            StoryContextProfile.CHAPTER_DISCUSSION, 2, 1,
+                            command.contextWindowTokens(), command.outputReserveTokens(),
+                            command.inputBudgetTokens(), 120,
+                            "hash", List.of(
+                                    new StoryContextItem(StoryContextSourceType.SYSTEM_RULE, "system", "v1", null,
+                                            "SYSTEM", "【必须遵守的规则】只把 AI 输出当作候选。",
+                                            true, 1000, 0, 12, 12, "INCLUDED"),
+                                    new StoryContextItem(StoryContextSourceType.TASK_RULE, "task", "v3", null,
+                                            "SYSTEM", command.taskInstruction(),
+                                            true, 990, 1, 80, 80, "INCLUDED"),
+                                    new StoryContextItem(StoryContextSourceType.CONVERSATION_TURN, "5:user", "1", null,
+                                            "USER", "我想让主角先救人。",
+                                            false, 600, 400, 8, 8, "INCLUDED"),
+                                    new StoryContextItem(StoryContextSourceType.CONVERSATION_TURN,
+                                            "5:assistant", "1", null,
+                                            "ASSISTANT", "可以让救人暴露主角能力。",
+                                            false, 600, 401, 14, 14, "INCLUDED"),
+                                    new StoryContextItem(StoryContextSourceType.USER_INPUT, "11", null, null,
+                                            "USER", "讨论本章目标", true, 1000, 500, 6, 6, "INCLUDED")),
+                            List.of(), null);
+                });
         org.mockito.Mockito.doAnswer(invocation -> new CompletedCall())
                 .when(provider).stream(any(), any());
         when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
@@ -425,9 +604,24 @@ class ConversationReplyTaskRunnerTest {
 
         ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
         verify(provider).stream(requestCaptor.capture(), any());
-        assertThat(requestCaptor.getValue().messages()).extracting(message -> message.content())
-                .containsExactly("系统规则", "讨论本章目标");
-        assertThat(requestCaptor.getValue().options().maxOutputTokens()).isEqualTo(4096);
+        LlmRequest request = requestCaptor.getValue();
+        assertThat(request.messages()).extracting(message -> message.role())
+                .containsExactly(LlmRole.SYSTEM, LlmRole.SYSTEM, LlmRole.USER,
+                        LlmRole.ASSISTANT, LlmRole.USER);
+        assertThat(request.messages()).extracting(message -> message.content())
+                .containsExactly(
+                        "【必须遵守的规则】只把 AI 输出当作候选。",
+                        "使用自然、直接、容易理解的中文，回应作者当前提出的问题。"
+                                + "本轮沿作者当前想法继续讨论；缺失信息会明显改变回答时再提问。"
+                                + "本轮平衡回答，说明主要依据和直接影响，信息充分后收束。"
+                                + "只沿当前回答方向展开，不在结尾追加多个可选分支。"
+                                + "当前范围是本章正在讨论的问题。"
+                                + "结合当前作品资料理解问题，以作者最新消息为准。"
+                                + "复述作者内容时，保留原有的否定和不确定措辞。",
+                        "我想让主角先救人。",
+                        "可以让救人暴露主角能力。",
+                        "讨论本章目标");
+        assertThat(request.options().maxOutputTokens()).isEqualTo(1536);
         org.mockito.Mockito.verify(contextBindingService)
                 .buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class));
     }
@@ -540,6 +734,172 @@ class ConversationReplyTaskRunnerTest {
                 new LlmExecutionConfigDescriptor("deepseek", model, 1, 1));
     }
 
+    @Test
+    void convertsCurrentComparisonDraftToPersistedFrontendInteraction() {
+        AiTaskEntity task = task("queued", 0);
+        task.setTaskInputJson("""
+                {
+                  "schemaVersion":1,
+                  "messageId":11,
+                  "conversationId":8,
+                  "replyMode":"compare",
+                  "replyDepth":"balanced",
+                  "replyScope":{
+                    "primaryIntent":"compare_candidates",
+                    "targetType":"current_discussion",
+                    "targetReference":null,
+                    "allowedChanges":"candidate_summaries",
+                    "maxCandidates":2,
+                    "allowNewTerms":false
+                  },
+                  "controlSource":"message",
+                  "policyVersion":"chapter-reply-policy-v5",
+                  "contextAuthorityVersion":"story-context-authority-v2",
+                  "convergenceApplied":false
+                }
+                """);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            java.util.function.Consumer<LlmStreamEvent> consumer = invocation.getArgument(1);
+            consumer.accept(new LlmStreamEvent.TextDelta("""
+                    {"回复":"两个方向的差别在风险出现的时间。","问题":"你更倾向哪个方向？",
+                    "选项":[{"标题":"立即公开","说明":"冲突立即发生","取舍":"调查空间较少"},
+                    {"标题":"暂时隐瞒","说明":"保留调查空间","取舍":"关系压力累积"}]}
+                    """));
+            return new CompletedCall();
+        }).when(provider).stream(any(), any());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(99L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper,
+                messageMapper,
+                userConfigService,
+                providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher,
+                new LlmStreamCallRegistry(),
+                null,
+                null,
+                new ObjectMapper()).run(12L);
+
+        ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).stream(requestCaptor.capture(), any());
+        assertThat(requestCaptor.getValue().options().responseFormat()).isEqualTo(LlmResponseFormat.JSON_OBJECT);
+        assertThat(requestCaptor.getValue().messages().get(0).content())
+                .contains("‘回复’", "‘问题’", "‘选项’", "‘标题’", "‘说明’", "‘取舍’")
+                .doesNotContain("{\"回复\"")
+                .doesNotContain("schemaVersion", "single_choice", "questionId", "optionId", "allowCustom");
+
+        ArgumentCaptor<ChapterConversationMessageEntity> messageCaptor =
+                ArgumentCaptor.forClass(ChapterConversationMessageEntity.class);
+        verify(messageMapper).insert(messageCaptor.capture());
+        assertThat(messageCaptor.getValue().getContent()).isEqualTo("两个方向的差别在风险出现的时间。");
+        assertThat(messageCaptor.getValue().getInteractionJson())
+                .contains("\"schemaVersion\":1", "\"type\":\"single_choice\"", "\"questionId\":\"task-12\"")
+                .contains("\"optionId\":\"option-1\"", "\"allowCustom\":true");
+    }
+
+    @Test
+    void persistsAuthorCorrectionWithoutModelStatusLanguage() {
+        AiTaskEntity task = task("queued", 0);
+        task.setTaskInputJson("""
+                {
+                  "schemaVersion":1,
+                  "messageId":11,
+                  "conversationId":8,
+                  "replyMode":"explore",
+                  "replyDepth":"brief",
+                  "replyScope":{
+                    "primaryIntent":"explore_direction",
+                    "targetType":"current_focus",
+                    "targetReference":"失踪的是妹妹，不是姐姐",
+                    "allowedChanges":"fact_correction",
+                    "maxCandidates":1,
+                    "allowNewTerms":false
+                  },
+                  "controlSource":"message",
+                  "policyVersion":"chapter-reply-policy-v5",
+                  "contextAuthorityVersion":"story-context-authority-v2",
+                  "convergenceApplied":false
+                }
+                """);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            java.util.function.Consumer<LlmStreamEvent> consumer = invocation.getArgument(1);
+            consumer.accept(new LlmStreamEvent.TextDelta("好的，已确认：失踪的是妹妹，不是姐姐，其余不变。"));
+            return new CompletedCall();
+        }).when(provider).stream(any(), any());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(99L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper,
+                messageMapper,
+                userConfigService,
+                providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher,
+                new LlmStreamCallRegistry(),
+                null,
+                null,
+                new ObjectMapper()).run(12L);
+
+        ArgumentCaptor<ChapterConversationMessageEntity> messageCaptor =
+                ArgumentCaptor.forClass(ChapterConversationMessageEntity.class);
+        verify(messageMapper).insert(messageCaptor.capture());
+        assertThat(messageCaptor.getValue().getContent()).isEqualTo("失踪的是妹妹，不是姐姐");
+        verify(eventPublisher, never()).publishEvent(
+                ChapterReplyEvent.delta(2L, 12L, "好的，已确认：失踪的是妹妹，不是姐姐，其余不变。"));
+        verify(eventPublisher).publishEvent(ChapterReplyEvent.delta(2L, 12L, "失踪的是妹妹，不是姐姐"));
+    }
+
+    @Test
+    void stripsChunkedCandidateStatusMarkersBeforePublishingAndPersistingReply() {
+        AiTaskEntity task = task("queued", 0);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        when(providerFactory.create(any())).thenReturn(provider);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            java.util.function.Consumer<LlmStreamEvent> consumer = invocation.getArgument(1);
+            consumer.accept(new LlmStreamEvent.TextDelta("【尚未确认"));
+            consumer.accept(new LlmStreamEvent.TextDelta(
+                    "的候选，仅供讨论】【尚未确认的候选，仅供讨论】"));
+            consumer.accept(new LlmStreamEvent.TextDelta("可以让车站出现空间错位。"));
+            return new CompletedCall();
+        }).when(provider).stream(any(), any());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(99L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper, messageMapper, userConfigService, providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher, new LlmStreamCallRegistry()).run(12L);
+
+        ArgumentCaptor<ChapterConversationMessageEntity> messageCaptor =
+                ArgumentCaptor.forClass(ChapterConversationMessageEntity.class);
+        verify(messageMapper).insert(messageCaptor.capture());
+        assertThat(messageCaptor.getValue().getContent()).isEqualTo("可以让车站出现空间错位。");
+        verify(eventPublisher).publishEvent(
+                ChapterReplyEvent.delta(2L, 12L, "可以让车站出现空间错位。"));
+        verify(eventPublisher, never()).publishEvent(
+                ChapterReplyEvent.delta(2L, 12L, "【尚未确认"));
+    }
+
     private ChapterConversationMessageEntity userMessage() {
         ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
         message.setId(11L);
@@ -554,6 +914,16 @@ class ConversationReplyTaskRunnerTest {
 
     private static final class CompletedCall implements LlmStreamCall {
 
+        private final LlmResponseMetadata metadata;
+
+        private CompletedCall() {
+            this(null);
+        }
+
+        private CompletedCall(LlmResponseMetadata metadata) {
+            this.metadata = metadata;
+        }
+
         @Override
         public boolean cancel() {
             return false;
@@ -561,7 +931,7 @@ class ConversationReplyTaskRunnerTest {
 
         @Override
         public LlmStreamResult await() {
-            return new LlmStreamResult(LlmStreamStatus.COMPLETED, null, null);
+            return new LlmStreamResult(LlmStreamStatus.COMPLETED, metadata, null);
         }
 
         @Override

@@ -1,5 +1,6 @@
 package com.dugnan.moqi.chapter.interaction;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -28,7 +29,16 @@ public final class DiscussionInteractionCodec {
     private static final int MAX_OPTION_TEXT_LENGTH = 500;
     private static final int MAX_CUSTOM_TEXT_LENGTH = 1000;
     private static final int MIN_CHOICE_OPTIONS = 2;
-    private static final int MAX_CHOICE_OPTIONS = 4;
+    private static final int MAX_CHOICE_OPTIONS = 5;
+    private static final String DRAFT_REPLY_FIELD = "回复";
+    private static final String DRAFT_QUESTION_FIELD = "问题";
+    private static final String DRAFT_OPTIONS_FIELD = "选项";
+    private static final String DRAFT_TITLE_FIELD = "标题";
+    private static final String DRAFT_DESCRIPTION_FIELD = "说明";
+    private static final String DRAFT_TRADEOFFS_FIELD = "取舍";
+    private static final String DEGRADATION_INVALID_SEMANTIC_STRUCTURE = "invalid_semantic_structure";
+    private static final String DEGRADATION_OPTION_COUNT_OUT_OF_RANGE = "option_count_out_of_range";
+    private static final String DEGRADATION_NON_JSON_READABLE_TEXT = "non_json_readable_text";
     private static final Set<String> TYPES = Set.of(TYPE_SINGLE_CHOICE, TYPE_OPEN_QUESTION);
 
     private DiscussionInteractionCodec() {
@@ -55,6 +65,105 @@ public final class DiscussionInteractionCodec {
         } catch (JsonProcessingException exception) {
             return new AssistantResult(raw.trim(), null, null);
         }
+    }
+
+    /**
+     * 将模型生成的自然中文比较草稿转换为服务端拥有的交互协议。
+     *
+     * @param raw 模型返回的中文字段 JSON
+     * @param mapper JSON 映射器
+     * @param questionId 服务端生成的稳定问题标识
+     * @return 可读正文和经校验的单选交互
+     */
+    public static AssistantResult parseComparisonDraft(
+            String raw,
+            ObjectMapper mapper,
+            String questionId) {
+        try {
+            JsonNode root = mapper.readTree(raw);
+            String content = text(root, DRAFT_REPLY_FIELD);
+            String question = text(root, DRAFT_QUESTION_FIELD);
+            JsonNode optionsNode = root == null ? null : root.get(DRAFT_OPTIONS_FIELD);
+            if (!StringUtils.hasText(content) || !StringUtils.hasText(question)) {
+                return semanticFallback(root, DEGRADATION_INVALID_SEMANTIC_STRUCTURE);
+            }
+            if (hasNoOptions(optionsNode)) {
+                return clarificationResult(content, question, questionId, mapper);
+            }
+            if (!optionsNode.isArray()
+                    || optionsNode.size() < MIN_CHOICE_OPTIONS
+                    || optionsNode.size() > MAX_CHOICE_OPTIONS) {
+                return semanticFallback(root, DEGRADATION_OPTION_COUNT_OUT_OF_RANGE);
+            }
+            List<MessageInteractionOption> options = new ArrayList<>();
+            for (int index = 0; index < optionsNode.size(); index++) {
+                JsonNode option = optionsNode.get(index);
+                options.add(new MessageInteractionOption(
+                        "option-" + (index + 1),
+                        text(option, DRAFT_TITLE_FIELD),
+                        text(option, DRAFT_DESCRIPTION_FIELD),
+                        text(option, DRAFT_TRADEOFFS_FIELD)));
+            }
+            MessageInteraction interaction = new MessageInteraction(
+                    SCHEMA_VERSION,
+                    TYPE_SINGLE_CHOICE,
+                    questionId,
+                    question,
+                    options,
+                    true);
+            validate(interaction);
+            return new AssistantResult(
+                    content.trim(), interaction, mapper.writeValueAsString(interaction));
+        } catch (JsonProcessingException | IllegalArgumentException exception) {
+            return recoverReadableTextOrThrow(raw, mapper, exception);
+        }
+    }
+
+    /**
+     * 保留旧调用签名，V5 不再使用预计算的比较对象数量。
+     *
+     * @param raw 模型返回的中文字段 JSON
+     * @param mapper JSON 映射器
+     * @param questionId 服务端生成的问题标识
+     * @param ignoredExpectedOptionCount 已废弃的预计算数量
+     * @return 可读正文和可选交互
+     */
+    public static AssistantResult parseComparisonDraft(
+            String raw,
+            ObjectMapper mapper,
+            String questionId,
+            int ignoredExpectedOptionCount) {
+        return parseComparisonDraft(raw, mapper, questionId);
+    }
+
+    /**
+     * 将模型生成的自然中文澄清草稿转换为服务端拥有的交互协议。
+     *
+     * @param raw 模型返回的中文字段 JSON
+     * @param mapper JSON 映射器
+     * @param questionId 服务端生成的稳定问题标识
+     * @return 可读正文和经校验的开放问题交互
+     */
+    public static AssistantResult parseClarificationDraft(
+            String raw,
+            ObjectMapper mapper,
+            String questionId) {
+        try {
+            JsonNode root = mapper.readTree(raw);
+            String content = text(root, DRAFT_REPLY_FIELD);
+            String question = text(root, DRAFT_QUESTION_FIELD);
+            if (!StringUtils.hasText(content) || !StringUtils.hasText(question)) {
+                return semanticFallback(root, DEGRADATION_INVALID_SEMANTIC_STRUCTURE);
+            }
+            return clarificationResult(content, question, questionId, mapper);
+        } catch (JsonProcessingException | IllegalArgumentException exception) {
+            return recoverReadableTextOrThrow(raw, mapper, exception);
+        }
+    }
+
+    public static boolean isOpenQuestion(String interactionJson, ObjectMapper mapper) {
+        MessageInteraction interaction = parseInteraction(interactionJson, mapper);
+        return interaction != null && TYPE_OPEN_QUESTION.equals(interaction.type());
     }
 
     public static MessageInteraction parseInteraction(String json, ObjectMapper mapper) {
@@ -137,7 +246,7 @@ public final class DiscussionInteractionCodec {
         requireText(interaction.question(), MAX_QUESTION_LENGTH, "question");
         List<MessageInteractionOption> options = interaction.options() == null ? List.of() : interaction.options();
         if (hasInvalidChoiceOptionCount(interaction.type(), options.size())) {
-            throw new IllegalArgumentException("单选题必须包含 2 至 4 个选项");
+            throw new IllegalArgumentException("单选题必须包含 2 至 5 个选项");
         }
         if (TYPE_OPEN_QUESTION.equals(interaction.type()) && !options.isEmpty()) {
             throw new IllegalArgumentException("开放问题不能包含选项");
@@ -179,6 +288,93 @@ public final class DiscussionInteractionCodec {
         return StringUtils.hasText(content) ? content.trim() : raw.trim();
     }
 
+    private static AssistantResult clarificationResult(
+            String content,
+            String question,
+            String questionId,
+            ObjectMapper mapper) throws JsonProcessingException {
+        MessageInteraction interaction = new MessageInteraction(
+                SCHEMA_VERSION,
+                TYPE_OPEN_QUESTION,
+                questionId,
+                question,
+                List.of(),
+                true);
+        validate(interaction);
+        return new AssistantResult(content.trim(), interaction, mapper.writeValueAsString(interaction));
+    }
+
+    private static boolean hasNoOptions(JsonNode optionsNode) {
+        if (optionsNode == null || optionsNode.isNull()) {
+            return true;
+        }
+        return optionsNode.isArray() && optionsNode.isEmpty();
+    }
+
+    private static AssistantResult semanticFallback(JsonNode root, String reason) {
+        String readable = readableSemantics(root);
+        if (!StringUtils.hasText(readable)) {
+            throw new StructuredOutputException("模型结构化回复没有可恢复的可读内容");
+        }
+        return new AssistantResult(readable, null, null, reason);
+    }
+
+    private static AssistantResult recoverReadableTextOrThrow(
+            String raw,
+            ObjectMapper mapper,
+            Exception cause) {
+        try {
+            return semanticFallback(mapper.readTree(raw), DEGRADATION_INVALID_SEMANTIC_STRUCTURE);
+        } catch (JsonProcessingException exception) {
+            String normalized = raw == null ? "" : raw.trim();
+            if (StringUtils.hasText(normalized) && !looksLikeJson(normalized)) {
+                return new AssistantResult(normalized, null, null, DEGRADATION_NON_JSON_READABLE_TEXT);
+            }
+            throw new StructuredOutputException("模型结构化回复无法解析", cause);
+        }
+    }
+
+    private static String readableSemantics(JsonNode root) {
+        if (root == null || !root.isObject()) {
+            return null;
+        }
+        List<String> sections = new ArrayList<>();
+        addReadableSection(sections, text(root, DRAFT_REPLY_FIELD));
+        addReadableSection(sections, text(root, DRAFT_QUESTION_FIELD));
+        JsonNode options = root.get(DRAFT_OPTIONS_FIELD);
+        if (options != null && options.isArray()) {
+            for (int index = 0; index < options.size(); index++) {
+                JsonNode option = options.get(index);
+                List<String> optionLines = new ArrayList<>();
+                String title = text(option, DRAFT_TITLE_FIELD);
+                if (StringUtils.hasText(title)) {
+                    optionLines.add((index + 1) + ". " + title.trim());
+                }
+                addReadableSection(optionLines, text(option, DRAFT_DESCRIPTION_FIELD));
+                String tradeoffs = text(option, DRAFT_TRADEOFFS_FIELD);
+                if (StringUtils.hasText(tradeoffs)) {
+                    optionLines.add("取舍：" + tradeoffs.trim());
+                }
+                if (!optionLines.isEmpty()) {
+                    sections.add(String.join("\n", optionLines));
+                }
+            }
+        }
+        return sections.isEmpty() ? null : String.join("\n\n", sections);
+    }
+
+    private static void addReadableSection(List<String> sections, String value) {
+        if (StringUtils.hasText(value)) {
+            sections.add(value.trim());
+        }
+    }
+
+    private static boolean looksLikeJson(String value) {
+        return value.startsWith("{") || value.startsWith("[")
+                || value.contains("\"" + DRAFT_REPLY_FIELD + "\"")
+                || value.contains("\"" + DRAFT_OPTIONS_FIELD + "\"");
+    }
+
     private static String text(JsonNode node, String name) {
         JsonNode value = node == null ? null : node.get(name);
         return value != null && value.isTextual() ? value.asText() : null;
@@ -200,9 +396,29 @@ public final class DiscussionInteractionCodec {
         return StringUtils.hasText(value) ? value.trim() : null;
     }
 
-    public record AssistantResult(String content, MessageInteraction interaction, String interactionJson) {
+    public record AssistantResult(
+            String content,
+            MessageInteraction interaction,
+            String interactionJson,
+            String degradationReason) {
+
+        public AssistantResult(String content, MessageInteraction interaction, String interactionJson) {
+            this(content, interaction, interactionJson, null);
+        }
     }
 
     public record ValidatedResponse(String content, MessageInteractionResponse response) {
+    }
+
+    /** 表示模型结构化结果无法安全转换为可读回复。 */
+    public static final class StructuredOutputException extends RuntimeException {
+
+        public StructuredOutputException(String message) {
+            super(message);
+        }
+
+        public StructuredOutputException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 }

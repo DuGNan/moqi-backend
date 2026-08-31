@@ -39,6 +39,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
 import com.dugnan.moqi.chapter.policy.ConversationReplyTaskInputV1;
 import com.dugnan.moqi.chapter.policy.ReplyConversationSignals;
+import com.dugnan.moqi.chapter.policy.ReplyDepth;
 import com.dugnan.moqi.chapter.policy.ReplyMode;
 import com.dugnan.moqi.chapter.policy.ReplyPolicyPreferenceService;
 import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
@@ -69,6 +70,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     private static final String CONVERSATION_TYPE = "chapter_co_creation";
     private static final String AI_TASK_TYPE = "conversation_reply";
     private static final String AI_TASK_STATUS = "queued";
+    private static final String AI_TASK_SUCCEEDED = "succeeded";
     private static final Set<String> MESSAGE_ROLES = Set.of(ROLE_USER, "assistant", "system");
     private static final Set<String> BRIEF_STATUSES = Set.of(STATUS_DRAFT);
     private static final Set<String> OUTLINE_STATUSES = Set.of(STATUS_DRAFT, STATUS_CONFIRMED, STATUS_OUTDATED);
@@ -312,7 +314,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         }
         try {
             return replyPolicyService.resolve(
-                    conversation.getId(), content, request.replyControl(), recentReplySignals(conversation.getId()));
+                    conversation.getId(), content, request.replyControl(),
+                    recentReplySignals(conversation.getId(), request));
         } catch (IllegalArgumentException exception) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, exception.getMessage());
         }
@@ -348,7 +351,9 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         return objectMapper == null ? new ObjectMapper() : objectMapper;
     }
 
-    private ReplyConversationSignals recentReplySignals(Long conversationId) {
+    private ReplyConversationSignals recentReplySignals(
+            Long conversationId,
+            SendMessageRequest request) {
         ChapterConversationMessageEntity assistant = messageMapper.selectOne(
                 new LambdaQueryWrapper<ChapterConversationMessageEntity>()
                         .eq(ChapterConversationMessageEntity::getConversationId, conversationId)
@@ -361,14 +366,45 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         }
         String assistantContent = assistant.getContent() == null ? "" : assistant.getContent();
         ReplyMode previousMode = null;
+        ReplyDepth deferredDepth = null;
+        boolean directClarificationAnswer = false;
         if (assistant.getAiTaskId() != null) {
             ConversationReplyTaskInputV1 previousInput = replyTaskInput(aiTaskMapper.selectById(assistant.getAiTaskId()));
             previousMode = previousInput == null ? null : previousInput.replyMode();
+            directClarificationAnswer = isDirectClarificationAnswer(assistant, previousInput, request);
+            deferredDepth = directClarificationAnswer ? previousInput.deferredReplyDepth() : null;
         }
         boolean askedQuestion = assistantContent.contains("？") || assistantContent.contains("?");
         boolean offeredOptions = assistantContent.contains("选项A") || assistantContent.contains("选项 A")
                 || assistantContent.contains("方案A") || assistantContent.contains("方案 A");
-        return new ReplyConversationSignals(previousMode, askedQuestion, offeredOptions);
+        return new ReplyConversationSignals(
+                previousMode,
+                askedQuestion,
+                offeredOptions,
+                deferredDepth,
+                directClarificationAnswer);
+    }
+
+    private boolean isDirectClarificationAnswer(
+            ChapterConversationMessageEntity assistant,
+            ConversationReplyTaskInputV1 previousInput,
+            SendMessageRequest request) {
+        if (previousInput == null
+                || previousInput.replyMode() != ReplyMode.CLARIFY
+                || previousInput.deferredReplyDepth() == null
+                || request == null
+                || request.interactionResponse() == null
+                || !assistant.getId().equals(request.referencedMessageId())
+                || !DiscussionInteractionCodec.isOpenQuestion(assistant.getInteractionJson(), objectMapper())) {
+            return false;
+        }
+        Long responseCount = messageMapper.selectCount(
+                new LambdaQueryWrapper<ChapterConversationMessageEntity>()
+                        .eq(ChapterConversationMessageEntity::getConversationId, assistant.getConversationId())
+                        .eq(ChapterConversationMessageEntity::getReferencedMessageId, assistant.getId())
+                        .isNotNull(ChapterConversationMessageEntity::getInteractionResponseJson)
+                        .eq(ChapterConversationMessageEntity::getDeleted, 0));
+        return Long.valueOf(1L).equals(responseCount);
     }
 
     /**
@@ -393,7 +429,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             throw new BusinessException(ErrorCode.BAD_REQUEST, "continuationMessageId 必须引用当前会话已完成的助手消息");
         }
         AiTaskEntity task = aiTaskMapper.selectById(target.getAiTaskId());
-        if (task == null || !"succeeded".equals(task.getTaskStatus())
+        if (task == null || !AI_TASK_SUCCEEDED.equals(task.getTaskStatus())
                 || !continuationMessageId.equals(task.getResultMessageId())) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "continuationMessageId 必须引用当前会话已完成的助手消息");
         }
@@ -874,10 +910,10 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     private Map<Long, AiTaskEntity> taskMap(List<ChapterConversationMessageEntity> entities) {
         List<Long> taskIds = entities.stream().map(ChapterConversationMessageEntity::getAiTaskId)
                 .filter(java.util.Objects::nonNull).distinct().toList();
-        Map<Long, AiTaskEntity> result = new HashMap<>();
         if (taskIds.isEmpty()) {
-            return result;
+            return java.util.Collections.emptyMap();
         }
+        Map<Long, AiTaskEntity> result = new HashMap<>(taskIds.size());
         for (AiTaskEntity task : aiTaskMapper.selectBatchIds(taskIds)) {
             result.put(task.getId(), task);
         }

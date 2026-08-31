@@ -15,6 +15,7 @@ package com.dugnan.moqi.chapter.policy;
  * @param policyVersion 策略版本
  * @param contextAuthorityVersion 权威上下文规则版本
  * @param convergenceApplied 是否应用收敛反馈
+ * @param deferredReplyDepth 澄清完成后应恢复的目标深度
  */
 public record ConversationReplyTaskInputV1(
         int schemaVersion,
@@ -30,9 +31,10 @@ public record ConversationReplyTaskInputV1(
         Long continuationMessageId,
         ReplyMode previousReplyMode,
         boolean consecutiveQuestionSuppressed,
-        boolean crossChapterRequested) {
+        boolean crossChapterRequested,
+        ReplyDepth deferredReplyDepth) {
 
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
     public static final String AUTHORITY_VERSION = "story-context-authority-v2";
 
     /**
@@ -61,7 +63,8 @@ public record ConversationReplyTaskInputV1(
                 null,
                 policy.previousMode(),
                 policy.consecutiveQuestionSuppressed(),
-                policy.crossChapterRequested());
+                policy.crossChapterRequested(),
+                policy.deferredDepth());
     }
 
     /**
@@ -92,6 +95,7 @@ public record ConversationReplyTaskInputV1(
                 continuationMessageId,
                 policy.previousMode(),
                 policy.consecutiveQuestionSuppressed(),
-                policy.crossChapterRequested());
+                policy.crossChapterRequested(),
+                policy.deferredDepth());
     }
 }

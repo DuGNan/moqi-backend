@@ -28,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
+import com.dugnan.moqi.chapter.interaction.ConversationReplyContentSanitizer;
 import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
@@ -70,8 +71,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
     private static final String STATUS_CONFIRMED = "confirmed";
     private static final String STATUS_CANDIDATE = "candidate";
     private static final String STATUS_REJECTED = "rejected";
-    private static final String SYSTEM_RULE =
-            "你是墨契的章节共创助手。请严格遵循已确认的故事设定，围绕当前任务给出清晰、可执行的创作建议。";
+    private static final String SYSTEM_RULE = MoqiPromptIdentity.NOVEL_WRITING_PARTNER;
 
     private final WorkMapper workMapper;
     private final ChapterMapper chapterMapper;
@@ -463,20 +463,26 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             if (!"user".equals(user.getMessageRole()) || !"assistant".equals(assistant.getMessageRole())) {
                 continue;
             }
+            String pairKey = user.getId() + ":" + assistant.getId();
+            String contentVersion = user.getVersion() + ":" + assistant.getVersion();
             add(candidates, StoryContextSourceType.CONVERSATION_TURN,
-                    user.getId() + ":" + assistant.getId(), "USER",
-                    "用户：" + user.getContent() + "\n助手：" + conversationAssistantContent(assistant), false,
-                    600, historyOrder, user.getVersion() + ":" + assistant.getVersion(),
-                    assistant.getGmtModified(), Category.HISTORY);
-            historyOrder++;
+                    pairKey + ":user", "USER", user.getContent(), false,
+                    600, historyOrder, contentVersion,
+                    assistant.getGmtModified(), Category.HISTORY, StoryContextAuthorityStatus.EVIDENCE, pairKey);
+            add(candidates, StoryContextSourceType.CONVERSATION_TURN,
+                    pairKey + ":assistant", "ASSISTANT", conversationAssistantContent(assistant), false,
+                    600, historyOrder + 1, contentVersion,
+                    assistant.getGmtModified(), Category.HISTORY, StoryContextAuthorityStatus.CANDIDATE, pairKey);
+            historyOrder += 2;
             index++;
         }
     }
 
     private String conversationAssistantContent(ChapterConversationMessageEntity message) {
+        String content = ConversationReplyContentSanitizer.stripLeadingCandidateNotices(message.getContent());
         return "stopped".equals(message.getGenerationStatus())
-                ? "[不完整：作者已停止本次生成，不得据此确认共识或写入权威内容]\n" + message.getContent()
-                : message.getContent();
+                ? "[不完整：作者已停止本次生成，不得据此确认共识或写入权威内容]\n" + content
+                : content;
     }
 
     private Selection select(StoryContextBuildCommand command, List<Candidate> candidates) {
@@ -488,7 +494,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         List<StoryContextSelectionDecision> decisions = new ArrayList<>();
         for (Candidate candidate : unique) {
             String contentKey = normalize(candidate.content());
-            if (!contentKeys.add(contentKey)) {
+            if (candidate.selectionGroup() == null && !contentKeys.add(contentKey)) {
                 decisions.add(decision(candidate, "DUPLICATE_CONTENT"));
             } else {
                 deduplicated.add(candidate);
@@ -505,11 +511,44 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             budget -= fitted.selectedTokens();
         }
         List<Candidate> optional = deduplicated.stream().filter(candidate -> !candidate.required()).toList();
-        Map<Category, Integer> quotas = quotas(command.profile(), Math.max(0, budget));
+        budget = selectByCategory(command.profile(), optional, selected, decisions, budget);
+        selectRemaining(optional, selected, decisions, budget);
+        selected.sort(byOrder());
+        List<StoryContextItem> items = selected.stream().map(Candidate::item).toList();
+        return new Selection(items, decisions, items.stream().mapToInt(StoryContextItem::selectedTokenEstimate).sum());
+    }
+
+    private int selectByCategory(
+            StoryContextProfile profile,
+            List<Candidate> optional,
+            List<Candidate> selected,
+            List<StoryContextSelectionDecision> decisions,
+            int initialBudget) {
+        int budget = initialBudget;
+        Map<Category, Integer> quotas = quotas(profile, Math.max(0, budget));
         for (Category category : Category.values()) {
             int quota = quotas.get(category);
-            for (Candidate candidate : optional.stream().filter(item -> item.category() == category)
-                    .sorted(byPriority()).toList()) {
+            List<Candidate> categoryCandidates = optional.stream()
+                    .filter(item -> item.category() == category)
+                    .sorted(byPriority())
+                    .toList();
+            Set<String> processedGroups = new HashSet<>();
+            for (Candidate candidate : categoryCandidates) {
+                if (candidate.selectionGroup() != null) {
+                    if (!processedGroups.add(candidate.selectionGroup())) {
+                        continue;
+                    }
+                    List<Candidate> group = selectionGroup(categoryCandidates, candidate.selectionGroup());
+                    int groupTokens = selectedTokens(group);
+                    if (groupTokens <= quota && groupTokens <= budget) {
+                        selected.addAll(group);
+                        quota -= groupTokens;
+                        budget -= groupTokens;
+                    } else {
+                        group.forEach(item -> decisions.add(decision(item, "PARTITION_BUDGET")));
+                    }
+                    continue;
+                }
                 Candidate fitted = fitOptional(candidate, Math.min(quota, budget));
                 if (fitted != null) {
                     selected.add(fitted);
@@ -520,8 +559,35 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                 }
             }
         }
-        for (Candidate candidate : optional.stream().filter(item -> !selected.contains(item))
-                .sorted(byPriority()).toList()) {
+        return budget;
+    }
+
+    private void selectRemaining(
+            List<Candidate> optional,
+            List<Candidate> selected,
+            List<StoryContextSelectionDecision> decisions,
+            int initialBudget) {
+        int budget = initialBudget;
+        List<Candidate> remaining = optional.stream()
+                .filter(item -> !selected.contains(item))
+                .sorted(byPriority())
+                .toList();
+        Set<String> processedRemainingGroups = new HashSet<>();
+        for (Candidate candidate : remaining) {
+            if (candidate.selectionGroup() != null) {
+                if (!processedRemainingGroups.add(candidate.selectionGroup())) {
+                    continue;
+                }
+                List<Candidate> group = selectionGroup(remaining, candidate.selectionGroup());
+                int groupTokens = selectedTokens(group);
+                if (groupTokens <= budget) {
+                    selected.addAll(group);
+                    budget -= groupTokens;
+                } else {
+                    group.forEach(item -> decisions.add(decision(item, "INPUT_BUDGET")));
+                }
+                continue;
+            }
             if (candidate.tokens() <= budget) {
                 selected.add(candidate);
                 budget -= candidate.tokens();
@@ -529,9 +595,17 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                 decisions.add(decision(candidate, "INPUT_BUDGET"));
             }
         }
-        selected.sort(byOrder());
-        List<StoryContextItem> items = selected.stream().map(Candidate::item).toList();
-        return new Selection(items, decisions, items.stream().mapToInt(StoryContextItem::selectedTokenEstimate).sum());
+    }
+
+    private List<Candidate> selectionGroup(List<Candidate> candidates, String groupKey) {
+        return candidates.stream()
+                .filter(candidate -> groupKey.equals(candidate.selectionGroup()))
+                .sorted(byOrder())
+                .toList();
+    }
+
+    private int selectedTokens(List<Candidate> candidates) {
+        return candidates.stream().mapToInt(Candidate::selectedTokens).sum();
     }
 
     private Candidate fitOptional(Candidate candidate, int budget) {
@@ -613,15 +687,38 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         if (!StringUtils.hasText(content)) {
             return;
         }
-        String labeledContent = labelAuthority(content, authorityStatus);
+        String labeledContent = labelAuthority(content, sourceType, authorityStatus);
         candidates.add(new Candidate(sourceType, sourceId, contentVersion == null ? null : String.valueOf(contentVersion),
                 updatedAt, role, labeledContent, required, priority, order, tokenEstimator.estimate(labeledContent),
-                tokenEstimator.estimate(labeledContent), "INCLUDED", category, authorityStatus));
+                tokenEstimator.estimate(labeledContent), "INCLUDED", category, authorityStatus, null));
+    }
+
+    private void add(
+            List<Candidate> candidates,
+            StoryContextSourceType sourceType,
+            String sourceId,
+            String role,
+            String content,
+            boolean required,
+            int priority,
+            int order,
+            Object contentVersion,
+            LocalDateTime updatedAt,
+            Category category,
+            StoryContextAuthorityStatus authorityStatus,
+            String selectionGroup) {
+        if (!StringUtils.hasText(content)) {
+            return;
+        }
+        String labeledContent = labelAuthority(content, sourceType, authorityStatus);
+        candidates.add(new Candidate(sourceType, sourceId, contentVersion == null ? null : String.valueOf(contentVersion),
+                updatedAt, role, labeledContent, required, priority, order, tokenEstimator.estimate(labeledContent),
+                tokenEstimator.estimate(labeledContent), "INCLUDED", category, authorityStatus, selectionGroup));
     }
 
     private StoryContextAuthorityStatus authorityStatus(StoryContextSourceType sourceType) {
         return switch (sourceType) {
-            case SYSTEM_RULE, TASK_RULE, WORK_METADATA, CHAPTER_BRIEF, CHAPTER_OUTLINE,
+            case SYSTEM_RULE, TASK_RULE, CHAPTER_BRIEF, CHAPTER_OUTLINE,
                     CHAPTER_GENERATION_BRIEF,
                     SETTING_ENTRY, FORESHADOWING, CHAPTER_SUMMARY, CHAPTER_KEY_EVENT, SCENE_PLAN ->
                     StoryContextAuthorityStatus.CONFIRMED;
@@ -641,11 +738,43 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         return StoryContextAuthorityStatus.PENDING;
     }
 
-    private String labelAuthority(String content, StoryContextAuthorityStatus authorityStatus) {
-        if (authorityStatus == StoryContextAuthorityStatus.EVIDENCE) {
-            return "【权威状态：evidence（证据）】" + content;
+    private String labelAuthority(
+            String content,
+            StoryContextSourceType sourceType,
+            StoryContextAuthorityStatus authorityStatus) {
+        if (sourceType == StoryContextSourceType.SYSTEM_RULE || sourceType == StoryContextSourceType.TASK_RULE) {
+            return content;
         }
-        return "【权威状态：" + authorityStatus.value() + "】" + content;
+        if (sourceType == StoryContextSourceType.USER_INPUT) {
+            return content;
+        }
+        if (sourceType == StoryContextSourceType.CONVERSATION_TURN) {
+            return content;
+        }
+        String sourceLabel = sourceLabel(sourceType);
+        if (sourceLabel != null) {
+            return sourceLabel + content;
+        }
+        return switch (authorityStatus) {
+            case CONFIRMED -> "【作者已经明确确定，必须遵守】" + content;
+            case CANDIDATE -> "【尚未确认的候选，仅供讨论】" + content;
+            case PENDING -> "【仍待作者决定，不得视为事实】" + content;
+            case REJECTED -> "【作者已经否定，只用于避免重复】" + content;
+            case EVIDENCE -> "【此前讨论或引用材料，只用于理解意图】" + content;
+        };
+    }
+
+    private String sourceLabel(StoryContextSourceType sourceType) {
+        return switch (sourceType) {
+            case WORK_METADATA -> "【当前作品】";
+            case CHAPTER_CONTENT -> "【当前章节正文】";
+            case CHAPTER_SUMMARY, CHAPTER_KEY_EVENT -> "【相关章节资料】";
+            case CHAPTER_BRIEF, CHAPTER_OUTLINE, SETTING_ENTRY, FORESHADOWING -> "【当前有效的作品资料】";
+            case CHAPTER_GENERATION_BRIEF -> "【当前章节生成依据】";
+            case SCENE_PLAN -> "【当前有效的场景规划】";
+            case TARGET_TEXT -> "【当前处理内容】";
+            default -> null;
+        };
     }
 
     private String confirmedConsensusContent(String content) {
@@ -874,7 +1003,10 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
 
     private Comparator<Candidate> byPriority() {
         return Comparator.comparingInt(Candidate::priority).reversed()
-                .thenComparingInt(Candidate::order).thenComparing(Candidate::sourceId);
+                .thenComparingInt(candidate -> candidate.category() == Category.HISTORY
+                        ? -candidate.order()
+                        : candidate.order())
+                .thenComparing(Candidate::sourceId);
     }
 
     private enum Category {
@@ -902,11 +1034,13 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             int selectedTokens,
             String reason,
             Category category,
-            StoryContextAuthorityStatus authorityStatus) {
+            StoryContextAuthorityStatus authorityStatus,
+            String selectionGroup) {
 
         private Candidate withContent(String value, int selectedTokenCount, String selectionReason) {
             return new Candidate(sourceType, sourceId, contentVersion, updatedAt, role, value, required,
-                    priority, order, tokens, selectedTokenCount, selectionReason, category, authorityStatus);
+                    priority, order, tokens, selectedTokenCount, selectionReason, category, authorityStatus,
+                    selectionGroup);
         }
 
         private String dedupeKey() {
