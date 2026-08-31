@@ -66,7 +66,8 @@ public final class ConversationReplyPromptCompiler {
                 + ConversationReplyPromptTemplatesV5.authority()
                 + ConversationReplyPromptTemplatesV5.conversation(
                         input.consecutiveQuestionSuppressed(), input.crossChapterRequested())
-                + ConversationReplyPromptTemplatesV5.interaction(input.replyMode());
+                + ConversationReplyPromptTemplatesV5.interaction(input.replyMode())
+                + ConversationReplyPromptTemplatesV5.finalCheck(input.replyMode(), input.replyDepth());
     }
 
     private String compileVersionFour(ConversationReplyTaskInputV1 input) {

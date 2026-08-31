@@ -183,6 +183,26 @@ public final class ConversationReplyPromptTemplatesV5 {
         return "";
     }
 
+    /**
+     * @param mode 讨论动作
+     * @param depth 信息覆盖程度
+     * @return 放在输出格式之后的最终越界检查；不需要时为空
+     */
+    public static String finalCheck(ReplyMode mode, ReplyDepth depth) {
+        if (depth != ReplyDepth.DEEP) {
+            return "";
+        }
+        return switch (mode) {
+            case EXPLORE -> "输出前逐句检查：每个前提和影响都必须来自作者已经给出的内容。"
+                    + "不得把作者未说明的对象属性、代价性质、知情程度、发生频率、人物行动或具体例子写进回答；"
+                    + "缺少依据的连接保持未知，不用‘可能’或‘可以’补齐。";
+            case COMPARE -> "输出前逐句检查：比较正文、说明和取舍中的每个事实或影响都必须由作者已给前提直接支持。"
+                    + "不得补写人物会采取的行动、心理状态、能力表现、交易规则或恢复条件；"
+                    + "缺少依据的维度明确写待定，不用‘可能’补齐。";
+            default -> "";
+        };
+    }
+
     private static String chineseCandidateCount(int value) {
         return value == 2 ? "两个" : chineseNumber(value) + "个";
     }
