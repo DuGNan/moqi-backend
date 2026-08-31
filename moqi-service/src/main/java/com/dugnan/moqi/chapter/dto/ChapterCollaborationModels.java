@@ -25,7 +25,19 @@ public final class ChapterCollaborationModels {
             String conversationType,
             String conversationStatus,
             LocalDateTime gmtCreate,
-            LocalDateTime gmtModified) {
+            LocalDateTime gmtModified,
+            String targetObjectId) {
+
+        public ConversationDetail(
+                Long id,
+                Long workId,
+                Long chapterId,
+                String conversationType,
+                String conversationStatus,
+                LocalDateTime gmtCreate,
+                LocalDateTime gmtModified) {
+            this(id, workId, chapterId, conversationType, conversationStatus, gmtCreate, gmtModified, null);
+        }
     }
 
     public record MessageList(List<MessageDetail> messages) {
@@ -132,7 +144,8 @@ public final class ChapterCollaborationModels {
             DiscussionFocusRequest discussionFocus,
             ReplyControlRequest replyControl,
             Long referencedMessageId,
-            MessageInteractionResponse interactionResponse) {
+            MessageInteractionResponse interactionResponse,
+            String clientMessageId) {
 
         public SendMessageRequest(
                 String messageRole,
@@ -140,7 +153,7 @@ public final class ChapterCollaborationModels {
                 Boolean createAiTask,
                 DiscussionFocusRequest discussionFocus,
                 ReplyControlRequest replyControl) {
-            this(messageRole, content, createAiTask, discussionFocus, replyControl, null, null);
+            this(messageRole, content, createAiTask, discussionFocus, replyControl, null, null, null);
         }
 
         public SendMessageRequest(
@@ -150,7 +163,7 @@ public final class ChapterCollaborationModels {
                 DiscussionFocusRequest discussionFocus,
                 ReplyControlRequest replyControl,
                 Long referencedMessageId) {
-            this(messageRole, content, createAiTask, discussionFocus, replyControl, referencedMessageId, null);
+            this(messageRole, content, createAiTask, discussionFocus, replyControl, referencedMessageId, null, null);
         }
 
         /**
@@ -161,7 +174,7 @@ public final class ChapterCollaborationModels {
          * @param createAiTask 是否创建 AI 回复任务
          */
         public SendMessageRequest(String messageRole, String content, Boolean createAiTask) {
-            this(messageRole, content, createAiTask, null, null, null, null);
+            this(messageRole, content, createAiTask, null, null, null, null, null);
         }
 
         /**
@@ -177,7 +190,19 @@ public final class ChapterCollaborationModels {
                 String content,
                 Boolean createAiTask,
                 DiscussionFocusRequest discussionFocus) {
-            this(messageRole, content, createAiTask, discussionFocus, null, null, null);
+            this(messageRole, content, createAiTask, discussionFocus, null, null, null, null);
+        }
+
+        public SendMessageRequest(
+                String messageRole,
+                String content,
+                Boolean createAiTask,
+                DiscussionFocusRequest discussionFocus,
+                ReplyControlRequest replyControl,
+                Long referencedMessageId,
+                MessageInteractionResponse interactionResponse) {
+            this(messageRole, content, createAiTask, discussionFocus, replyControl,
+                    referencedMessageId, interactionResponse, null);
         }
     }
 

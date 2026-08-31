@@ -59,6 +59,10 @@ public final class SelectionAssistanceModels {
     public record TextDiff(String original, String replacement, int originalLength, int replacementLength) {
     }
 
+    /** 冻结进入模型请求的正文对象会话历史，角色仅允许 user 或 assistant。 */
+    public record ConversationHistoryMessage(String role, String content) {
+    }
+
     public record View(
             Long id,
             Long workId,

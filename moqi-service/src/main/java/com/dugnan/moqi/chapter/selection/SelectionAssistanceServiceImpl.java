@@ -37,6 +37,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterSelectionAssistanceMapper;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.AcceptRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ContinueRequest;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ConversationHistoryMessage;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreateRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ModelPlanningProposal;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.PlanningContext;
@@ -45,6 +46,7 @@ import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.RetryRequest;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.TextDiff;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.View;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
+import com.dugnan.moqi.chapter.service.ProseObjectConversationService;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.api.PublicFailure;
 import com.dugnan.moqi.common.api.PublicFailureFactory;
@@ -74,15 +76,17 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private static final String TARGET_CANDIDATE = "candidate";
     private static final String SCOPE_SELECTION = "selection";
     private static final String SCOPE_WHOLE = "whole";
+    private static final String ROLE_USER = "user";
+    private static final String ROLE_ASSISTANT = "assistant";
     private static final String CANDIDATE_PREFIX = "candidate:";
     private static final String FORMAL_PREFIX = "formal:";
-    private static final String SHARED_CONVERSATION = "chapter_co_creation";
     private static final int TARGET_CONTRACT_VERSION = 2;
     private static final int MAX_SELECTED_LENGTH = 100000;
     private static final int MAX_INSTRUCTION_LENGTH = 2000;
     private static final Set<String> OPERATIONS = Set.of(
             OPERATION_DISCUSS, "rewrite", "polish", "expand", "compress");
     private static final int ADJACENT_LIMIT = 800;
+    private static final int MAX_HISTORY_MESSAGES = 24;
 
     private final ChapterMapper chapterMapper;
     private final ChapterSelectionAssistanceMapper assistanceMapper;
@@ -95,6 +99,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private ChapterConversationMapper conversationMapper;
     private ChapterConversationMessageMapper messageMapper;
     private ProsePlanningChangeService planningChangeService;
+    private ProseObjectConversationService proseObjectConversationService;
 
     public SelectionAssistanceServiceImpl(
             ChapterMapper chapterMapper,
@@ -114,18 +119,30 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         this.agentRuntime = agentRuntime;
     }
 
-    @Autowired
     public void setWorkspaceDependencies(
             ChapterProseCandidateMapper candidateMapper,
             ChapterGenerationMapper generationMapper,
             ChapterConversationMapper conversationMapper,
             ChapterConversationMessageMapper messageMapper,
             ProsePlanningChangeService planningChangeService) {
+        setWorkspaceDependencies(candidateMapper, generationMapper, conversationMapper, messageMapper,
+                planningChangeService, null);
+    }
+
+    @Autowired
+    public void setWorkspaceDependencies(
+            ChapterProseCandidateMapper candidateMapper,
+            ChapterGenerationMapper generationMapper,
+            ChapterConversationMapper conversationMapper,
+            ChapterConversationMessageMapper messageMapper,
+            ProsePlanningChangeService planningChangeService,
+            ProseObjectConversationService proseObjectConversationService) {
         this.candidateMapper = candidateMapper;
         this.generationMapper = generationMapper;
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
         this.planningChangeService = planningChangeService;
+        this.proseObjectConversationService = proseObjectConversationService;
     }
 
     @Override
@@ -167,9 +184,12 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         GenerationBriefPreview brief = briefService.preview(chapterId, null);
         PlanningContext planningContext = OPERATION_DISCUSS.equals(request.operation())
                 ? null : planningChangeService.freezeContext(chapterId);
-        String fingerprint = inputFingerprint(chapter, request, target, parent, brief, planningContext);
+        ConversationContext conversationContext = isTargetRequest(request)
+                ? conversationContext(chapter, target) : null;
+        String fingerprint = inputFingerprint(
+                chapter, request, target, parent, brief, planningContext, conversationContext);
         return persistAssistanceRun(chapter, request, normalizedKey, parent, target,
-                createdCandidate, brief, fingerprint, planningContext);
+                createdCandidate, brief, fingerprint, planningContext, conversationContext);
     }
 
     private View persistAssistanceRun(
@@ -181,13 +201,14 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             ChapterProseCandidateEntity createdCandidate,
             GenerationBriefPreview brief,
             String fingerprint,
-            PlanningContext planningContext) {
+            PlanningContext planningContext,
+            ConversationContext conversationContext) {
         AiTaskEntity task = createTask(chapter, request, fingerprint);
         ChapterSelectionAssistanceEntity entity = createAssistanceEntity(
                 chapter, request, idempotencyKey, parent, target, createdCandidate, brief, fingerprint,
-                planningContext, task.getId());
-        if (isTargetRequest(request) && OPERATION_DISCUSS.equals(request.operation())) {
-            persistDiscussionUserMessage(chapter, entity);
+                planningContext, conversationContext, task.getId());
+        if (conversationContext != null) {
+            persistAssistanceUserMessage(chapter, entity, idempotencyKey);
         }
         assistanceMapper.insert(entity);
         startRun(chapter, idempotencyKey, task.getId(), entity);
@@ -217,6 +238,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             GenerationBriefPreview brief,
             String fingerprint,
             PlanningContext planningContext,
+            ConversationContext conversationContext,
             Long taskId) {
         ChapterSelectionAssistanceEntity entity = new ChapterSelectionAssistanceEntity();
         entity.setWorkId(chapter.getWorkId());
@@ -251,6 +273,10 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         entity.setBriefContent(brief.content());
         entity.setInputFingerprint(fingerprint);
         entity.setPlanningContextJson(planningContext == null ? null : json(planningContext));
+        if (conversationContext != null) {
+            entity.setConversationId(conversationContext.conversation().getId());
+            entity.setConversationHistoryJson(json(conversationContext.history()));
+        }
         entity.setDeleted(0);
         entity.setVersion(0);
         return entity;
@@ -443,6 +469,26 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         return prompt.toString();
     }
 
+    /** 返回创建 assistance 时冻结的当前正文对象会话历史。 */
+    public List<ConversationHistoryMessage> modelHistory(Long requestId) {
+        ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
+        if (!StringUtils.hasText(entity.getConversationHistoryJson())) {
+            return List.of();
+        }
+        List<ConversationHistoryMessage> history = read(
+                entity.getConversationHistoryJson(), new TypeReference<>() { });
+        if (history == null) {
+            return List.of();
+        }
+        for (ConversationHistoryMessage message : history) {
+            if (message == null || !Set.of(ROLE_USER, ROLE_ASSISTANT).contains(message.role())
+                    || !StringUtils.hasText(message.content())) {
+                throw new IllegalStateException("正文对象会话历史快照不符合模型消息契约");
+            }
+        }
+        return List.copyOf(history);
+    }
+
     /** 返回模型调用的冻结来源指纹。 */
     public String sourceFingerprint(Long requestId) {
         return requireAssistance(requestId).getInputFingerprint();
@@ -490,8 +536,8 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         if (updated != 1) {
             throw conflict("选区协助已被取消或状态已经变化");
         }
-        if (isTargetDiscussion(entity)) {
-            persistDiscussionAssistantMessage(entity, normalizedContent);
+        if (isTargetAssistance(entity)) {
+            persistAssistanceAssistantMessage(entity, normalizedContent);
         }
         updateTaskStatus(entity.getAiTaskId(), "completed", null, null);
     }
@@ -590,8 +636,14 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         return parent;
     }
 
-    private String inputFingerprint(ChapterEntity chapter, CreateRequest request, Target target,
-            ChapterSelectionAssistanceEntity parent, GenerationBriefPreview brief, PlanningContext planningContext) {
+    private String inputFingerprint(
+            ChapterEntity chapter,
+            CreateRequest request,
+            Target target,
+            ChapterSelectionAssistanceEntity parent,
+            GenerationBriefPreview brief,
+            PlanningContext planningContext,
+            ConversationContext conversationContext) {
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("chapterId", chapter.getId());
         input.put("targetKind", target.kind());
@@ -608,6 +660,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         input.put("parentResult", parent == null ? null : parent.getResultContent());
         input.put("briefFingerprint", brief.fingerprint());
         input.put("planningContext", planningContext);
+        input.put("conversationHistory", conversationContext == null ? List.of() : conversationContext.history());
         return hash(json(input));
     }
 
@@ -713,9 +766,18 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 || OPERATION_DISCUSS.equals(request.operation())) {
             return null;
         }
+        ChapterGenerationEntity formalBasisSource = formalBasisSource(chapter);
         ChapterGenerationEntity source = new ChapterGenerationEntity();
         source.setWorkId(chapter.getWorkId());
         source.setChapterId(chapter.getId());
+        if (formalBasisSource != null) {
+            source.setBriefId(formalBasisSource.getBriefId());
+            source.setOutlineId(formalBasisSource.getOutlineId());
+            source.setOutlineRevision(formalBasisSource.getOutlineRevision());
+            source.setChapterPlanVersionId(formalBasisSource.getChapterPlanVersionId());
+            source.setBaseGenerationId(formalBasisSource.getId());
+            source.setBasisSnapshotJson(formalBasisSource.getBasisSnapshotJson());
+        }
         source.setGenerationStatus("candidate_snapshot");
         source.setGenerationMode("assistance");
         source.setSelectionMode("all");
@@ -755,6 +817,19 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         return candidate;
     }
 
+    private ChapterGenerationEntity formalBasisSource(ChapterEntity chapter) {
+        if (chapter.getFormalSourceGenerationId() == null) {
+            return null;
+        }
+        ChapterGenerationEntity source = generationMapper.selectById(chapter.getFormalSourceGenerationId());
+        if (source == null || Integer.valueOf(1).equals(source.getDeleted())
+                || !Objects.equals(source.getWorkId(), chapter.getWorkId())
+                || !Objects.equals(source.getChapterId(), chapter.getId())) {
+            throw conflict("正式正文的生成依据来源不存在或归属不一致");
+        }
+        return source;
+    }
+
     private Target candidateTarget(
             ChapterProseCandidateEntity candidate,
             String scope,
@@ -766,33 +841,64 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 selectionStart, selectionEnd, selectedText);
     }
 
-    private void persistDiscussionUserMessage(ChapterEntity chapter, ChapterSelectionAssistanceEntity assistance) {
-        ChapterConversationEntity conversation = findEditingConversation(chapter.getId());
-        if (conversation == null) {
-            conversation = new ChapterConversationEntity();
-            conversation.setWorkId(chapter.getWorkId());
-            conversation.setChapterId(chapter.getId());
-            conversation.setConversationType(SHARED_CONVERSATION);
-            conversation.setConversationStatus("active");
-            conversation.setDeleted(0);
-            conversation.setVersion(0);
-            conversationMapper.insert(conversation);
-        }
+    private void persistAssistanceUserMessage(
+            ChapterEntity chapter,
+            ChapterSelectionAssistanceEntity assistance,
+            String idempotencyKey) {
         ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
-        message.setConversationId(conversation.getId());
+        message.setConversationId(assistance.getConversationId());
         message.setChapterId(chapter.getId());
-        message.setMessageRole("user");
-        message.setContent(StringUtils.hasText(assistance.getUserInstruction())
-                ? assistance.getUserInstruction() : "请分析当前正文引用");
+        message.setMessageRole(ROLE_USER);
+        message.setContent(conversationUserContent(assistance));
+        message.setClientMessageId("selection-assistance-user:" + hash(idempotencyKey));
         message.setGenerationStatus("completed");
         message.setDeleted(0);
         message.setVersion(0);
         messageMapper.insert(message);
-        assistance.setConversationId(conversation.getId());
         assistance.setUserMessageId(message.getId());
     }
 
-    private void persistDiscussionAssistantMessage(
+    private ConversationContext conversationContext(ChapterEntity chapter, Target target) {
+        if (proseObjectConversationService == null) {
+            throw new IllegalStateException("正文对象会话服务不可用");
+        }
+        var detail = proseObjectConversationService.createOrGet(chapter.getId(), target.objectId());
+        ChapterConversationEntity conversation = conversationMapper.selectById(detail.id());
+        if (conversation == null || !chapter.getId().equals(conversation.getChapterId())
+                || !target.objectId().equals(conversation.getTargetObjectId())) {
+            throw new IllegalStateException("正文对象会话无法读取");
+        }
+        return new ConversationContext(conversation, freezeConversationHistory(conversation.getId()));
+    }
+
+    private List<ConversationHistoryMessage> freezeConversationHistory(Long conversationId) {
+        List<ChapterConversationMessageEntity> messages = messageMapper.selectList(
+                new LambdaQueryWrapper<ChapterConversationMessageEntity>()
+                        .eq(ChapterConversationMessageEntity::getConversationId, conversationId)
+                        .eq(ChapterConversationMessageEntity::getDeleted, 0)
+                        .in(ChapterConversationMessageEntity::getMessageRole, ROLE_USER, ROLE_ASSISTANT)
+                        .orderByAsc(ChapterConversationMessageEntity::getGmtCreate)
+                        .orderByAsc(ChapterConversationMessageEntity::getId));
+        List<ConversationHistoryMessage> available = messages.stream()
+                .filter(message -> StringUtils.hasText(message.getContent()))
+                .map(message -> new ConversationHistoryMessage(message.getMessageRole(), message.getContent()))
+                .toList();
+        int start = Math.max(0, available.size() - MAX_HISTORY_MESSAGES);
+        while (start < available.size() && !ROLE_USER.equals(available.get(start).role())) {
+            start++;
+        }
+        return List.copyOf(available.subList(start, available.size()));
+    }
+
+    private String conversationUserContent(ChapterSelectionAssistanceEntity assistance) {
+        String instruction = StringUtils.hasText(assistance.getUserInstruction())
+                ? assistance.getUserInstruction() : "未补充额外要求";
+        return operationLabel(assistance.getOperationType())
+                + "\n作者要求：" + instruction
+                + "\n引用正文：\n" + assistance.getReferenceSnapshot();
+    }
+
+    private void persistAssistanceAssistantMessage(
             ChapterSelectionAssistanceEntity assistance,
             String resultContent) {
         if (assistance.getConversationId() == null) {
@@ -801,8 +907,12 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
         message.setConversationId(assistance.getConversationId());
         message.setChapterId(assistance.getChapterId());
-        message.setMessageRole("assistant");
-        message.setContent(resultContent);
+        message.setMessageRole(ROLE_ASSISTANT);
+        message.setContent(OPERATION_DISCUSS.equals(assistance.getOperationType())
+                ? resultContent
+                : "已生成" + operationLabel(assistance.getOperationType())
+                        + "提案，以下内容尚未应用或保存：\n" + resultContent);
+        message.setClientMessageId("selection-assistance-assistant:" + assistance.getId());
         message.setGenerationStatus("completed");
         message.setAiTaskId(assistance.getAiTaskId());
         message.setDeleted(0);
@@ -813,16 +923,15 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 .set("assistant_message_id", message.getId()));
     }
 
-    private ChapterConversationEntity findEditingConversation(Long chapterId) {
-        List<ChapterConversationEntity> conversations = conversationMapper.selectList(
-                new LambdaQueryWrapper<ChapterConversationEntity>()
-                        .eq(ChapterConversationEntity::getChapterId, chapterId)
-                        .eq(ChapterConversationEntity::getConversationType, SHARED_CONVERSATION)
-                        .eq(ChapterConversationEntity::getConversationStatus, "active")
-                        .eq(ChapterConversationEntity::getDeleted, 0)
-                        .orderByDesc(ChapterConversationEntity::getId)
-                        .last("LIMIT 1"));
-        return conversations.isEmpty() ? null : conversations.get(0);
+    private String operationLabel(String operation) {
+        return switch (operation) {
+            case OPERATION_DISCUSS -> "讨论选区";
+            case "rewrite" -> "改写";
+            case "polish" -> "润色";
+            case "expand" -> "扩写";
+            case "compress" -> "压缩";
+            default -> throw new IllegalStateException("正文协助操作缺少作者可读名称");
+        };
     }
 
     private ChapterProseCandidateEntity requireCandidate(Long chapterId, Long candidateId) {
@@ -876,9 +985,9 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 || request.selectedText() == null;
     }
 
-    private boolean isTargetDiscussion(ChapterSelectionAssistanceEntity entity) {
+    private boolean isTargetAssistance(ChapterSelectionAssistanceEntity entity) {
         return Integer.valueOf(TARGET_CONTRACT_VERSION).equals(entity.getRequestContractVersion())
-                && OPERATION_DISCUSS.equals(entity.getOperationType());
+                && entity.getConversationId() != null;
     }
 
     private int sentenceCount(String value) {
@@ -1076,5 +1185,10 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             Integer selectionStart,
             Integer selectionEnd,
             String selectedText) {
+    }
+
+    private record ConversationContext(
+            ChapterConversationEntity conversation,
+            List<ConversationHistoryMessage> history) {
     }
 }

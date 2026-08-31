@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ConversationHistoryMessage;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmProvider;
@@ -162,6 +163,9 @@ class SelectionAssistanceWorkflowDefinitionTest {
         when(providerFactory.createObserved(any(), any())).thenReturn(provider);
         when(service.operation(9L)).thenReturn("rewrite");
         when(service.sourceFingerprint(9L)).thenReturn("f".repeat(64));
+        when(service.modelHistory(9L)).thenReturn(List.of(
+                new ConversationHistoryMessage("user", "上一轮作者消息"),
+                new ConversationHistoryMessage("assistant", "上一轮 Moqi 建议")));
         when(service.modelPrompt(9L)).thenReturn("本轮任务：按作者要求重写正文\n需要处理的正文：原文");
         when(provider.generate(any())).thenReturn(new LlmResponse(null,
                 objectMapper.readTree("{\"replacement\":\"候选\",\"factRisk\":\"safe\",\"factRiskReasons\":[]}"), null));
@@ -172,11 +176,17 @@ class SelectionAssistanceWorkflowDefinitionTest {
 
         ArgumentCaptor<LlmRequest> request = ArgumentCaptor.forClass(LlmRequest.class);
         verify(provider).generate(request.capture());
-        assertThat(request.getValue().messages()).hasSize(2);
+        assertThat(request.getValue().messages()).hasSize(4);
         assertThat(request.getValue().messages().get(0).role()).isEqualTo(LlmRole.SYSTEM);
-        assertThat(request.getValue().messages().get(0).content()).contains("待作者应用和保存的候选");
+        assertThat(request.getValue().messages().get(0).content())
+                .contains("待作者应用和保存的候选")
+                .contains("历史助手回复只是候选建议");
         assertThat(request.getValue().messages().get(1).role()).isEqualTo(LlmRole.USER);
-        assertThat(request.getValue().messages().get(1).content())
+        assertThat(request.getValue().messages().get(1).content()).isEqualTo("上一轮作者消息");
+        assertThat(request.getValue().messages().get(2).role()).isEqualTo(LlmRole.ASSISTANT);
+        assertThat(request.getValue().messages().get(2).content()).isEqualTo("上一轮 Moqi 建议");
+        assertThat(request.getValue().messages().get(3).role()).isEqualTo(LlmRole.USER);
+        assertThat(request.getValue().messages().get(3).content())
                 .isEqualTo("本轮任务：按作者要求重写正文\n需要处理的正文：原文")
                 .doesNotContain("operation", "targetKind", "requestStatus");
     }

@@ -63,6 +63,15 @@ public interface ProseWorkspaceService {
     ProseCandidateBasisView getCandidateBasis(Long chapterId, Long candidateId);
 
     /**
+     * 按稳定正文对象读取其生成时冻结依据。
+     *
+     * @param chapterId 章节 ID
+     * @param objectId 正式正文或候选的稳定对象 ID
+     * @return 生成时冻结依据的作者可见投影
+     */
+    ProseCandidateBasisView getObjectBasis(Long chapterId, String objectId);
+
+    /**
      * 读取正式正文、根候选或任意候选的稳定比较输入。
      *
      * @param chapterId 章节 ID

@@ -561,6 +561,10 @@ class StoryContextEngineImplTest {
                         null,
                         false,
                         false,
+                        null,
+                        null,
+                        null,
+                        null,
                         null));
         StoryContextSnapshot snapshot = engine.build(new StoryContextBuildCommand(
                 StoryContextProfile.CHAPTER_DISCUSSION, 1L, 2L, 3L, 101L,

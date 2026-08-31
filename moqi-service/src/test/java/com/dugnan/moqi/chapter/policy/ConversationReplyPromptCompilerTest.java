@@ -238,6 +238,28 @@ class ConversationReplyPromptCompilerTest {
     }
 
     @Test
+    void preservesProseObjectApplicationBoundaryInVersionFivePrompt() {
+        ResolvedReplyPolicy policy = new ResolvedReplyPolicy(
+                ReplyMode.EXPLORE,
+                ReplyDepth.BALANCED,
+                scope(ReplyMode.EXPLORE),
+                "message",
+                DefaultReplyPolicyResolver.POLICY_VERSION,
+                false,
+                null,
+                false,
+                false,
+                null);
+        ConversationReplyTaskInputV1 input = ConversationReplyTaskInputV1.forProseObject(
+                11L, 8L, policy, null, "candidate:18", 4, "frozen-hash", "冻结候选正文");
+
+        assertThat(compiler.compile(input))
+                .contains("当前是在正文工作区讨论一个已保存正文对象")
+                .contains("不得宣称正文、候选或规划已经保存、应用或采纳")
+                .doesNotContain("candidate:18", "frozen-hash", "冻结候选正文");
+    }
+
+    @Test
     void rejectsMissingOrUnknownMappings() {
         assertThatThrownBy(() -> compiler.compile(input(
                 ReplyMode.EXPLORE,
@@ -268,6 +290,10 @@ class ConversationReplyPromptCompilerTest {
                 null,
                 false,
                 false,
+                null,
+                null,
+                null,
+                null,
                 null))).isInstanceOf(IllegalStateException.class).hasMessageContaining("replyDepth");
         assertThatThrownBy(() -> compiler.compile(input(
                 ReplyMode.COMPARE,
@@ -308,6 +334,10 @@ class ConversationReplyPromptCompilerTest {
                 null,
                 false,
                 false,
+                null,
+                null,
+                null,
+                null,
                 null);
     }
 

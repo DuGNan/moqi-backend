@@ -302,13 +302,14 @@ public class ConversationReplyTaskRunner {
                                 taskInput.controlSource(),
                                 taskInput.policyVersion())
                         .build());
-        eventPublisher.publishEvent(ChapterReplyEvent.started(task.getChapterId(), task.getId()));
+        eventPublisher.publishEvent(ChapterReplyEvent.started(
+                task.getChapterId(), task.getId(), input.getConversationId()));
         boolean structured = isStructuredInteraction(taskInput.replyMode());
         boolean delayedOutput = structured || isCurrentFactCorrection(taskInput);
         state.publishPartial = !delayedOutput;
         state.call = provider.stream(
                 contextSnapshot == null ? request(input, taskInput) : request(contextSnapshot, taskInput),
-                event -> appendDelta(task, state, event, !delayedOutput));
+                event -> appendDelta(task, input.getConversationId(), state, event, !delayedOutput));
         callRegistry.register(task.getId(), state.call);
         LlmStreamResult streamResult = state.call.await();
         ensureCompleted(streamResult);
@@ -329,14 +330,17 @@ public class ConversationReplyTaskRunner {
                     task.getId(), task.getChapterId(), result.degradationReason());
         }
         if (delayedOutput && StringUtils.hasText(result.content())) {
-            eventPublisher.publishEvent(ChapterReplyEvent.delta(task.getChapterId(), task.getId(), result.content()));
+            eventPublisher.publishEvent(ChapterReplyEvent.delta(
+                    task.getChapterId(), task.getId(), input.getConversationId(), result.content()));
         }
         Long messageId = persistenceService.complete(task, input, result.content(), result.interactionJson());
-        eventPublisher.publishEvent(ChapterReplyEvent.completed(task.getChapterId(), task.getId(), messageId));
+        eventPublisher.publishEvent(ChapterReplyEvent.completed(
+                task.getChapterId(), task.getId(), input.getConversationId(), messageId));
     }
 
     private void appendDelta(
             AiTaskEntity task,
+            Long conversationId,
             ProviderCallState state,
             LlmStreamEvent event,
             boolean publish) {
@@ -345,19 +349,20 @@ public class ConversationReplyTaskRunner {
                 && StringUtils.hasText(delta.text())) {
             state.response.append(delta.text());
             if (publish) {
-                publishVisibleDelta(task, state);
+                publishVisibleDelta(task, conversationId, state);
             }
         }
     }
 
-    private void publishVisibleDelta(AiTaskEntity task, ProviderCallState state) {
+    private void publishVisibleDelta(AiTaskEntity task, Long conversationId, ProviderCallState state) {
         String visibleContent = ConversationReplyContentSanitizer.visibleStreamingContent(state.response.toString());
         if (visibleContent.length() <= state.publishedContentLength) {
             return;
         }
         String delta = visibleContent.substring(state.publishedContentLength);
         state.publishedContentLength = visibleContent.length();
-        eventPublisher.publishEvent(ChapterReplyEvent.delta(task.getChapterId(), task.getId(), delta));
+        eventPublisher.publishEvent(ChapterReplyEvent.delta(
+                task.getChapterId(), task.getId(), conversationId, delta));
     }
 
     private void ensureCompleted(LlmStreamResult streamResult) {
@@ -505,7 +510,7 @@ public class ConversationReplyTaskRunner {
                 input.getId(),
                 taskRule(taskInput),
                 input.getContent(),
-                null,
+                taskInput.proseTargetText(),
                 contextWindow,
                 outputReserve,
                 resolveFocus(task, input), null, resolveMessageReference(input)), task);

@@ -48,7 +48,28 @@ public final class ProseWorkspaceModels {
             QualitySummary quality,
             AdoptionReadiness adoptionReadiness,
             LocalDateTime createdAt,
-            LocalDateTime modifiedAt) {
+            LocalDateTime modifiedAt,
+            Integer displayNo) {
+
+        public ProseCandidateSummary(
+                Long candidateId,
+                String objectId,
+                Long rootCandidateId,
+                Long parentCandidateId,
+                String sourceKind,
+                String candidateStatus,
+                String adoptionStatus,
+                Integer contentVersion,
+                String contentHash,
+                Integer wordCount,
+                QualitySummary quality,
+                AdoptionReadiness adoptionReadiness,
+                LocalDateTime createdAt,
+                LocalDateTime modifiedAt) {
+            this(candidateId, objectId, rootCandidateId, parentCandidateId, sourceKind, candidateStatus,
+                    adoptionStatus, contentVersion, contentHash, wordCount, quality, adoptionReadiness,
+                    createdAt, modifiedAt, null);
+        }
     }
 
     public record AdoptionReadiness(
@@ -131,7 +152,8 @@ public final class ProseWorkspaceModels {
             QualitySummary quality,
             AdoptionReadiness adoptionReadiness,
             LocalDateTime createdAt,
-            LocalDateTime modifiedAt) {
+            LocalDateTime modifiedAt,
+            Integer displayNo) {
 
         public ProseCandidateDetail(
                 Long chapterId,
@@ -151,7 +173,29 @@ public final class ProseWorkspaceModels {
                 LocalDateTime modifiedAt) {
             this(chapterId, candidateId, objectId, rootCandidateId, parentCandidateId, sourceKind,
                     candidateStatus, adoptionStatus, content, contentVersion, contentHash, wordCount,
-                    quality, null, createdAt, modifiedAt);
+                    quality, null, createdAt, modifiedAt, null);
+        }
+
+        public ProseCandidateDetail(
+                Long chapterId,
+                Long candidateId,
+                String objectId,
+                Long rootCandidateId,
+                Long parentCandidateId,
+                String sourceKind,
+                String candidateStatus,
+                String adoptionStatus,
+                String content,
+                Integer contentVersion,
+                String contentHash,
+                Integer wordCount,
+                QualitySummary quality,
+                AdoptionReadiness adoptionReadiness,
+                LocalDateTime createdAt,
+                LocalDateTime modifiedAt) {
+            this(chapterId, candidateId, objectId, rootCandidateId, parentCandidateId, sourceKind,
+                    candidateStatus, adoptionStatus, content, contentVersion, contentHash, wordCount,
+                    quality, adoptionReadiness, createdAt, modifiedAt, null);
         }
     }
 

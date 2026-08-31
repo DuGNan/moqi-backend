@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -44,6 +45,8 @@ import com.dugnan.moqi.chapter.policy.ReplyMode;
 import com.dugnan.moqi.chapter.policy.ReplyPolicyPreferenceService;
 import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.chapter.service.ChapterCollaborationService;
+import com.dugnan.moqi.chapter.service.ProseObjectTargetService;
+import com.dugnan.moqi.chapter.service.ProseObjectTargetService.ProseObjectTarget;
 import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -61,6 +64,8 @@ import com.dugnan.moqi.work.mapper.WorkMapper;
  */
 @Service
 public class ChapterCollaborationServiceImpl implements ChapterCollaborationService {
+
+    private static final int MAX_CLIENT_MESSAGE_ID_LENGTH = 128;
 
     private static final String STATUS_ACTIVE = "active";
     private static final String STATUS_DRAFT = "draft";
@@ -87,6 +92,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     private final ChapterConsensusImpactService impactService;
     private final ReplyPolicyPreferenceService replyPolicyService;
     private final ObjectMapper objectMapper;
+    private final ProseObjectTargetService proseObjectTargetService;
 
     /**
      * 创建章节共创服务。
@@ -179,7 +185,6 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
      * @param replyPolicyService 回复策略服务
      * @param objectMapper JSON 映射器
      */
-    @Autowired
     public ChapterCollaborationServiceImpl(
             WorkMapper workMapper,
             ChapterMapper chapterMapper,
@@ -193,6 +198,26 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             ChapterConsensusImpactService impactService,
             ReplyPolicyPreferenceService replyPolicyService,
             ObjectMapper objectMapper) {
+        this(workMapper, chapterMapper, conversationMapper, messageMapper, briefMapper, outlineMapper,
+                aiTaskMapper, eventPublisher, focusResolver, impactService, replyPolicyService, objectMapper, null);
+    }
+
+    /** 创建完整接入对象级正文目标解析的章节共创服务。 */
+    @Autowired
+    public ChapterCollaborationServiceImpl(
+            WorkMapper workMapper,
+            ChapterMapper chapterMapper,
+            ChapterConversationMapper conversationMapper,
+            ChapterConversationMessageMapper messageMapper,
+            ChapterBriefMapper briefMapper,
+            ChapterOutlineQueryMapper outlineMapper,
+            AiTaskMapper aiTaskMapper,
+            ApplicationEventPublisher eventPublisher,
+            ChapterDiscussionFocusResolver focusResolver,
+            ChapterConsensusImpactService impactService,
+            ReplyPolicyPreferenceService replyPolicyService,
+            ObjectMapper objectMapper,
+            ProseObjectTargetService proseObjectTargetService) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.conversationMapper = conversationMapper;
@@ -205,6 +230,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         this.impactService = impactService;
         this.replyPolicyService = replyPolicyService;
         this.objectMapper = objectMapper;
+        this.proseObjectTargetService = proseObjectTargetService;
     }
 
     @Override
@@ -269,12 +295,21 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         String content = requiredText(interactionResponse == null
                 ? (request == null ? null : request.content()) : interactionResponse.content(), "消息内容不能为空");
         Long continuationMessageId = requireContinuation(conversation, request, role);
+        String clientMessageId = clientMessageId(request == null ? null : request.clientMessageId());
+        ChapterConversationMessageEntity existingMessage = findClientMessage(conversationId, clientMessageId);
+        if (existingMessage != null) {
+            if (!role.equals(existingMessage.getMessageRole()) || !content.equals(existingMessage.getContent())) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "clientMessageId 已绑定不同消息");
+            }
+            return messageCreated(existingMessage);
+        }
 
         ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
         message.setConversationId(conversationId);
         message.setChapterId(conversation.getChapterId());
         message.setMessageRole(role);
         message.setContent(content);
+        message.setClientMessageId(clientMessageId);
         applyDiscussionFocus(conversation, request, role, message);
         applyReferencedMessage(conversation, chapter, request, role, message);
         if (interactionResponse != null) {
@@ -282,7 +317,18 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                     interactionResponse.response(), objectMapper()));
         }
         message.setDeleted(0);
-        messageMapper.insert(message);
+        try {
+            messageMapper.insert(message);
+        } catch (DuplicateKeyException exception) {
+            ChapterConversationMessageEntity replayed = findClientMessage(conversationId, clientMessageId);
+            if (replayed == null) {
+                throw exception;
+            }
+            if (!role.equals(replayed.getMessageRole()) || !content.equals(replayed.getContent())) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "clientMessageId 已绑定不同消息");
+            }
+            return messageCreated(replayed);
+        }
 
         if (request != null && Boolean.TRUE.equals(request.createAiTask())) {
             ResolvedReplyPolicy policy = resolveReplyPolicy(conversation, content, request);
@@ -292,8 +338,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             aiTask.setWorkId(conversation.getWorkId());
             aiTask.setChapterId(conversation.getChapterId());
             aiTask.setResultMessageId(null);
-            aiTask.setTaskInputJson(taskInputJson(ConversationReplyTaskInputV1.from(
-                    message.getId(), conversationId, policy, continuationMessageId)));
+            aiTask.setTaskInputJson(taskInputJson(replyTaskInput(
+                    message.getId(), conversation, policy, continuationMessageId)));
             aiTask.setDeleted(0);
             aiTask.setVersion(0);
             aiTaskMapper.insert(aiTask);
@@ -302,6 +348,52 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             eventPublisher.publishEvent(new ConversationReplyTaskSubmittedEvent(aiTask.getId()));
         }
         return messageCreated(message);
+    }
+
+    private ChapterConversationMessageEntity findClientMessage(Long conversationId, String clientMessageId) {
+        if (!StringUtils.hasText(clientMessageId)) {
+            return null;
+        }
+        return messageMapper.selectOne(new LambdaQueryWrapper<ChapterConversationMessageEntity>()
+                .eq(ChapterConversationMessageEntity::getConversationId, conversationId)
+                .eq(ChapterConversationMessageEntity::getClientMessageId, clientMessageId)
+                .eq(ChapterConversationMessageEntity::getDeleted, 0));
+    }
+
+    private String clientMessageId(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String normalized = value.trim();
+        if (normalized.length() > MAX_CLIENT_MESSAGE_ID_LENGTH) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "clientMessageId 不能超过 128 字符");
+        }
+        return normalized;
+    }
+
+    private ConversationReplyTaskInputV1 replyTaskInput(
+            Long messageId,
+            ChapterConversationEntity conversation,
+            ResolvedReplyPolicy policy,
+            Long continuationMessageId) {
+        if (!StringUtils.hasText(conversation.getTargetObjectId())) {
+            return ConversationReplyTaskInputV1.from(
+                    messageId, conversation.getId(), policy, continuationMessageId);
+        }
+        if (proseObjectTargetService == null) {
+            throw new IllegalStateException("正文对象会话目标解析器不可用");
+        }
+        ProseObjectTarget target = proseObjectTargetService.resolve(
+                conversation.getChapterId(), conversation.getTargetObjectId());
+        return ConversationReplyTaskInputV1.forProseObject(
+                messageId,
+                conversation.getId(),
+                policy,
+                continuationMessageId,
+                target.objectId(),
+                target.version(),
+                target.contentHash(),
+                target.promptText());
     }
 
     private ResolvedReplyPolicy resolveReplyPolicy(
@@ -781,7 +873,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 entity.getConversationType(),
                 entity.getConversationStatus(),
                 entity.getGmtCreate(),
-                entity.getGmtModified());
+                entity.getGmtModified(),
+                entity.getTargetObjectId());
     }
 
     /**
@@ -896,12 +989,17 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     }
 
     private ConversationReplyTaskInputV1 replyTaskInput(AiTaskEntity task) {
-        if (task == null || !StringUtils.hasText(task.getTaskInputJson())) {
+        if (task == null || !AI_TASK_TYPE.equals(task.getTaskType())
+                || !StringUtils.hasText(task.getTaskInputJson())) {
             return null;
         }
         try {
-            return (objectMapper == null ? new ObjectMapper() : objectMapper)
+            ConversationReplyTaskInputV1 input = (objectMapper == null ? new ObjectMapper() : objectMapper)
                     .readValue(task.getTaskInputJson(), ConversationReplyTaskInputV1.class);
+            if (input.replyMode() == null || input.replyDepth() == null || input.replyScope() == null) {
+                return null;
+            }
+            return input;
         } catch (JsonProcessingException exception) {
             return null;
         }

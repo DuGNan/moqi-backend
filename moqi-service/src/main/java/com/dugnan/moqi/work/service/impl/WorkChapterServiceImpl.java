@@ -274,7 +274,7 @@ public class WorkChapterServiceImpl implements WorkChapterService {
     @Transactional(rollbackFor = RuntimeException.class)
     public ChapterCreated createChapter(Long workId, CreateChapterCommand command) {
         requireLockedWork(workId);
-        String title = validTitle(command == null ? null : command.title());
+        String title = optionalChapterTitle(command == null ? null : command.title());
         String type = command == null || !StringUtils.hasText(command.chapterType())
                 ? "chapter"
                 : trim(command.chapterType());
@@ -473,7 +473,7 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         ChapterEntity latest = chapters.stream()
                 .max(
                         Comparator.comparing(
-                                        ChapterEntity::getGmtModified,
+                                        ChapterEntity::getChapterNo,
                                         Comparator.nullsFirst(Comparator.naturalOrder()))
                                 .thenComparing(ChapterEntity::getId))
                 .orElse(null);
@@ -484,6 +484,7 @@ public class WorkChapterServiceImpl implements WorkChapterService {
                 work.getVersion(),
                 chapters.size(),
                 id(latest),
+                latest == null ? null : latest.getChapterNo(),
                 latest == null ? null : latest.getTitle(),
                 work.getGmtCreate(),
                 work.getGmtModified());
@@ -670,6 +671,23 @@ public class WorkChapterServiceImpl implements WorkChapterService {
         String value = trim(title);
         if (!StringUtils.hasText(value)) {
             throw badRequest("标题不能为空");
+        }
+        if (value.codePointCount(0, value.length()) > MAX_TITLE_LENGTH) {
+            throw badRequest("标题不能超过 " + MAX_TITLE_LENGTH + " 个字符");
+        }
+        return value;
+    }
+
+    /**
+     * 规范化创建章节时的可选标题。章序由 chapterNo 独立保存，不写入标题字段。
+     *
+     * @param title 原始标题
+     * @return 去除首尾空白后的标题；缺失或纯空白时返回 null
+     */
+    private String optionalChapterTitle(String title) {
+        String value = trim(title);
+        if (!StringUtils.hasText(value)) {
+            return null;
         }
         if (value.codePointCount(0, value.length()) > MAX_TITLE_LENGTH) {
             throw badRequest("标题不能超过 " + MAX_TITLE_LENGTH + " 个字符");

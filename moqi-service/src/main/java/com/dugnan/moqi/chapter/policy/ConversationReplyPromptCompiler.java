@@ -53,9 +53,11 @@ public final class ConversationReplyPromptCompiler {
     private String compileVersionFive(ConversationReplyTaskInputV1 input) {
         if (FACT_CORRECTION.equals(input.replyScope().allowedChanges())) {
             return ConversationReplyPromptTemplatesV5.style()
+                    + proseObjectRule(input)
                     + ConversationReplyPromptTemplatesV5.scope(input.replyScope());
         }
         return ConversationReplyPromptTemplatesV5.style()
+                + proseObjectRule(input)
                 + ConversationReplyPromptTemplatesV5.action(input.replyMode())
                 + ConversationReplyPromptTemplatesV5.depth(input.replyMode(), input.replyDepth())
                 + ConversationReplyPromptTemplatesV5.candidateCount(
@@ -70,12 +72,14 @@ public final class ConversationReplyPromptCompiler {
     private String compileVersionFour(ConversationReplyTaskInputV1 input) {
         if (FACT_CORRECTION.equals(input.replyScope().allowedChanges())) {
             return ConversationReplyPromptTemplatesV4.identity()
+                    + proseObjectRule(input)
                     + ConversationReplyPromptTemplatesV4.scope(input.replyScope())
                     + ConversationReplyPromptTemplatesV4.authority()
                     + ConversationReplyPromptTemplatesV4.conversation(
                             input.consecutiveQuestionSuppressed(), input.crossChapterRequested());
         }
         return ConversationReplyPromptTemplatesV4.identity()
+                + proseObjectRule(input)
                 + ConversationReplyPromptTemplatesV4.action(input.replyMode())
                 + ConversationReplyPromptTemplatesV4.depth(input.replyMode(), input.replyDepth())
                 + ConversationReplyPromptTemplatesV4.candidateCount(
@@ -90,6 +94,7 @@ public final class ConversationReplyPromptCompiler {
 
     private String compileLegacy(ConversationReplyTaskInputV1 input) {
         return "你是墨契的章节共创助手。"
+                + proseObjectRule(input)
                 + actionRule(input.replyMode())
                 + depthRule(input.replyDepth())
                 + scopeRule(input.replyScope())
@@ -97,6 +102,13 @@ public final class ConversationReplyPromptCompiler {
                 + conversationRule(input)
                 + "不得宣称已经确认、保存或更新任何 Brief、大纲、场景规划、正文或作品资料。"
                 + structuredInteractionRule(input);
+    }
+
+    private String proseObjectRule(ConversationReplyTaskInputV1 input) {
+        return StringUtils.hasText(input.proseObjectId())
+                ? "当前是在正文工作区讨论一个已保存正文对象。普通讨论只能分析、回答或建议，"
+                    + "不得宣称正文、候选或规划已经保存、应用或采纳。"
+                : "";
     }
 
     private void validate(ConversationReplyTaskInputV1 input) {

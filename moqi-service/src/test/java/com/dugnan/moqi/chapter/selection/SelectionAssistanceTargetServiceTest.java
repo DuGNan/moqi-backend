@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import com.dugnan.moqi.agent.AgentRuntime;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
@@ -39,6 +41,8 @@ import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.CreateRequest
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
+import com.dugnan.moqi.chapter.service.ProseObjectConversationService;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ConversationDetail;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 
@@ -59,7 +63,9 @@ class SelectionAssistanceTargetServiceTest {
         assertThat(view.targetKind()).isEqualTo("candidate");
         assertThat(view.createdCandidateId()).isEqualTo(40L);
         assertThat(view.canAccept()).isFalse();
-        verify(fixture.generationMapper).insert(any(ChapterGenerationEntity.class));
+        verify(fixture.generationMapper).insert(argThat((ChapterGenerationEntity generation) ->
+                generation.getBaseGenerationId().equals(49L)
+                        && "{\"discussionBasis\":\"confirmed\"}".equals(generation.getBasisSnapshotJson())));
         verify(fixture.candidateMapper).insert(any(ChapterProseCandidateEntity.class));
         verify(fixture.chapterMapper, never()).updateContentIfVersion(any(), any(), any());
     }
@@ -83,7 +89,7 @@ class SelectionAssistanceTargetServiceTest {
     }
 
     @Test
-    void discussionUsesSharedChapterConversationAndVersionedReference() {
+    void discussionUsesTargetObjectConversationAndVersionedReference() {
         Fixture fixture = new Fixture();
 
         var view = fixture.service.create(2L, fixture.request(
@@ -94,8 +100,67 @@ class SelectionAssistanceTargetServiceTest {
         assertThat(view.referenceTextHash()).isEqualTo(hash("原始"));
         assertThat(view.referenceSentenceCount()).isEqualTo(1);
         assertThat(view.referenceStale()).isFalse();
-        verify(fixture.conversationMapper).insert(any(ChapterConversationEntity.class));
+        verify(fixture.proseObjectConversationService).createOrGet(2L, "formal:2");
+        verify(fixture.conversationMapper, never()).insert(any(ChapterConversationEntity.class));
         verify(fixture.messageMapper).insert(any(ChapterConversationMessageEntity.class));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"discuss", "rewrite", "polish", "expand", "compress"})
+    void everyReferencedOperationBelongsToTheTargetObjectConversation(String operation) {
+        Fixture fixture = new Fixture();
+        fixture.candidate.setId(41L);
+        fixture.candidate.setVersion(5);
+        fixture.candidate.setContentHash(hash(fixture.chapter.getContent()));
+
+        var view = fixture.service.create(2L, fixture.request(
+                "candidate", "candidate:41", 5, operation, "conversation-" + operation));
+
+        assertThat(view.conversationId()).isEqualTo(20L);
+        assertThat(view.userMessageId()).isEqualTo(30L);
+        verify(fixture.proseObjectConversationService).createOrGet(2L, "candidate:41");
+        verify(fixture.messageMapper).insert(argThat((ChapterConversationMessageEntity message) ->
+                "user".equals(message.getMessageRole())
+                        && message.getContent().contains("作者要求：保持事实")
+                        && message.getContent().contains("引用正文：\n原始")
+                        && message.getClientMessageId() != null));
+    }
+
+    @Test
+    void freezesExistingObjectConversationHistoryBeforeTheCurrentReferenceMessage() {
+        Fixture fixture = new Fixture();
+        ChapterConversationMessageEntity previousUser = fixture.message(11L, "user", "上一轮作者要求");
+        ChapterConversationMessageEntity previousAssistant = fixture.message(12L, "assistant", "上一轮候选建议");
+        when(fixture.messageMapper.selectList(any())).thenReturn(List.of(previousUser, previousAssistant));
+
+        fixture.service.create(2L, fixture.request(
+                "formal", "formal:2", 3, "discuss", "history-discussion"));
+        when(fixture.messageMapper.selectList(any())).thenReturn(List.of(
+                fixture.message(13L, "user", "创建之后的新消息")));
+
+        assertThat(fixture.service.modelHistory(9L))
+                .containsExactly(
+                        new SelectionAssistanceModels.ConversationHistoryMessage("user", "上一轮作者要求"),
+                        new SelectionAssistanceModels.ConversationHistoryMessage("assistant", "上一轮候选建议"));
+    }
+
+    @Test
+    void modificationResultIsPersistedAsAnUnappliedAssistantProposal() {
+        Fixture fixture = new Fixture();
+        fixture.candidate.setId(41L);
+        fixture.candidate.setVersion(5);
+        fixture.candidate.setContentHash(hash(fixture.chapter.getContent()));
+        fixture.service.create(2L, fixture.request(
+                "candidate", "candidate:41", 5, "polish", "persist-polish"));
+
+        fixture.service.complete(9L, "润色后的正文", "safe", List.of(), null, "model-call");
+
+        verify(fixture.messageMapper).insert(argThat((ChapterConversationMessageEntity message) ->
+                "assistant".equals(message.getMessageRole())
+                        && message.getContent().contains("已生成润色提案")
+                        && message.getContent().contains("尚未应用或保存")
+                        && message.getContent().contains("润色后的正文")
+                        && message.getClientMessageId() != null));
     }
 
     @Test
@@ -134,7 +199,7 @@ class SelectionAssistanceTargetServiceTest {
     }
 
     @Test
-    void formalDiscussionReplayAfterConcurrentCommitDoesNotDuplicateSharedMessage() {
+    void formalDiscussionReplayAfterConcurrentCommitDoesNotDuplicateObjectMessage() {
         Fixture fixture = new Fixture();
         ChapterSelectionAssistanceEntity existing = fixture.persistedFormalRewrite();
         existing.setOperationType("discuss");
@@ -173,6 +238,7 @@ class SelectionAssistanceTargetServiceTest {
                         && generation.getIdempotencyKey().length() <= 128));
         verify(fixture.candidateMapper, times(1)).insert(any(ChapterProseCandidateEntity.class));
         verify(fixture.taskMapper, times(1)).insert(any(AiTaskEntity.class));
+        verify(fixture.messageMapper, times(1)).insert(any(ChapterConversationMessageEntity.class));
     }
 
     @Test
@@ -304,19 +370,28 @@ class SelectionAssistanceTargetServiceTest {
         private final ChapterConversationMapper conversationMapper = mock(ChapterConversationMapper.class);
         private final ChapterConversationMessageMapper messageMapper = mock(ChapterConversationMessageMapper.class);
         private final ProsePlanningChangeService planningChangeService = mock(ProsePlanningChangeService.class);
+        private final ProseObjectConversationService proseObjectConversationService = mock(ProseObjectConversationService.class);
         private final AgentRuntime agentRuntime = mock(AgentRuntime.class);
         private final ChapterEntity chapter = chapter();
         private final ChapterProseCandidateEntity candidate = candidate();
         private final AtomicReference<ChapterSelectionAssistanceEntity> assistance = new AtomicReference<>();
+        private final AtomicReference<String> conversationTarget = new AtomicReference<>("formal:2");
         private final SelectionAssistanceServiceImpl service = new SelectionAssistanceServiceImpl(
                 chapterMapper, assistanceMapper, taskMapper, briefService, new ObjectMapper());
 
         private Fixture() {
             service.setAgentRuntime(agentRuntime);
             service.setWorkspaceDependencies(candidateMapper, generationMapper, conversationMapper,
-                    messageMapper, planningChangeService);
+                    messageMapper, planningChangeService, proseObjectConversationService);
             when(chapterMapper.selectById(2L)).thenReturn(chapter);
             when(chapterMapper.selectByIdForUpdate(2L)).thenReturn(chapter);
+            ChapterGenerationEntity formalSource = new ChapterGenerationEntity();
+            formalSource.setId(49L);
+            formalSource.setWorkId(1L);
+            formalSource.setChapterId(2L);
+            formalSource.setBasisSnapshotJson("{\"discussionBasis\":\"confirmed\"}");
+            formalSource.setDeleted(0);
+            when(generationMapper.selectById(49L)).thenReturn(formalSource);
             when(briefService.preview(2L, null)).thenReturn(new GenerationBriefPreview(
                     1L, 2L, 3L, 1, "brief-v1", "current", List.of(), "b".repeat(64), null, "生成说明"));
             doAnswer(invocation -> {
@@ -346,6 +421,19 @@ class SelectionAssistanceTargetServiceTest {
                 return 1;
             }).when(conversationMapper).insert(any(ChapterConversationEntity.class));
             when(conversationMapper.selectList(any())).thenReturn(List.of());
+            when(proseObjectConversationService.createOrGet(any(), any())).thenAnswer(invocation -> {
+                String targetObjectId = invocation.getArgument(1);
+                conversationTarget.set(targetObjectId);
+                return new ConversationDetail(
+                        20L, 1L, 2L, "prose_object", "active", null, null, targetObjectId);
+            });
+            when(conversationMapper.selectById(20L)).thenAnswer(invocation -> {
+                ChapterConversationEntity objectConversation = new ChapterConversationEntity();
+                objectConversation.setId(20L);
+                objectConversation.setChapterId(2L);
+                objectConversation.setTargetObjectId(conversationTarget.get());
+                return objectConversation;
+            });
             doAnswer(invocation -> {
                 ChapterConversationMessageEntity inserted = invocation.getArgument(0);
                 inserted.setId(30L);
@@ -412,6 +500,17 @@ class SelectionAssistanceTargetServiceTest {
             return entity;
         }
 
+        private ChapterConversationMessageEntity message(Long id, String role, String content) {
+            ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
+            message.setId(id);
+            message.setConversationId(20L);
+            message.setChapterId(2L);
+            message.setMessageRole(role);
+            message.setContent(content);
+            message.setDeleted(0);
+            return message;
+        }
+
         private static ChapterEntity chapter() {
             ChapterEntity chapter = new ChapterEntity();
             chapter.setId(2L);
@@ -419,6 +518,7 @@ class SelectionAssistanceTargetServiceTest {
             chapter.setContent("原始正文");
             chapter.setWorkflowStatus("done");
             chapter.setVersion(3);
+            chapter.setFormalSourceGenerationId(49L);
             chapter.setDeleted(0);
             return chapter;
         }

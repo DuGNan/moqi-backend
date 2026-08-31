@@ -16,6 +16,10 @@ package com.dugnan.moqi.chapter.policy;
  * @param contextAuthorityVersion 权威上下文规则版本
  * @param convergenceApplied 是否应用收敛反馈
  * @param deferredReplyDepth 澄清完成后应恢复的目标深度
+ * @param proseObjectId 正文工作区稳定对象 ID
+ * @param proseObjectVersion 正文对象冻结版本
+ * @param proseContentHash 正文对象冻结内容哈希
+ * @param proseTargetText 正文对象冻结上下文
  */
 public record ConversationReplyTaskInputV1(
         int schemaVersion,
@@ -32,7 +36,11 @@ public record ConversationReplyTaskInputV1(
         ReplyMode previousReplyMode,
         boolean consecutiveQuestionSuppressed,
         boolean crossChapterRequested,
-        ReplyDepth deferredReplyDepth) {
+        ReplyDepth deferredReplyDepth,
+        String proseObjectId,
+        Integer proseObjectVersion,
+        String proseContentHash,
+        String proseTargetText) {
 
     public static final int SCHEMA_VERSION = 3;
     public static final String AUTHORITY_VERSION = "story-context-authority-v2";
@@ -64,7 +72,11 @@ public record ConversationReplyTaskInputV1(
                 policy.previousMode(),
                 policy.consecutiveQuestionSuppressed(),
                 policy.crossChapterRequested(),
-                policy.deferredDepth());
+                policy.deferredDepth(),
+                null,
+                null,
+                null,
+                null);
     }
 
     /**
@@ -96,6 +108,44 @@ public record ConversationReplyTaskInputV1(
                 policy.previousMode(),
                 policy.consecutiveQuestionSuppressed(),
                 policy.crossChapterRequested(),
-                policy.deferredDepth());
+                policy.deferredDepth(),
+                null,
+                null,
+                null,
+                null);
+    }
+
+    /**
+     * 构造绑定正文对象冻结快照的回复任务输入。
+     */
+    public static ConversationReplyTaskInputV1 forProseObject(
+            Long messageId,
+            Long conversationId,
+            ResolvedReplyPolicy policy,
+            Long continuationMessageId,
+            String proseObjectId,
+            Integer proseObjectVersion,
+            String proseContentHash,
+            String proseTargetText) {
+        return new ConversationReplyTaskInputV1(
+                SCHEMA_VERSION,
+                messageId,
+                conversationId,
+                policy.mode(),
+                policy.depth(),
+                policy.scope(),
+                policy.controlSource(),
+                policy.policyVersion(),
+                AUTHORITY_VERSION,
+                policy.convergenceApplied(),
+                continuationMessageId,
+                policy.previousMode(),
+                policy.consecutiveQuestionSuppressed(),
+                policy.crossChapterRequested(),
+                policy.deferredDepth(),
+                proseObjectId,
+                proseObjectVersion,
+                proseContentHash,
+                proseTargetText);
     }
 }

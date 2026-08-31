@@ -44,6 +44,8 @@ import com.dugnan.moqi.chapter.policy.ReplyPolicyPreferenceService;
 import com.dugnan.moqi.chapter.policy.ReplyScope;
 import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
+import com.dugnan.moqi.chapter.service.ProseObjectTargetService;
+import com.dugnan.moqi.chapter.service.ProseObjectTargetService.ProseObjectTarget;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
@@ -82,6 +84,8 @@ class ChapterCollaborationServiceImplTest {
     private ChapterDiscussionFocusResolver focusResolver;
     @Mock
     private ReplyPolicyPreferenceService replyPolicyService;
+    @Mock
+    private ProseObjectTargetService proseObjectTargetService;
 
     private ChapterCollaborationServiceImpl service;
 
@@ -99,7 +103,11 @@ class ChapterCollaborationServiceImplTest {
                 outlineMapper,
                 aiTaskMapper,
                 eventPublisher,
-                focusResolver);
+                focusResolver,
+                null,
+                null,
+                null,
+                proseObjectTargetService);
     }
 
     /**
@@ -143,6 +151,36 @@ class ChapterCollaborationServiceImplTest {
     }
 
     /**
+     * 验证选区协助任务不会被误解析为普通会话回复策略。
+     */
+    @Test
+    void listsSelectionAssistanceMessagesWithoutReplyPolicy() {
+        when(conversationMapper.selectById(8L)).thenReturn(conversation(8L, 1L, 2L));
+        ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
+        message.setId(11L);
+        message.setConversationId(8L);
+        message.setChapterId(2L);
+        message.setMessageRole("assistant");
+        message.setContent("已生成润色提案");
+        message.setAiTaskId(12L);
+        message.setDeleted(0);
+        when(messageMapper.selectList(any())).thenReturn(List.of(message));
+
+        AiTaskEntity task = new AiTaskEntity();
+        task.setId(12L);
+        task.setTaskType("chapter_selection_assistance_v1");
+        task.setTaskInputJson("{\"operation\":\"polish\",\"inputFingerprint\":\"fingerprint\"}");
+        when(aiTaskMapper.selectBatchIds(List.of(12L))).thenReturn(List.of(task));
+
+        var result = service.listMessages(8L);
+
+        assertThat(result.messages()).singleElement().satisfies(detail -> {
+            assertThat(detail.aiTaskId()).isEqualTo(12L);
+            assertThat(detail.effectiveReplyPolicy()).isNull();
+        });
+    }
+
+    /**
      * 验证发送消息时可创建 AI 任务并回填消息任务 ID。
      */
     @Test
@@ -177,6 +215,42 @@ class ChapterCollaborationServiceImplTest {
                         && task.getTaskInputJson().contains("\"replyMode\":\"explore\"")
                         && task.getTaskInputJson().contains("\"policyVersion\":\"chapter-reply-policy-v5\"")
                         && !task.getTaskInputJson().contains("讨论本章目标")));
+    }
+
+    @Test
+    void freezesProseObjectTargetAndReusesClientMessageId() {
+        ChapterConversationEntity scoped = conversation(8L, 1L, 2L);
+        scoped.setConversationType("prose_object");
+        scoped.setTargetObjectId("candidate:18");
+        when(conversationMapper.selectById(8L)).thenReturn(scoped);
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        when(proseObjectTargetService.resolve(2L, "candidate:18")).thenReturn(
+                new ProseObjectTarget("candidate:18", "candidate", 4, "content-hash", "候选正文", "由改写形成"));
+        java.util.concurrent.atomic.AtomicReference<ChapterConversationMessageEntity> persisted =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        when(messageMapper.selectOne(any())).thenAnswer(invocation -> persisted.get());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity value = invocation.getArgument(0);
+            value.setId(11L);
+            persisted.set(value);
+            return 1;
+        });
+        when(aiTaskMapper.insert(any(AiTaskEntity.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, AiTaskEntity.class).setId(12L);
+            return 1;
+        });
+
+        SendMessageRequest request = new SendMessageRequest(
+                "user", "讨论这份候选", true, null, null, null, null, "client-message-1");
+        MessageCreated first = service.sendMessage(8L, request);
+        MessageCreated replay = service.sendMessage(8L, request);
+
+        assertThat(replay.id()).isEqualTo(first.id());
+        verify(messageMapper, org.mockito.Mockito.times(1)).insert(any(ChapterConversationMessageEntity.class));
+        verify(aiTaskMapper, org.mockito.Mockito.times(1)).insert(org.mockito.ArgumentMatchers.argThat((AiTaskEntity task) ->
+                task.getTaskInputJson().contains("\"proseObjectId\":\"candidate:18\"")
+                        && task.getTaskInputJson().contains("\"proseContentHash\":\"content-hash\"")
+                        && task.getTaskInputJson().contains("候选正文")));
     }
 
     @Test
@@ -239,6 +313,7 @@ class ChapterCollaborationServiceImplTest {
         clarification.setDeleted(0);
         AiTaskEntity clarificationTask = new AiTaskEntity();
         clarificationTask.setId(19L);
+        clarificationTask.setTaskType("conversation_reply");
         clarificationTask.setTaskInputJson("""
                 {"schemaVersion":3,"messageId":18,"conversationId":8,
                 "replyMode":"clarify","replyDepth":"brief",
