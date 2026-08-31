@@ -190,7 +190,8 @@ public class ProseCandidateAdoptionServiceImpl implements ProseCandidateAdoption
         ProseCandidateAdoptionEntity adoption = newAdoption(candidate, report, request, MODE_DIRECT);
         adoption.setAdoptionStatus("processing");
         adoptionMapper.insert(adoption);
-        if (chapterMapper.updateContentIfVersion(chapter.getId(), candidate.getContent(), request.expectedFormalVersion()) != 1) {
+        if (chapterMapper.adoptContentIfVersion(chapter.getId(), candidate.getContent(),
+                candidate.getSourceGenerationId(), request.expectedFormalVersion()) != 1) {
             throw conflict("正式正文版本已变化");
         }
         markCandidate(candidate, "adopted");

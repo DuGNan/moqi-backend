@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import com.dugnan.moqi.agent.AgentWorkflowDefinition;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
+import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ConversationHistoryMessage;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ModelPlanningProposal;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.llm.LlmCallContext;
@@ -33,6 +34,8 @@ import com.dugnan.moqi.llm.LlmRole;
  */
 @Component
 public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefinition {
+
+    private static final String ROLE_USER = "user";
 
     private static final String TEMPLATE_VERSION = "selection-assistance-v2";
     private static final String OPERATION_DISCUSS = "discuss";
@@ -97,9 +100,16 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
                         .promptTemplateVersion(TEMPLATE_VERSION)
                         .sourceFingerprint(assistanceService.sourceFingerprint(assistanceId))
                         .build());
-        LlmResponse response = provider.generate(new LlmRequest(List.of(
-                new LlmMessage(LlmRole.SYSTEM, systemInstruction(operation)),
-                new LlmMessage(LlmRole.USER, assistanceService.modelPrompt(assistanceId))),
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(new LlmMessage(LlmRole.SYSTEM, systemInstruction(operation)));
+        List<ConversationHistoryMessage> history = assistanceService.modelHistory(assistanceId);
+        if (history != null) {
+            history.forEach(message -> messages.add(new LlmMessage(
+                    ROLE_USER.equals(message.role()) ? LlmRole.USER : LlmRole.ASSISTANT,
+                    message.content())));
+        }
+        messages.add(new LlmMessage(LlmRole.USER, assistanceService.modelPrompt(assistanceId)));
+        LlmResponse response = provider.generate(new LlmRequest(messages,
                 new LlmOptions(4096, null, List.of(), LlmResponseFormat.JSON_OBJECT)));
         ParsedResult parsed = parse(operation, response == null ? null : response.structuredContent());
         assistanceService.complete(assistanceId, parsed.content(), parsed.factRisk(), parsed.reasons(),
@@ -181,9 +191,12 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
     }
 
     private String systemInstruction(String operation) {
+        String historyRule = "此前消息来自当前正文对象自己的会话；历史作者消息用于理解作者意图，"
+                + "历史助手回复只是候选建议，除非作者随后明确确认，否则不得当成权威事实。";
         if (OPERATION_DISCUSS.equals(operation)) {
             return "只输出 JSON 对象 {\"advice\":\"...\",\"factRisk\":\"safe|review_required\","
-                    + "\"factRiskReasons\":[]}。仅给出写作建议，不生成替换正文，不确认任何故事事实。";
+                    + "\"factRiskReasons\":[]}。仅给出写作建议，不生成替换正文，不确认任何故事事实。"
+                    + historyRule;
         }
         return "只输出 JSON 对象 {\"replacement\":\"...\",\"factRisk\":\"safe|review_required\","
                 + "\"factRiskReasons\":[],\"planningProposal\":null}。只改写给定选区，结果始终是待作者应用和保存的候选；"
@@ -191,7 +204,8 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
                 + "对象必须且只能包含 changeReason、beforeSummary、afterSummary、scenes 四个字段。"
                 + "changeReason 说明修改规划的必要性；beforeSummary 必须原样复制输入中的当前规划摘要；"
                 + "afterSummary 概括修改后的完整规划；scenes 必须给出修改后的全部场景，不能只给差异。"
-                + "规划提案也只是待作者确认的候选，绝不能宣称已经生效。";
+                + "规划提案也只是待作者确认的候选，绝不能宣称已经生效。"
+                + historyRule;
     }
 
     private Long assistanceId(AgentStepExecutionContext context) {

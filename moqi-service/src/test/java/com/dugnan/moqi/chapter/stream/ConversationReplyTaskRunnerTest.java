@@ -114,7 +114,7 @@ class ConversationReplyTaskRunnerTest {
         verify(messageMapper).insert(messageCaptor.capture());
         assertThat(messageCaptor.getValue().getMessageRole()).isEqualTo("assistant");
         assertThat(messageCaptor.getValue().getContent()).isEqualTo("第一段第二段");
-        verify(eventPublisher).publishEvent(ChapterReplyEvent.completed(2L, 12L, 99L));
+        verify(eventPublisher).publishEvent(ChapterReplyEvent.completed(2L, 12L, 8L, 99L));
     }
 
     @Test
@@ -430,6 +430,65 @@ class ConversationReplyTaskRunnerTest {
         assertThat(requestCaptor.getValue().options().maxOutputTokens()).isEqualTo(4096);
         org.mockito.Mockito.verify(contextBindingService)
                 .buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class));
+    }
+
+    @Test
+    void sendsFrozenProseObjectContextInProviderMessageSnapshot() {
+        AiTaskEntity task = task("queued", 0);
+        task.setTaskInputJson("""
+                {"schemaVersion":3,"messageId":11,"conversationId":8,
+                 "replyMode":"explore","replyDepth":"brief",
+                 "replyScope":{"primaryIntent":"discuss","targetType":"current_discussion",
+                 "targetReference":null,"allowedChanges":"discussion","maxCandidates":1,"allowNewTerms":true},
+                 "controlSource":"message","policyVersion":"chapter-reply-policy-v1",
+                 "contextAuthorityVersion":"story-context-authority-v2","convergenceApplied":false,
+                 "proseObjectId":"candidate:16811","proseObjectVersion":4,
+                 "proseContentHash":"frozen-hash",
+                 "proseTargetText":"当前讨论对象：候选 1\\n来源：正式正文的有界改写\\n正文：冻结候选内容"}
+                """);
+        when(taskMapper.selectById(12L)).thenReturn(task);
+        when(taskMapper.update(any(), any())).thenReturn(1);
+        lenient().when(messageMapper.selectList(any())).thenReturn(List.of(userMessage()));
+        when(providerFactory.create(any())).thenReturn(provider);
+        when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, true, false, 16384, 8192));
+        when(contextBindingService.buildAndAttach(any(StoryContextBuildCommand.class), any(AiTaskEntity.class)))
+                .thenAnswer(invocation -> {
+                    StoryContextBuildCommand command = invocation.getArgument(0);
+                    return new StoryContextSnapshot(
+                            88L, "chapter_discussion:1:2:8", 1L, 2L, 8L,
+                            StoryContextProfile.CHAPTER_DISCUSSION, 1, 1, 16384, 4096, 12288, 12,
+                            "hash", List.of(
+                                    new StoryContextItem(StoryContextSourceType.SYSTEM_RULE, "system", "v1", null,
+                                            "SYSTEM", "系统规则", true, 1000, 0, 2, 2, "INCLUDED"),
+                                    new StoryContextItem(StoryContextSourceType.TARGET_TEXT, "candidate:16811", "4", null,
+                                            "USER", command.targetText(), true, 1000, 500, 20, 20, "INCLUDED"),
+                                    new StoryContextItem(StoryContextSourceType.USER_INPUT, "11", null, null,
+                                            "USER", command.currentInput(), true, 1000, 500, 3, 3, "INCLUDED")),
+                            List.of(), null);
+                });
+        when(provider.stream(any(), any())).thenReturn(new CompletedCall());
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(99L);
+            return 1;
+        });
+
+        new ConversationReplyTaskRunner(
+                taskMapper, messageMapper, userConfigService, providerFactory,
+                new ConversationReplyPersistenceService(taskMapper, messageMapper),
+                eventPublisher, new LlmStreamCallRegistry(), contextBindingService).run(12L);
+
+        ArgumentCaptor<StoryContextBuildCommand> commandCaptor =
+                ArgumentCaptor.forClass(StoryContextBuildCommand.class);
+        verify(contextBindingService).buildAndAttach(commandCaptor.capture(), any(AiTaskEntity.class));
+        assertThat(commandCaptor.getValue().targetText())
+                .contains("当前讨论对象：候选 1", "来源：正式正文的有界改写", "正文：冻结候选内容");
+        ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).stream(requestCaptor.capture(), any());
+        assertThat(requestCaptor.getValue().messages()).extracting(message -> message.content())
+                .containsExactly("系统规则",
+                        "当前讨论对象：候选 1\n来源：正式正文的有界改写\n正文：冻结候选内容",
+                        "请讨论本章目标");
     }
 
     /**

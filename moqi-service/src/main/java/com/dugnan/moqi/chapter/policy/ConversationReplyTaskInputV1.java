@@ -30,9 +30,13 @@ public record ConversationReplyTaskInputV1(
         Long continuationMessageId,
         ReplyMode previousReplyMode,
         boolean consecutiveQuestionSuppressed,
-        boolean crossChapterRequested) {
+        boolean crossChapterRequested,
+        String proseObjectId,
+        Integer proseObjectVersion,
+        String proseContentHash,
+        String proseTargetText) {
 
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
     public static final String AUTHORITY_VERSION = "story-context-authority-v2";
 
     /**
@@ -61,7 +65,11 @@ public record ConversationReplyTaskInputV1(
                 null,
                 policy.previousMode(),
                 policy.consecutiveQuestionSuppressed(),
-                policy.crossChapterRequested());
+                policy.crossChapterRequested(),
+                null,
+                null,
+                null,
+                null);
     }
 
     /**
@@ -92,6 +100,43 @@ public record ConversationReplyTaskInputV1(
                 continuationMessageId,
                 policy.previousMode(),
                 policy.consecutiveQuestionSuppressed(),
-                policy.crossChapterRequested());
+                policy.crossChapterRequested(),
+                null,
+                null,
+                null,
+                null);
+    }
+
+    /**
+     * 构造绑定正文对象冻结快照的回复任务输入。
+     */
+    public static ConversationReplyTaskInputV1 forProseObject(
+            Long messageId,
+            Long conversationId,
+            ResolvedReplyPolicy policy,
+            Long continuationMessageId,
+            String proseObjectId,
+            Integer proseObjectVersion,
+            String proseContentHash,
+            String proseTargetText) {
+        return new ConversationReplyTaskInputV1(
+                SCHEMA_VERSION,
+                messageId,
+                conversationId,
+                policy.mode(),
+                policy.depth(),
+                policy.scope(),
+                policy.controlSource(),
+                policy.policyVersion(),
+                AUTHORITY_VERSION,
+                policy.convergenceApplied(),
+                continuationMessageId,
+                policy.previousMode(),
+                policy.consecutiveQuestionSuppressed(),
+                policy.crossChapterRequested(),
+                proseObjectId,
+                proseObjectVersion,
+                proseContentHash,
+                proseTargetText);
     }
 }

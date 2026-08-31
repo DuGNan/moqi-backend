@@ -132,7 +132,11 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     @Override
     public ProseWorkspaceView getWorkspace(Long chapterId) {
         ChapterEntity chapter = requireChapter(chapterId);
-        List<ProseCandidateSummary> candidates = candidates(chapterId).stream().map(this::summary).toList();
+        List<ChapterProseCandidateEntity> entities = candidates(chapterId);
+        java.util.Map<Long, Integer> displayNumbers = displayNumbers(entities);
+        List<ProseCandidateSummary> candidates = entities.stream()
+                .map(item -> summary(item, displayNumbers.get(item.getId())))
+                .toList();
         ChapterProseWorkspaceSelectionEntity selection = findSelection(chapterId);
         return new ProseWorkspaceView(
                 chapterId,
@@ -177,7 +181,7 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     @Override
     public ProseCandidateDetail getCandidate(Long chapterId, Long candidateId) {
         requireChapter(chapterId);
-        return detail(requireCandidate(chapterId, candidateId));
+        return detail(requireCandidate(chapterId, candidateId), displayNo(chapterId, candidateId));
     }
 
     @Override
@@ -250,11 +254,31 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     public ProseCandidateBasisView getCandidateBasis(Long chapterId, Long candidateId) {
         requireChapter(chapterId);
         ChapterProseCandidateEntity candidate = requireCandidate(chapterId, candidateId);
-        ChapterGenerationEntity source = candidate.getSourceGenerationId() == null
-                ? null : generationMapper.selectById(candidate.getSourceGenerationId());
-        if (source == null || Integer.valueOf(1).equals(source.getDeleted())) {
-            throw conflict(ErrorCode.PROSE_CANDIDATE_CONFLICT, "正文候选缺少创建时生成依据");
+        return basisView(requireBasisSource(candidate.getSourceGenerationId()), candidate.getContentHash());
+    }
+
+    @Override
+    public ProseCandidateBasisView getObjectBasis(Long chapterId, String objectId) {
+        ChapterEntity chapter = requireChapter(chapterId);
+        if (formalId(chapterId).equals(objectId)) {
+            return basisView(requireBasisSource(chapter.getFormalSourceGenerationId()),
+                    hash(Objects.requireNonNullElse(chapter.getContent(), "")));
         }
+        Long candidateId = parseCandidateId(objectId);
+        ChapterProseCandidateEntity candidate = requireCandidate(chapterId, candidateId);
+        return basisView(requireBasisSource(candidate.getSourceGenerationId()), candidate.getContentHash());
+    }
+
+    private ChapterGenerationEntity requireBasisSource(Long sourceGenerationId) {
+        ChapterGenerationEntity source = sourceGenerationId == null
+                ? null : generationMapper.selectById(sourceGenerationId);
+        if (source == null || Integer.valueOf(1).equals(source.getDeleted())) {
+            throw conflict(ErrorCode.PROSE_CANDIDATE_CONFLICT, "当前正文对象缺少可追溯的生成依据");
+        }
+        return source;
+    }
+
+    private ProseCandidateBasisView basisView(ChapterGenerationEntity source, String currentContentHash) {
         JsonNode basis = readBasis(source);
         JsonNode brief = basis.path("chapterGenerationBrief");
         boolean complete = brief.isObject() && List.of("chapterPurpose", "chapterGoal", "coreConflict",
@@ -263,8 +287,8 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
                 .stream().allMatch(brief::has);
         String sourceHash = hash(source.getGeneratedContent());
         return new ProseCandidateBasisView(complete ? "complete" : "legacy_limited",
-                !Objects.equals(sourceHash, candidate.getContentHash()), source.getId(), sourceHash,
-                candidate.getContentHash(), basisOutline(brief), basisScenes(brief), authorValue(brief,
+                !Objects.equals(sourceHash, currentContentHash), source.getId(), sourceHash,
+                currentContentHash, basisOutline(brief), basisScenes(brief), authorValue(brief,
                         "characterConstraints"), previousProse(basis), worldSettings(brief), basisConstraints(brief));
     }
 
@@ -420,21 +444,40 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
                 .toList();
     }
 
-    private ProseCandidateSummary summary(ChapterProseCandidateEntity item) {
+    private ProseCandidateSummary summary(ChapterProseCandidateEntity item, Integer displayNo) {
         return new ProseCandidateSummary(
                 item.getId(), candidateId(item.getId()), rootId(item), item.getParentCandidateId(), item.getSourceKind(),
                 item.getCandidateStatus(), item.getAdoptionStatus(), item.getVersion(), item.getContentHash(),
                 item.getWordCount(), quality(item), adoptionService.readiness(item),
-                item.getGmtCreate(), item.getGmtModified());
+                item.getGmtCreate(), item.getGmtModified(), displayNo);
     }
 
     private ProseCandidateDetail detail(ChapterProseCandidateEntity item) {
+        return detail(item, displayNo(item.getChapterId(), item.getId()));
+    }
+
+    private ProseCandidateDetail detail(ChapterProseCandidateEntity item, Integer displayNo) {
         return new ProseCandidateDetail(
                 item.getChapterId(), item.getId(), candidateId(item.getId()), rootId(item), item.getParentCandidateId(),
                 item.getSourceKind(), item.getCandidateStatus(), item.getAdoptionStatus(), item.getContent(),
                 item.getVersion(), item.getContentHash(), item.getWordCount(), quality(item),
                 adoptionService.readiness(item),
-                item.getGmtCreate(), item.getGmtModified());
+                item.getGmtCreate(), item.getGmtModified(), displayNo);
+    }
+
+    private java.util.Map<Long, Integer> displayNumbers(List<ChapterProseCandidateEntity> entities) {
+        java.util.Map<Long, Integer> result = new java.util.HashMap<>();
+        List<ChapterProseCandidateEntity> ordered = entities.stream()
+                .sorted(java.util.Comparator.comparing(ChapterProseCandidateEntity::getId))
+                .toList();
+        for (int index = 0; index < ordered.size(); index++) {
+            result.put(ordered.get(index).getId(), index + 1);
+        }
+        return result;
+    }
+
+    private Integer displayNo(Long chapterId, Long candidateId) {
+        return displayNumbers(candidates(chapterId)).get(candidateId);
     }
 
     private ComparisonSide comparisonSide(ChapterEntity chapter, String objectId) {

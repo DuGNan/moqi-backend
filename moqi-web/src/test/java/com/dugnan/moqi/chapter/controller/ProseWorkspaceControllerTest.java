@@ -109,6 +109,10 @@ class ProseWorkspaceControllerTest {
                 "complete", false, 5L, "source-hash", "source-hash",
                 objectMapper.createObjectNode(), objectMapper.createObjectNode(), objectMapper.createArrayNode(),
                 objectMapper.createObjectNode(), objectMapper.createArrayNode(), objectMapper.createObjectNode()));
+        when(service.getObjectBasis(2L, "formal:2")).thenReturn(new ProseCandidateBasisView(
+                "complete", true, 5L, "source-hash", "formal-hash",
+                objectMapper.createObjectNode(), objectMapper.createObjectNode(), objectMapper.createArrayNode(),
+                objectMapper.createObjectNode(), objectMapper.createArrayNode(), objectMapper.createObjectNode()));
         ComparisonSide formal = new ComparisonSide("formal", "formal:2", "正文", 3, "formal-hash", 2,
                 null, null, "formal", null, null, now);
         ComparisonSide candidate = new ComparisonSide("candidate", "candidate:8", "候选", 4, "hash", 2,
@@ -122,6 +126,10 @@ class ProseWorkspaceControllerTest {
         mvc.perform(get("/api/chapters/2/prose-candidates/8/basis"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.basisStatus").value("complete"));
+        mvc.perform(get("/api/chapters/2/prose-objects/formal:2/basis"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.sourceGenerationId").value(5))
+                .andExpect(jsonPath("$.data.editedAfterCreation").value(true));
         mvc.perform(get("/api/chapters/2/prose-comparison")
                         .param("leftObjectId", "formal:2").param("rightObjectId", "candidate:8"))
                 .andExpect(status().isOk())

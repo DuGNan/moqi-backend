@@ -42,6 +42,7 @@ public class ChapterSelectionAssistanceEntity extends BaseEntity {
     private Long conversationId;
     private Long userMessageId;
     private Long assistantMessageId;
+    private String conversationHistoryJson;
     private String planningContextJson;
     private Integer appliedCandidateVersion;
     private String appliedCandidateHash;
