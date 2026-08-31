@@ -284,12 +284,13 @@ public class ConversationReplyTaskRunner {
                                 taskInput.controlSource(),
                                 taskInput.policyVersion())
                         .build());
-        eventPublisher.publishEvent(ChapterReplyEvent.started(task.getChapterId(), task.getId()));
+        eventPublisher.publishEvent(ChapterReplyEvent.started(
+                task.getChapterId(), task.getId(), input.getConversationId()));
         boolean structured = isStructuredInteraction(taskInput.replyMode());
         state.publishPartial = !structured;
         state.call = provider.stream(
                 contextSnapshot == null ? request(input, taskInput) : request(contextSnapshot, taskInput),
-                event -> appendDelta(task, response, event, !structured));
+                event -> appendDelta(task, input.getConversationId(), response, event, !structured));
         callRegistry.register(task.getId(), state.call);
         LlmStreamResult streamResult = state.call.await();
         ensureCompleted(streamResult);
@@ -298,14 +299,17 @@ public class ConversationReplyTaskRunner {
                 ? DiscussionInteractionCodec.parseAssistantEnvelope(response.toString(), objectMapper())
                 : new AssistantResult(response.toString(), null, null);
         if (structured && StringUtils.hasText(result.content())) {
-            eventPublisher.publishEvent(ChapterReplyEvent.delta(task.getChapterId(), task.getId(), result.content()));
+            eventPublisher.publishEvent(ChapterReplyEvent.delta(
+                    task.getChapterId(), task.getId(), input.getConversationId(), result.content()));
         }
         Long messageId = persistenceService.complete(task, input, result.content(), result.interactionJson());
-        eventPublisher.publishEvent(ChapterReplyEvent.completed(task.getChapterId(), task.getId(), messageId));
+        eventPublisher.publishEvent(ChapterReplyEvent.completed(
+                task.getChapterId(), task.getId(), input.getConversationId(), messageId));
     }
 
     private void appendDelta(
             AiTaskEntity task,
+            Long conversationId,
             StringBuilder response,
             LlmStreamEvent event,
             boolean publish) {
@@ -315,7 +319,7 @@ public class ConversationReplyTaskRunner {
             response.append(delta.text());
             if (publish) {
                 eventPublisher.publishEvent(ChapterReplyEvent.delta(
-                        task.getChapterId(), task.getId(), delta.text()));
+                        task.getChapterId(), task.getId(), conversationId, delta.text()));
             }
         }
     }
@@ -452,7 +456,7 @@ public class ConversationReplyTaskRunner {
                 input.getId(),
                 taskRule(taskInput),
                 input.getContent(),
-                null,
+                taskInput.proseTargetText(),
                 contextWindow,
                 outputReserve,
                 resolveFocus(task, input), null, resolveMessageReference(input)), task);
@@ -614,7 +618,12 @@ public class ConversationReplyTaskRunner {
             case BALANCED -> "给出足够决策的信息，避免跨阶段扩写。";
             case DEEP -> "可以深入，但仍只处理本轮唯一主要意图。";
         };
+        String proseRule = StringUtils.hasText(input.proseObjectId())
+                ? "当前是在正文工作区讨论一个已保存正文对象。普通讨论只能分析、回答或建议，"
+                    + "不得宣称正文、候选或规划已经保存、应用或采纳。"
+                : "";
         return "你是墨契的章节共创助手。"
+                + proseRule
                 + modeRule
                 + depthRule
                 + "本轮主要意图：" + input.replyScope().primaryIntent()

@@ -53,6 +53,32 @@ public interface ChapterMapper extends BaseMapper<ChapterEntity> {
             @Param("baseVersion") Integer baseVersion);
 
     /**
+     * 按正文版本条件采纳候选，并同时冻结正式正文的生成来源。
+     *
+     * @param chapterId 章节 ID
+     * @param content 候选正文
+     * @param formalSourceGenerationId 正式正文采用的生成来源
+     * @param baseVersion 客户端基准版本
+     * @return 更新行数
+     */
+    @Update("""
+            UPDATE chapters
+            SET content = #{content},
+                formal_source_generation_id = #{formalSourceGenerationId},
+                version = version + 1,
+                gmt_modified = CURRENT_TIMESTAMP
+            WHERE id = #{chapterId}
+              AND version = #{baseVersion}
+              AND current_prose_revision_id IS NULL
+              AND deleted = 0
+            """)
+    int adoptContentIfVersion(
+            @Param("chapterId") Long chapterId,
+            @Param("content") String content,
+            @Param("formalSourceGenerationId") Long formalSourceGenerationId,
+            @Param("baseVersion") Integer baseVersion);
+
+    /**
      * 原子切换章节当前发布正文指针及其兼容读取内容。
      *
      * @param chapterId 章节 ID
@@ -65,6 +91,13 @@ public interface ChapterMapper extends BaseMapper<ChapterEntity> {
     @Update("""
             UPDATE chapters
             SET current_prose_revision_id = #{proseRevisionId},
+                formal_source_generation_id = (
+                    SELECT revision.source_generation_id
+                    FROM chapter_prose_revisions revision
+                    WHERE revision.id = #{proseRevisionId}
+                      AND revision.chapter_id = #{chapterId}
+                      AND revision.deleted = 0
+                ),
                 content = #{content},
                 version = version + 1,
                 gmt_modified = CURRENT_TIMESTAMP

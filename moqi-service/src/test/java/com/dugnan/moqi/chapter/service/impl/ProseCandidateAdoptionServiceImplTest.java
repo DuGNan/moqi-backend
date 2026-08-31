@@ -61,7 +61,7 @@ class ProseCandidateAdoptionServiceImplTest {
         assertThat(result.adoptionMode()).isEqualTo("direct_formal");
         assertThat(result.status()).isEqualTo("completed");
         assertThat(result.formalVersion()).isEqualTo(7);
-        verify(fixture.chapterMapper).updateContentIfVersion(12L, "候选正文", 6);
+        verify(fixture.chapterMapper).adoptContentIfVersion(12L, "候选正文", 5L, 6);
         verify(fixture.candidateMapper).markAdoptionStatus(12L, 8L, 4, Fixture.hash("候选正文"), "adopted");
         verify(fixture.storyReleaseService, never()).ensureCandidateAdoptionDraft(any(), any(), any());
         var locks = inOrder(fixture.workMapper, fixture.chapterMapper, fixture.candidateMapper,
@@ -83,7 +83,7 @@ class ProseCandidateAdoptionServiceImplTest {
                 .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.PROSE_ADOPTION_BLOCKED));
 
-        verify(fixture.chapterMapper, never()).updateContentIfVersion(any(), any(), any());
+        verify(fixture.chapterMapper, never()).adoptContentIfVersion(any(), any(), any(), any());
     }
 
     @Test
@@ -110,7 +110,7 @@ class ProseCandidateAdoptionServiceImplTest {
                 .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.PROSE_ADOPTION_BLOCKED));
 
-        verify(fixture.chapterMapper, never()).updateContentIfVersion(any(), any(), any());
+        verify(fixture.chapterMapper, never()).adoptContentIfVersion(any(), any(), any(), any());
     }
 
     @Test
@@ -152,7 +152,7 @@ class ProseCandidateAdoptionServiceImplTest {
                         exception -> assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.PROSE_ADOPTION_CONFLICT));
 
         Fixture casFixture = new Fixture(false);
-        when(casFixture.chapterMapper.updateContentIfVersion(12L, "候选正文", 6)).thenReturn(0);
+        when(casFixture.chapterMapper.adoptContentIfVersion(12L, "候选正文", 5L, 6)).thenReturn(0);
         assertThatThrownBy(() -> casFixture.service.adopt(12L, 8L, casFixture.request()))
                 .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.PROSE_ADOPTION_CONFLICT));
@@ -184,7 +184,7 @@ class ProseCandidateAdoptionServiceImplTest {
                         exception -> assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.PROSE_ADOPTION_CONFLICT));
 
         verify(fixture.reportMapper, never()).selectByIdForUpdate(any(), any());
-        verify(fixture.chapterMapper, never()).updateContentIfVersion(any(), any(), any());
+        verify(fixture.chapterMapper, never()).adoptContentIfVersion(any(), any(), any(), any());
     }
 
     @Test
@@ -209,7 +209,7 @@ class ProseCandidateAdoptionServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("有界修订来源不可采纳");
 
-        verify(fixture.chapterMapper, never()).updateContentIfVersion(any(), any(), any());
+        verify(fixture.chapterMapper, never()).adoptContentIfVersion(any(), any(), any(), any());
         verify(fixture.adoptionMapper, never()).insert(any(ProseCandidateAdoptionEntity.class));
     }
 
@@ -243,7 +243,7 @@ class ProseCandidateAdoptionServiceImplTest {
         assertThat(result.adoptionMode()).isEqualTo("revision_release");
         assertThat(result.revisionId()).isEqualTo(31L);
         assertThat(result.workspaceId()).isEqualTo(41L);
-        verify(fixture.chapterMapper, never()).updateContentIfVersion(any(), any(), any());
+        verify(fixture.chapterMapper, never()).adoptContentIfVersion(any(), any(), any(), any());
         verify(fixture.impactService, never()).create(any(), any(), any(), any());
         TransactionSynchronizationManager.getSynchronizations().forEach(synchronization -> synchronization.afterCommit());
         verify(fixture.impactService).create(any(), any(), any(), any());
@@ -262,7 +262,7 @@ class ProseCandidateAdoptionServiceImplTest {
         assertThat(result.adoptionId()).isEqualTo(77L);
         verify(fixture.adoptionMapper, never()).insert(any(ProseCandidateAdoptionEntity.class));
         verify(fixture.reportMapper, never()).selectByIdForUpdate(any(), any());
-        verify(fixture.chapterMapper, never()).updateContentIfVersion(any(), any(), any());
+        verify(fixture.chapterMapper, never()).adoptContentIfVersion(any(), any(), any(), any());
     }
 
     @Test
@@ -313,7 +313,7 @@ class ProseCandidateAdoptionServiceImplTest {
             when(planningMapper.selectPendingForAdoption(12L, 8L)).thenReturn(List.of());
             when(chapterMapper.selectById(12L)).thenReturn(chapter);
             when(chapterMapper.selectByIdForUpdate(12L)).thenReturn(chapter);
-            when(chapterMapper.updateContentIfVersion(12L, "候选正文", 6)).thenReturn(1);
+            when(chapterMapper.adoptContentIfVersion(12L, "候选正文", 5L, 6)).thenReturn(1);
             when(candidateMapper.markAdoptionStatus(any(), any(), any(), any(), any())).thenReturn(1);
             when(adoptionMapper.insert(any(ProseCandidateAdoptionEntity.class))).thenAnswer(invocation -> {
                 ProseCandidateAdoptionEntity value = invocation.getArgument(0);
@@ -351,6 +351,7 @@ class ProseCandidateAdoptionServiceImplTest {
             value.setContent("候选正文");
             value.setContentHash(hash("候选正文"));
             value.setQualityGenerationId(5L);
+            value.setSourceGenerationId(5L);
             value.setCandidateStatus("active");
             value.setAdoptionStatus("unadopted");
             return value;

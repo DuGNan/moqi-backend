@@ -70,6 +70,13 @@ public class ProseWorkspaceController {
         return ApiResponse.success(service.getCandidateBasis(chapterId, candidateId));
     }
 
+    @GetMapping("/prose-objects/{objectId}/basis")
+    public ApiResponse<ProseCandidateBasisView> objectBasis(
+            @PathVariable Long chapterId,
+            @PathVariable String objectId) {
+        return ApiResponse.success(service.getObjectBasis(chapterId, objectId));
+    }
+
     @GetMapping("/prose-comparison")
     public ApiResponse<ProseComparisonView> comparison(
             @PathVariable Long chapterId,

@@ -351,6 +351,28 @@ class ProseWorkspaceServiceImplTest {
     }
 
     @Test
+    void projectsTheSameFrozenBasisForFormalProseAndItsSourceCandidate() {
+        Fixture fixture = new Fixture();
+        fixture.chapter.setFormalSourceGenerationId(3L);
+        fixture.sourceGeneration.setGeneratedContent("正式正文创建稿");
+        fixture.sourceGeneration.setBasisSnapshotJson("""
+                {"chapterGenerationBrief":{"chapterPurpose":"推进调查","chapterGoal":"找到线索",
+                 "coreConflict":"是否信任证人","openingConditions":["雨夜"],
+                 "requiredEndingState":["拿到钥匙"],"eventCausality":["追踪导致暴露"],
+                 "stateChanges":["主角开始怀疑"],"characterConstraints":["林风保持克制"],
+                 "entityExplanations":[],"creativeFreedom":["允许调整节奏"],
+                 "prohibitedInventions":["不得新增超能力"]}}
+                """);
+        when(fixture.generationMapper.selectById(3L)).thenReturn(fixture.sourceGeneration);
+
+        var basis = fixture.service.getObjectBasis(12L, "formal:12");
+
+        assertThat(basis.sourceGenerationId()).isEqualTo(3L);
+        assertThat(basis.editedAfterCreation()).isTrue();
+        assertThat(basis.outline().toString()).contains("推进调查");
+    }
+
+    @Test
     void legacyBasisDoesNotReadCurrentMaterialsToFillMissingFields() {
         Fixture fixture = new Fixture();
         fixture.sourceGeneration.setGeneratedContent("旧候选");

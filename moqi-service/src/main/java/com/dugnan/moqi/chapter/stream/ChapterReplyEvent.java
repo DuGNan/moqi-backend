@@ -16,7 +16,8 @@ public record ChapterReplyEvent(
         String text,
         String errorCode,
         String errorMessage,
-        PublicFailure failure) {
+        PublicFailure failure,
+        Long conversationId) {
 
     public ChapterReplyEvent(
             String type,
@@ -26,7 +27,19 @@ public record ChapterReplyEvent(
             String text,
             String errorCode,
             String errorMessage) {
-        this(type, chapterId, taskId, messageId, text, errorCode, errorMessage, null);
+        this(type, chapterId, taskId, messageId, text, errorCode, errorMessage, null, null);
+    }
+
+    public ChapterReplyEvent(
+            String type,
+            Long chapterId,
+            Long taskId,
+            Long messageId,
+            String text,
+            String errorCode,
+            String errorMessage,
+            PublicFailure failure) {
+        this(type, chapterId, taskId, messageId, text, errorCode, errorMessage, failure, null);
     }
 
     /**
@@ -38,6 +51,11 @@ public record ChapterReplyEvent(
      */
     public static ChapterReplyEvent started(Long chapterId, Long taskId) {
         return new ChapterReplyEvent("reply.started", chapterId, taskId, null, null, null, null);
+    }
+
+    public static ChapterReplyEvent started(Long chapterId, Long taskId, Long conversationId) {
+        return new ChapterReplyEvent(
+                "reply.started", chapterId, taskId, null, null, null, null, null, conversationId);
     }
 
     /**
@@ -52,6 +70,11 @@ public record ChapterReplyEvent(
         return new ChapterReplyEvent("reply.delta", chapterId, taskId, null, text, null, null);
     }
 
+    public static ChapterReplyEvent delta(Long chapterId, Long taskId, Long conversationId, String text) {
+        return new ChapterReplyEvent(
+                "reply.delta", chapterId, taskId, null, text, null, null, null, conversationId);
+    }
+
     /**
      * 创建回复完成事件。
      *
@@ -62,6 +85,15 @@ public record ChapterReplyEvent(
      */
     public static ChapterReplyEvent completed(Long chapterId, Long taskId, Long messageId) {
         return new ChapterReplyEvent("reply.completed", chapterId, taskId, messageId, null, null, null);
+    }
+
+    public static ChapterReplyEvent completed(
+            Long chapterId,
+            Long taskId,
+            Long conversationId,
+            Long messageId) {
+        return new ChapterReplyEvent(
+                "reply.completed", chapterId, taskId, messageId, null, null, null, null, conversationId);
     }
 
     /**

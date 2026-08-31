@@ -7,8 +7,8 @@ import com.dugnan.moqi.common.entity.BaseEntity;
 
 /**
  * @author dgn
- * @date:2026-07-13
- * @description:映射章节共创会话数据。
+ * @date 2026-07-13
+ * @description 映射章节讨论与正文对象独立会话数据。
  */
 @Data
 @TableName("chapter_conversations")
@@ -21,4 +21,6 @@ public class ChapterConversationEntity extends BaseEntity {
     private String conversationType;
 
     private String conversationStatus;
+
+    private String targetObjectId;
 }
