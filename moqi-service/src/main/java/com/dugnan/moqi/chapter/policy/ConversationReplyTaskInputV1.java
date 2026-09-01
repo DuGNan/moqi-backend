@@ -15,6 +15,11 @@ package com.dugnan.moqi.chapter.policy;
  * @param policyVersion 策略版本
  * @param contextAuthorityVersion 权威上下文规则版本
  * @param convergenceApplied 是否应用收敛反馈
+ * @param deferredReplyDepth 澄清完成后应恢复的目标深度
+ * @param proseObjectId 正文工作区稳定对象 ID
+ * @param proseObjectVersion 正文对象冻结版本
+ * @param proseContentHash 正文对象冻结内容哈希
+ * @param proseTargetText 正文对象冻结上下文
  */
 public record ConversationReplyTaskInputV1(
         int schemaVersion,
@@ -31,6 +36,7 @@ public record ConversationReplyTaskInputV1(
         ReplyMode previousReplyMode,
         boolean consecutiveQuestionSuppressed,
         boolean crossChapterRequested,
+        ReplyDepth deferredReplyDepth,
         String proseObjectId,
         Integer proseObjectVersion,
         String proseContentHash,
@@ -66,6 +72,7 @@ public record ConversationReplyTaskInputV1(
                 policy.previousMode(),
                 policy.consecutiveQuestionSuppressed(),
                 policy.crossChapterRequested(),
+                policy.deferredDepth(),
                 null,
                 null,
                 null,
@@ -101,6 +108,7 @@ public record ConversationReplyTaskInputV1(
                 policy.previousMode(),
                 policy.consecutiveQuestionSuppressed(),
                 policy.crossChapterRequested(),
+                policy.deferredDepth(),
                 null,
                 null,
                 null,
@@ -134,6 +142,7 @@ public record ConversationReplyTaskInputV1(
                 policy.previousMode(),
                 policy.consecutiveQuestionSuppressed(),
                 policy.crossChapterRequested(),
+                policy.deferredDepth(),
                 proseObjectId,
                 proseObjectVersion,
                 proseContentHash,

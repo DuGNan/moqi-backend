@@ -36,6 +36,13 @@ import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterBriefMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
+import com.dugnan.moqi.chapter.policy.DefaultReplyPolicyResolver;
+import com.dugnan.moqi.chapter.policy.ReplyConversationSignals;
+import com.dugnan.moqi.chapter.policy.ReplyDepth;
+import com.dugnan.moqi.chapter.policy.ReplyMode;
+import com.dugnan.moqi.chapter.policy.ReplyPolicyPreferenceService;
+import com.dugnan.moqi.chapter.policy.ReplyScope;
+import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
 import com.dugnan.moqi.chapter.service.ProseObjectTargetService;
 import com.dugnan.moqi.chapter.service.ProseObjectTargetService.ProseObjectTarget;
@@ -47,6 +54,7 @@ import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 import com.dugnan.moqi.work.mapper.ChapterOutlineQueryMapper;
 import com.dugnan.moqi.work.mapper.WorkMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * @author dgn
@@ -74,6 +82,8 @@ class ChapterCollaborationServiceImplTest {
     private ApplicationEventPublisher eventPublisher;
     @Mock
     private ChapterDiscussionFocusResolver focusResolver;
+    @Mock
+    private ReplyPolicyPreferenceService replyPolicyService;
     @Mock
     private ProseObjectTargetService proseObjectTargetService;
 
@@ -203,6 +213,7 @@ class ChapterCollaborationServiceImplTest {
                         && task.getTaskInputJson().contains("\"schemaVersion\":3")
                         && task.getTaskInputJson().contains("\"messageId\":11")
                         && task.getTaskInputJson().contains("\"replyMode\":\"explore\"")
+                        && task.getTaskInputJson().contains("\"policyVersion\":\"chapter-reply-policy-v5\"")
                         && !task.getTaskInputJson().contains("讨论本章目标")));
     }
 
@@ -276,6 +287,86 @@ class ChapterCollaborationServiceImplTest {
                 new MessageInteractionResponse(1, "forged", "a", null))))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("来源问题不一致");
+    }
+
+    /**
+     * 验证仅直接回答最新澄清问题时，服务层才把暂存深度交回策略解析器。
+     */
+    @Test
+    void restoresDeferredDepthForDirectClarificationAnswer() {
+        ChapterCollaborationServiceImpl policyAwareService = new ChapterCollaborationServiceImpl(
+                workMapper, chapterMapper, conversationMapper, messageMapper, briefMapper, outlineMapper,
+                aiTaskMapper, eventPublisher, focusResolver, null, replyPolicyService, new ObjectMapper());
+        when(conversationMapper.selectById(8L)).thenReturn(conversation(8L, 1L, 2L));
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        ChapterConversationMessageEntity clarification = new ChapterConversationMessageEntity();
+        clarification.setId(20L);
+        clarification.setConversationId(8L);
+        clarification.setChapterId(2L);
+        clarification.setMessageRole("assistant");
+        clarification.setAiTaskId(19L);
+        clarification.setContent("目前无法确定你指的是哪一项。");
+        clarification.setInteractionJson("""
+                {"schemaVersion":1,"type":"open_question","questionId":"task-19",
+                "question":"具体指的是哪一项？","options":[],"allowCustom":true}
+                """);
+        clarification.setDeleted(0);
+        AiTaskEntity clarificationTask = new AiTaskEntity();
+        clarificationTask.setId(19L);
+        clarificationTask.setTaskType("conversation_reply");
+        clarificationTask.setTaskInputJson("""
+                {"schemaVersion":3,"messageId":18,"conversationId":8,
+                "replyMode":"clarify","replyDepth":"brief",
+                "replyScope":{"primaryIntent":"clarify_direction","targetType":"current_discussion",
+                "targetReference":null,"allowedChanges":"question_only","maxCandidates":1,
+                "allowNewTerms":false},"controlSource":"clarification",
+                "policyVersion":"chapter-reply-policy-v5",
+                "contextAuthorityVersion":"story-context-authority-v2","convergenceApplied":false,
+                "deferredReplyDepth":"deep"}
+                """);
+        when(messageMapper.selectById(20L)).thenReturn(clarification);
+        when(messageMapper.selectOne(any())).thenReturn(clarification);
+        when(messageMapper.selectCount(any())).thenReturn(1L);
+        when(aiTaskMapper.selectById(19L)).thenReturn(clarificationTask);
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ChapterConversationMessageEntity message = invocation.getArgument(0);
+            message.setId(21L);
+            return 1;
+        });
+        when(aiTaskMapper.insert(any(AiTaskEntity.class))).thenAnswer(invocation -> {
+            AiTaskEntity task = invocation.getArgument(0);
+            task.setId(22L);
+            return 1;
+        });
+        when(replyPolicyService.resolve(eq(8L), eq("我指的是第二个方向"), any(), any()))
+                .thenReturn(new ResolvedReplyPolicy(
+                        ReplyMode.EXPLORE,
+                        ReplyDepth.DEEP,
+                        new ReplyScope(
+                                "explore_direction", "current_discussion", null,
+                                "discussion_expansion", 1, false),
+                        "clarification",
+                        DefaultReplyPolicyResolver.POLICY_VERSION,
+                        false,
+                        ReplyMode.CLARIFY,
+                        true,
+                        false,
+                        null));
+
+        policyAwareService.sendMessage(8L, new SendMessageRequest(
+                "user", "", true, null, null, 20L,
+                new MessageInteractionResponse(1, "task-19", null, "我指的是第二个方向")));
+
+        ArgumentCaptor<ReplyConversationSignals> signalsCaptor =
+                ArgumentCaptor.forClass(ReplyConversationSignals.class);
+        verify(replyPolicyService).resolve(
+                eq(8L), eq("我指的是第二个方向"), eq(null), signalsCaptor.capture());
+        assertThat(signalsCaptor.getValue().previousMode()).isEqualTo(ReplyMode.CLARIFY);
+        assertThat(signalsCaptor.getValue().directClarificationAnswer()).isTrue();
+        assertThat(signalsCaptor.getValue().deferredDepth()).isEqualTo(ReplyDepth.DEEP);
+        verify(aiTaskMapper).insert(org.mockito.ArgumentMatchers.<AiTaskEntity>argThat(task ->
+                task.getTaskInputJson().contains("\"replyDepth\":\"deep\"")
+                        && task.getTaskInputJson().contains("\"controlSource\":\"clarification\"")));
     }
 
     /**

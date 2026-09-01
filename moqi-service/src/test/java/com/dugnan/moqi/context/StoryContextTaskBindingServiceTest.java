@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -55,6 +58,24 @@ class StoryContextTaskBindingServiceTest {
         assertThatThrownBy(() -> new StoryContextTaskBindingService(contextEngine, taskMapper)
                 .buildAndAttach(org.mockito.Mockito.mock(StoryContextBuildCommand.class), task()))
                 .isInstanceOf(StoryContextTaskBindingException.class);
+    }
+
+    @Test
+    void reusesExistingSnapshotDuringRetryAndRecovery() {
+        StoryContextEngine engineWithQuery = mock(
+                StoryContextEngine.class,
+                withSettings().extraInterfaces(StoryContextSnapshotQueryPort.class));
+        StoryContextSnapshot snapshot = mock(StoryContextSnapshot.class);
+        when(((StoryContextSnapshotQueryPort) engineWithQuery).load(77L)).thenReturn(snapshot);
+        AiTaskEntity task = task();
+        task.setContextSnapshotId(77L);
+
+        StoryContextSnapshot result = new StoryContextTaskBindingService(engineWithQuery, taskMapper)
+                .buildAndAttach(mock(StoryContextBuildCommand.class), task);
+
+        assertThat(result).isSameAs(snapshot);
+        verify(engineWithQuery, never()).build(any());
+        verify(taskMapper, never()).update(any(), any());
     }
 
     private AiTaskEntity task() {

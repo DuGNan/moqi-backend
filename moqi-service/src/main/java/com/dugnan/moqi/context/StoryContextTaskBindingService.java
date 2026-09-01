@@ -42,6 +42,12 @@ public class StoryContextTaskBindingService {
      */
     @Transactional(rollbackFor = RuntimeException.class)
     public StoryContextSnapshot buildAndAttach(StoryContextBuildCommand command, AiTaskEntity task) {
+        if (task.getContextSnapshotId() != null) {
+            if (contextEngine instanceof StoryContextSnapshotQueryPort queryPort) {
+                return queryPort.load(task.getContextSnapshotId());
+            }
+            throw new IllegalStateException("故事上下文引擎不支持读取已绑定快照");
+        }
         StoryContextSnapshot snapshot = contextEngine.build(command);
         int version = task.getVersion() == null ? 0 : task.getVersion();
         int updated = taskMapper.update(null, new UpdateWrapper<AiTaskEntity>()

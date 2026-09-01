@@ -11,6 +11,7 @@ package com.dugnan.moqi.chapter.policy;
  * @param controlSource 深度控制来源
  * @param policyVersion 策略版本
  * @param convergenceApplied 是否应用用户收敛反馈
+ * @param deferredDepth 澄清完成后应恢复的目标深度
  */
 public record ResolvedReplyPolicy(
         ReplyMode mode,
@@ -21,5 +22,6 @@ public record ResolvedReplyPolicy(
         boolean convergenceApplied,
         ReplyMode previousMode,
         boolean consecutiveQuestionSuppressed,
-        boolean crossChapterRequested) {
+        boolean crossChapterRequested,
+        ReplyDepth deferredDepth) {
 }
