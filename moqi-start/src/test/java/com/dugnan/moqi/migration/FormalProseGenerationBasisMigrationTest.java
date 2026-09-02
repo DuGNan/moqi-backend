@@ -10,14 +10,14 @@ import org.springframework.core.io.ClassPathResource;
 /**
  * @author dgn
  * @date 2026-08-27
- * @description 验证 V52 为正式正文建立可追溯的冻结生成依据关联。
+ * @description 验证 V51 为正式正文建立可追溯的冻结生成依据关联。
  */
 class FormalProseGenerationBasisMigrationTest {
 
     @Test
     void bindsFormalProseToGenerationSourcesWithoutInventingCurrentMaterials() throws Exception {
         String sql = new String(new ClassPathResource(
-                "db/migration/V52__bind_formal_prose_generation_basis.sql")
+                "db/migration/V51__bind_formal_prose_generation_basis.sql")
                 .getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
         assertThat(sql)

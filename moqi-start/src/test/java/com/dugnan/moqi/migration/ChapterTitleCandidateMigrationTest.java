@@ -11,13 +11,13 @@ import org.springframework.core.io.ClassPathResource;
 /**
  * @author dgn
  * @date 2026-08-29
- * @description 验证 V50 可空标题和标题候选的持久化约束。
+ * @description 验证 V53 可空标题和标题候选的持久化约束。
  */
 class ChapterTitleCandidateMigrationTest {
 
     @Test
     void makesTitleNullableAndPersistsRecoverableCandidateBatches() throws IOException {
-        String sql = new ClassPathResource("db/migration/V50__add_chapter_title_candidates.sql")
+        String sql = new ClassPathResource("db/migration/V53__add_chapter_title_candidates.sql")
                 .getContentAsString(StandardCharsets.UTF_8);
 
         assertThat(sql)

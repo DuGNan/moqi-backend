@@ -7,12 +7,12 @@ import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
 
-/** 验证 V51 建立对象会话作用域和消息重放唯一约束。 */
+/** 验证 V50 建立对象会话作用域和消息重放唯一约束。 */
 class ProseObjectConversationMigrationTest {
 
     @Test
     void scopesActiveConversationAndClientMessageId() throws Exception {
-        String sql = new ClassPathResource("db/migration/V51__scope_prose_object_conversations.sql")
+        String sql = new ClassPathResource("db/migration/V50__scope_prose_object_conversations.sql")
                 .getContentAsString(StandardCharsets.UTF_8);
 
         assertThat(sql)
