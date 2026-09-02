@@ -17,7 +17,7 @@ class SelectionAssistanceHistoryMigrationTest {
     @Test
     void addsFrozenConversationHistoryWithoutBackfillingUnrelatedMessages() throws Exception {
         String sql = new ClassPathResource(
-                "db/migration/V53__freeze_selection_assistance_history.sql")
+                "db/migration/V52__freeze_selection_assistance_history.sql")
                 .getContentAsString(StandardCharsets.UTF_8);
 
         assertThat(sql)
