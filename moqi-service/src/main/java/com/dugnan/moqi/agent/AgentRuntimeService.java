@@ -351,7 +351,7 @@ public class AgentRuntimeService implements AgentRuntime {
         }
         int changed = runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
                 .eq("id", run.getId()).eq("deleted", 0).eq("version", run.getVersion())
-                .eq("run_status", STATUS_FAILED).set("run_status", STATUS_QUEUED)
+                .in("run_status", STATUS_FAILED, STATUS_TIMED_OUT).set("run_status", STATUS_QUEUED)
                 .set("current_step_key", step.getStepKey()).set("error_code", null).set("error_message", null)
                 .set("timeout_at", LocalDateTime.now().plus(definition.timeout()))
                 .set("version", run.getVersion() + 1));
@@ -410,7 +410,11 @@ public class AgentRuntimeService implements AgentRuntime {
             return view(requireRun(runId));
         }
         callRegistry.cancel(runId, STATUS_RUNNING.equals(run.getRunStatus()));
-        markActiveStepTerminal(runId, targetStatus);
+        if (STATUS_TIMED_OUT.equals(targetStatus)) {
+            applyTimedOutFailure(run);
+        } else {
+            markActiveStepTerminal(runId, targetStatus);
+        }
         terminateWaitingInterruptions(runId, targetStatus);
         if (run.getAiTaskId() != null) {
             updateAiTaskTerminal(run.getAiTaskId(), targetStatus);
@@ -607,6 +611,37 @@ public class AgentRuntimeService implements AgentRuntime {
                 .set("finished_at", LocalDateTime.now()).set("version", step.getVersion() + 1));
         if (changed != 1) {
             throw conflict(ErrorCode.AGENT_RUN_STATE_CONFLICT, "Agent Step 恢复终态已变化");
+        }
+    }
+
+    private void applyTimedOutFailure(AgentRunEntity run) {
+        AgentWorkflowDefinition definition = workflowRegistry.require(run.getWorkflowType());
+        String stepKey = blank(run.getCurrentStepKey()) ? definition.startStepKey() : run.getCurrentStepKey();
+        AgentRunStepEntity step = latestStep(run.getId(), stepKey);
+        BusinessException exception = new BusinessException(ErrorCode.AGENT_RUN_TIMED_OUT, "Agent Run 已超时");
+        AgentStepExecutionContext context = new AgentStepExecutionContext(
+                run.getId(), step == null ? null : step.getId(), stepKey,
+                step == null ? 0 : step.getAttempt(), run.getId() + ":" + stepKey,
+                blank(run.getInputJson()) ? Map.of() : map(run.getInputJson()), Map.of(), Map.of(), callRegistry);
+        definition.applyFailure(stepKey, context, exception);
+        failTimedOutStep(step, definition);
+    }
+
+    private void failTimedOutStep(AgentRunStepEntity step, AgentWorkflowDefinition definition) {
+        if (step == null || !STATUS_RUNNING.equals(step.getStepStatus())) {
+            return;
+        }
+        boolean retryable = step.getAttempt() < definition.maxAttempts(step.getStepKey());
+        int changed = stepMapper.update(null, new UpdateWrapper<AgentRunStepEntity>()
+                .eq("id", step.getId()).eq("deleted", 0).eq("version", step.getVersion())
+                .eq("step_status", STATUS_RUNNING).set("step_status", STATUS_FAILED)
+                .set("retryable", retryable ? 1 : 0).set("error_category", "timeout")
+                .set("error_code", ErrorCode.AGENT_RUN_TIMED_OUT.name())
+                .set("error_message", PublicFailureFactory.safeMessage(
+                        ErrorCode.AGENT_RUN_TIMED_OUT.name(), "Agent Run 已超时"))
+                .set("finished_at", LocalDateTime.now()).set("version", step.getVersion() + 1));
+        if (changed != 1) {
+            throw conflict(ErrorCode.AGENT_RUN_STATE_CONFLICT, "Agent Step 超时终态已变化");
         }
     }
 

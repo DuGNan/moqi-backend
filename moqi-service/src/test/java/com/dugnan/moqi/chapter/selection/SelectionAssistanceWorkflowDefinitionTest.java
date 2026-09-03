@@ -46,6 +46,18 @@ class SelectionAssistanceWorkflowDefinitionTest {
     }
 
     @Test
+    void timeoutFailurePreservesRuntimeTimeoutCode() {
+        SelectionAssistanceServiceImpl service = mock(SelectionAssistanceServiceImpl.class);
+        SelectionAssistanceWorkflowDefinition workflow = new SelectionAssistanceWorkflowDefinition(
+                service, mock(LlmProviderFactory.class), mock(UserConfigService.class), new ObjectMapper());
+
+        workflow.applyFailure(SelectionAssistanceServiceImpl.GENERATE_STEP, context(),
+                new BusinessException(ErrorCode.AGENT_RUN_TIMED_OUT, "Agent Run 已超时"));
+
+        verify(service).fail(9L, ErrorCode.AGENT_RUN_TIMED_OUT.name());
+    }
+
+    @Test
     void persistsRewriteAsReviewRequiredWhenModelOmitsRisk() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
         SelectionAssistanceServiceImpl service = mock(SelectionAssistanceServiceImpl.class);

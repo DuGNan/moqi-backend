@@ -37,6 +37,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.ResumeAgentRunCommand;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.RetryAgentStepCommand;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentResumeToken;
+import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.StartAgentRunCommand;
@@ -399,13 +400,61 @@ class AgentRuntimeServiceTest {
         when(runMapper.selectList(any())).thenReturn(List.of(waitingRun));
         when(runMapper.selectById(41L)).thenReturn(waitingRun, timedOutRun);
         when(runMapper.update(isNull(), any())).thenReturn(1);
+        when(workflowRegistry.require("chapter-draft")).thenReturn(mock(AgentWorkflowDefinition.class));
 
         runtime().timeoutExpiredRuns();
 
         verify(callRegistry).cancel(41L, false);
-        verify(stepMapper).update(isNull(), any());
+        verify(stepMapper, never()).update(isNull(), any());
         verify(interruptionMapper).update(isNull(), any());
         verify(eventPublisher).publishEvent(isA(AgentRunEvent.class));
+    }
+
+    @Test
+    void expiredRunningRunPropagatesTimeoutToDomainOnce() {
+        TransactionStatus transactionStatus = mock(TransactionStatus.class);
+        doAnswer(invocation -> {
+            Consumer<TransactionStatus> callback = invocation.getArgument(0);
+            callback.accept(transactionStatus);
+            return null;
+        }).when(transactionTemplate).executeWithoutResult(any());
+
+        AgentRunEntity runningRun = run(41L, "running", "draft", 3);
+        runningRun.setInputJson("{\"assistanceId\":6}");
+        runningRun.setTimeoutAt(LocalDateTime.now().minusMinutes(1));
+        AgentRunEntity timedOutRun = run(41L, "timed_out", "draft", 4);
+        timedOutRun.setInputJson(runningRun.getInputJson());
+        AgentRunStepEntity runningStep = new AgentRunStepEntity();
+        runningStep.setId(71L);
+        runningStep.setRunId(41L);
+        runningStep.setStepKey("draft");
+        runningStep.setAttempt(1);
+        runningStep.setStepStatus("running");
+        runningStep.setVersion(0);
+        AgentWorkflowDefinition workflow = mock(AgentWorkflowDefinition.class);
+        when(runMapper.selectList(any())).thenReturn(List.of(runningRun), List.of(runningRun));
+        when(runMapper.selectById(41L)).thenReturn(runningRun, timedOutRun, timedOutRun);
+        when(runMapper.update(isNull(), any())).thenReturn(1);
+        when(stepMapper.selectOne(any())).thenReturn(runningStep);
+        when(stepMapper.update(isNull(), any())).thenReturn(1);
+        when(workflowRegistry.require("chapter-draft")).thenReturn(workflow);
+        when(workflow.maxAttempts("draft")).thenReturn(3);
+
+        runtime().timeoutExpiredRuns();
+        runtime().timeoutExpiredRuns();
+
+        ArgumentCaptor<AgentStepExecutionContext> contextCaptor =
+                ArgumentCaptor.forClass(AgentStepExecutionContext.class);
+        verify(workflow).applyFailure(eq("draft"), contextCaptor.capture(),
+                isA(com.dugnan.moqi.common.exception.BusinessException.class));
+        assertThat(contextCaptor.getValue().input()).containsEntry("assistanceId", 6);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<UpdateWrapper<AgentRunStepEntity>> stepUpdateCaptor =
+                ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(stepMapper).update(isNull(), stepUpdateCaptor.capture());
+        assertThat(stepUpdateCaptor.getValue().getParamNameValuePairs().values())
+                .contains("failed", 1, "timeout", "AGENT_RUN_TIMED_OUT");
+        verify(runMapper, times(1)).update(isNull(), any());
     }
 
     @Test
@@ -435,6 +484,7 @@ class AgentRuntimeServiceTest {
         when(runMapper.selectOne(any())).thenReturn(timedOutRun);
         when(taskMapper.selectById(31L)).thenReturn(task);
         when(runMapper.update(isNull(), any())).thenReturn(1);
+        when(workflowRegistry.require("chapter-draft")).thenReturn(mock(AgentWorkflowDefinition.class));
 
         runtime().timeoutExpiredRuns();
 
@@ -481,6 +531,37 @@ class AgentRuntimeServiceTest {
         assertThat(updateCaptor.getValue().getParamNameValuePairs().values())
                 .anyMatch(value -> value instanceof LocalDateTime timeoutAt
                         && timeoutAt.isAfter(beforeRetry.plusMinutes(29)));
+    }
+
+    @Test
+    void retryQueuesTimedOutRunWithRetryableFailedStep() {
+        TransactionStatus transactionStatus = mock(TransactionStatus.class);
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(transactionStatus);
+        });
+
+        AgentRunEntity timedOutRun = run(41L, "timed_out", "draft", 3);
+        AgentRunEntity queuedRun = run(41L, "queued", "draft", 4);
+        when(runMapper.selectById(41L)).thenReturn(timedOutRun, queuedRun);
+        AgentRunStepEntity failedStep = new AgentRunStepEntity();
+        failedStep.setId(71L);
+        failedStep.setRunId(41L);
+        failedStep.setStepKey("draft");
+        failedStep.setAttempt(1);
+        failedStep.setStepStatus("failed");
+        failedStep.setRetryable(1);
+        when(stepMapper.selectOne(any())).thenReturn(failedStep);
+        AgentWorkflowDefinition workflow = mock(AgentWorkflowDefinition.class);
+        when(workflowRegistry.require("chapter-draft")).thenReturn(workflow);
+        when(workflow.maxAttempts("draft")).thenReturn(2);
+        when(workflow.timeout()).thenReturn(Duration.ofMinutes(30));
+        when(runMapper.update(isNull(), any())).thenReturn(1);
+
+        AgentRunView retried = runtime().retryStep(new RetryAgentStepCommand(41L, "draft", 1));
+
+        assertThat(retried.runStatus()).isEqualTo("queued");
+        verify(eventPublisher).publishEvent(isA(AgentRunSubmittedEvent.class));
     }
 
     @Test
