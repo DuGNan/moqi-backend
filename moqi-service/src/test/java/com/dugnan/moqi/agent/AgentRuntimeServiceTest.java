@@ -3,11 +3,13 @@ package com.dugnan.moqi.agent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -251,7 +253,7 @@ class AgentRuntimeServiceTest {
     }
 
     @Test
-    void recoveryFailureTerminatesRunTaskStepAndPublishesEvent() {
+    void recoveryFailureTerminatesDomainRunTaskAndRetryableStep() {
         TransactionStatus transactionStatus = mock(TransactionStatus.class);
         doAnswer(invocation -> {
             Consumer<TransactionStatus> callback = invocation.getArgument(0);
@@ -261,16 +263,42 @@ class AgentRuntimeServiceTest {
 
         AgentRunEntity runningRun = run(41L, "running", "draft", 3);
         runningRun.setAiTaskId(31L);
+        runningRun.setInputJson("{\"assistanceId\":6}");
         AgentRunEntity failedRun = run(41L, "failed", "draft", 4);
         failedRun.setAiTaskId(31L);
-        when(runMapper.selectList(any())).thenReturn(List.of(runningRun), List.of());
-        when(runMapper.selectById(41L)).thenReturn(runningRun, failedRun);
+        AgentRunStepEntity runningStep = new AgentRunStepEntity();
+        runningStep.setId(71L);
+        runningStep.setRunId(41L);
+        runningStep.setStepKey("draft");
+        runningStep.setAttempt(1);
+        runningStep.setStepStatus("running");
+        runningStep.setVersion(0);
+        AgentWorkflowDefinition workflow = mock(AgentWorkflowDefinition.class);
+        when(runMapper.selectList(any())).thenReturn(
+                List.of(runningRun), List.of(), List.of(runningRun), List.of());
+        when(runMapper.selectById(41L)).thenReturn(runningRun, failedRun, failedRun);
+        when(stepMapper.selectOne(any())).thenReturn(runningStep);
         when(runMapper.update(isNull(), any())).thenReturn(1);
+        when(stepMapper.update(isNull(), any())).thenReturn(1);
         when(checkpointMapper.findLatestByRunId(41L)).thenReturn(null);
+        when(workflowRegistry.require("chapter-draft")).thenReturn(workflow);
+        when(workflow.maxAttempts("draft")).thenReturn(3);
 
         runtime().recoverPendingRuns();
+        runtime().recoverPendingRuns();
 
-        verify(stepMapper).update(isNull(), any());
+        ArgumentCaptor<AgentStepExecutionContext> contextCaptor =
+                ArgumentCaptor.forClass(AgentStepExecutionContext.class);
+        verify(workflow, times(1)).applyFailure(eq("draft"), contextCaptor.capture(),
+                isA(com.dugnan.moqi.common.exception.BusinessException.class));
+        assertThat(contextCaptor.getValue().input()).containsEntry("assistanceId", 6);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<UpdateWrapper<AgentRunStepEntity>> stepUpdateCaptor =
+                ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(stepMapper).update(isNull(), stepUpdateCaptor.capture());
+        assertThat(stepUpdateCaptor.getValue().getParamNameValuePairs().values())
+                .contains(1, "process_restart", "AGENT_CHECKPOINT_INVALID");
+        verify(runMapper, times(1)).update(isNull(), any());
         verify(taskMapper).update(isNull(), any());
         verify(eventPublisher).publishEvent(isA(AgentRunEvent.class));
     }

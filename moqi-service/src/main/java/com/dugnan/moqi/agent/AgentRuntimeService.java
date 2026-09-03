@@ -552,13 +552,13 @@ public class AgentRuntimeService implements AgentRuntime {
         }
         AgentCheckpointEntity checkpoint = checkpointMapper.findLatestByRunId(runId);
         if (checkpoint == null) {
-            failRecoveredRun(run, ErrorCode.AGENT_CHECKPOINT_INVALID.name(), "运行恢复缺少 checkpoint");
+            failRecoveredRun(run, ErrorCode.AGENT_CHECKPOINT_INVALID, "运行恢复缺少 checkpoint");
             return;
         }
         try {
             state(checkpoint);
         } catch (BusinessException exception) {
-            failRecoveredRun(run, exception.getErrorCode().name(), exception.getMessage());
+            failRecoveredRun(run, exception.getErrorCode(), exception.getMessage());
             return;
         }
         markActiveStepTerminal(runId, STATUS_FAILED);
@@ -571,13 +571,43 @@ public class AgentRuntimeService implements AgentRuntime {
         }
     }
 
-    private void failRecoveredRun(AgentRunEntity run, String errorCode, String errorMessage) {
-        updateRunStatus(run, STATUS_FAILED, errorCode, errorMessage, run.getCurrentStepKey());
-        markActiveStepTerminal(run.getId(), STATUS_FAILED);
+    private void failRecoveredRun(AgentRunEntity run, ErrorCode errorCode, String errorMessage) {
+        AgentWorkflowDefinition definition = workflowRegistry.require(run.getWorkflowType());
+        String stepKey = blank(run.getCurrentStepKey()) ? definition.startStepKey() : run.getCurrentStepKey();
+        AgentRunStepEntity step = latestStep(run.getId(), stepKey);
+        BusinessException exception = new BusinessException(errorCode, errorMessage);
+        AgentStepExecutionContext context = new AgentStepExecutionContext(
+                run.getId(), step == null ? null : step.getId(), stepKey,
+                step == null ? 0 : step.getAttempt(), run.getId() + ":" + stepKey,
+                map(run.getInputJson()), Map.of(), Map.of(), callRegistry);
+        definition.applyFailure(stepKey, context, exception);
+        failRecoveredStep(step, definition, errorCode, errorMessage);
+        updateRunStatus(run, STATUS_FAILED, errorCode.name(), errorMessage, stepKey);
         if (run.getAiTaskId() != null) {
             updateAiTaskTerminal(run.getAiTaskId(), STATUS_FAILED);
         }
         publish(requireRun(run.getId()), null, null, null);
+    }
+
+    private void failRecoveredStep(
+            AgentRunStepEntity step,
+            AgentWorkflowDefinition definition,
+            ErrorCode errorCode,
+            String errorMessage) {
+        if (step == null || !STATUS_RUNNING.equals(step.getStepStatus())) {
+            return;
+        }
+        boolean retryable = step.getAttempt() < definition.maxAttempts(step.getStepKey());
+        int changed = stepMapper.update(null, new UpdateWrapper<AgentRunStepEntity>()
+                .eq("id", step.getId()).eq("deleted", 0).eq("version", step.getVersion())
+                .eq("step_status", STATUS_RUNNING).set("step_status", STATUS_FAILED)
+                .set("retryable", retryable ? 1 : 0).set("error_category", "process_restart")
+                .set("error_code", errorCode.name())
+                .set("error_message", PublicFailureFactory.safeMessage(errorCode.name(), errorMessage))
+                .set("finished_at", LocalDateTime.now()).set("version", step.getVersion() + 1));
+        if (changed != 1) {
+            throw conflict(ErrorCode.AGENT_RUN_STATE_CONFLICT, "Agent Step 恢复终态已变化");
+        }
     }
 
     private AgentCheckpointEntity saveCheckpoint(AgentRunEntity run, AgentRunStepEntity step, AgentStepResult result) {

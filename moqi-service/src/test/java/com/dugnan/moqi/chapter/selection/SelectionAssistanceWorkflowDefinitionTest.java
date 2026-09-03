@@ -16,6 +16,8 @@ import org.mockito.ArgumentCaptor;
 
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ConversationHistoryMessage;
+import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
 import com.dugnan.moqi.llm.LlmProvider;
@@ -30,6 +32,18 @@ import com.dugnan.moqi.llm.LlmRole;
  * @description 验证选区协助工作流的结构化候选和默认事实风险边界。
  */
 class SelectionAssistanceWorkflowDefinitionTest {
+
+    @Test
+    void processRestartFailureMarksAssistanceAsFailed() {
+        SelectionAssistanceServiceImpl service = mock(SelectionAssistanceServiceImpl.class);
+        SelectionAssistanceWorkflowDefinition workflow = new SelectionAssistanceWorkflowDefinition(
+                service, mock(LlmProviderFactory.class), mock(UserConfigService.class), new ObjectMapper());
+
+        workflow.applyFailure(SelectionAssistanceServiceImpl.GENERATE_STEP, context(),
+                new BusinessException(ErrorCode.AGENT_CHECKPOINT_INVALID, "运行恢复缺少 checkpoint"));
+
+        verify(service).fail(9L, "SELECTION_ASSISTANCE_PROVIDER_FAILED");
+    }
 
     @Test
     void persistsRewriteAsReviewRequiredWhenModelOmitsRisk() throws Exception {

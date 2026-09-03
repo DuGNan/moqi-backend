@@ -28,6 +28,6 @@
 
 ## 重启恢复
 
-应用就绪后执行一次完整恢复：先快照数据库中遗留的 `running` Run，再重新派发 `queued` Run，避免把本次启动刚领取的任务误判为上一进程遗留。快照中的 `running` Run 会校验最新 checkpoint；checkpoint 合法时把未完成步骤标记为重启失败并从其 `nextStepKey` 重新排队，缺失、损坏或不支持 schema 时同步终止 Run、活动 Step 和关联 AI Task，并发布最终生命周期事件。周期扫描只重新派发 `queued` Run，不扫描当前进程可能仍在正常执行的 `running` Run，避免重复领取长耗时步骤。`waiting_for_human` 保持等待，不会自动生成新 token。已超过 `timeout_at` 的非终态 Run 转为 `timed_out`。
+应用就绪后执行一次完整恢复：先快照数据库中遗留的 `running` Run，再重新派发 `queued` Run，避免把本次启动刚领取的任务误判为上一进程遗留。快照中的 `running` Run 会校验最新 checkpoint；checkpoint 合法时把未完成步骤标记为重启失败并从其 `nextStepKey` 重新排队。checkpoint 缺失、损坏或不支持 schema 时，Runtime 会在同一事务内调用工作流失败处理，同步终止领域候选、Run、活动 Step 和关联 AI Task，并发布最终生命周期事件；尚未达到最大尝试次数的活动 Step 保持可重试，人工重试复用原 Run 和冻结输入。重复恢复已进入终态的 Run 不会再次调用工作流失败处理。周期扫描只重新派发 `queued` Run，不扫描当前进程可能仍在正常执行的 `running` Run，避免重复领取长耗时步骤。`waiting_for_human` 保持等待，不会自动生成新 token。已超过 `timeout_at` 的非终态 Run 转为 `timed_out`。
 
 章节 SSE 只发布 `agent_run.updated` 的 Run、Step、checkpoint 和中断引用；不携带输入快照、checkpoint 内容、提示词、模型正文、异常堆栈或恢复 token。客户端断线重连后可通过 `GET /api/agent-runs/{runId}` 查询数据库事实，当前单用户基线固定按 `local-user` 校验 Run 归属；响应包含当前状态、步骤键、checkpoint sequence 和中断引用，不包含 token 明文。
