@@ -24,10 +24,10 @@
 
 人工中断写入 `agent_interruptions`，恢复 token 仅通过内部事件或可信应用端口交付，数据库只保存其 SHA-256 哈希与版本。令牌丢失时，可信调用方可调用 `reissueResumeToken` 重签；旧 token 随版本和哈希原子更新立即失效，新 token 仍只返回一次。恢复请求必须同时匹配 Run、token 哈希、token version 和确认内容；相同确认的重复请求幂等，不同确认、过期或已消费 token 返回冲突。恢复成功后从 checkpoint 的 `nextStepKey` 继续，经哈希校验的确认 JSON 只作为该 checkpoint 后续步骤的 `humanResponse` 提供，不会重复执行触发中断的已完成步骤。
 
-取消、超时和步骤完成使用状态与版本条件更新竞争。终态一旦写入，迟到的模型结果不会写入 checkpoint、步骤输出或领域结果；取消与超时会同步终止仍在等待的人工中断，并通知 Run 级 `LlmStreamCall` 注册表。仅正在执行的 Run 保留取消信号直至执行线程退出，排队或等待态取消不会在注册表残留。
+取消、超时和步骤完成使用状态与版本条件更新竞争。终态一旦写入，迟到的模型结果不会写入 checkpoint、步骤输出或领域结果；取消与超时会同步终止仍在等待的人工中断，并通知 Run 级 `LlmStreamCall` 注册表。仅正在执行的 Run 保留取消信号直至执行线程退出，排队或等待态取消不会在注册表残留。用户主动取消保持 `canceled` 语义并由业务入口同步领域取消态；Runtime 主动超时则在 Run 终态 CAS 成功后的同一事务中调用工作流失败处理，使领域对象进入可见失败态。Run 保留 `timed_out`，关联 AI Task 和活动 Step 进入失败态；活动 Step 记录 `timeout / AGENT_RUN_TIMED_OUT`，未耗尽尝试次数时允许复用原 Run 和冻结输入重试。
 
 ## 重启恢复
 
-应用就绪后执行一次完整恢复：先快照数据库中遗留的 `running` Run，再重新派发 `queued` Run，避免把本次启动刚领取的任务误判为上一进程遗留。快照中的 `running` Run 会校验最新 checkpoint；checkpoint 合法时把未完成步骤标记为重启失败并从其 `nextStepKey` 重新排队。checkpoint 缺失、损坏或不支持 schema 时，Runtime 会在同一事务内调用工作流失败处理，同步终止领域候选、Run、活动 Step 和关联 AI Task，并发布最终生命周期事件；尚未达到最大尝试次数的活动 Step 保持可重试，人工重试复用原 Run 和冻结输入。重复恢复已进入终态的 Run 不会再次调用工作流失败处理。周期扫描只重新派发 `queued` Run，不扫描当前进程可能仍在正常执行的 `running` Run，避免重复领取长耗时步骤。`waiting_for_human` 保持等待，不会自动生成新 token。已超过 `timeout_at` 的非终态 Run 转为 `timed_out`。
+应用就绪后执行一次完整恢复：先快照数据库中遗留的 `running` Run，再重新派发 `queued` Run，避免把本次启动刚领取的任务误判为上一进程遗留。快照中的 `running` Run 会校验最新 checkpoint；checkpoint 合法时把未完成步骤标记为重启失败并从其 `nextStepKey` 重新排队。checkpoint 缺失、损坏或不支持 schema 时，Runtime 会在同一事务内调用工作流失败处理，同步终止领域候选、Run、活动 Step 和关联 AI Task，并发布最终生命周期事件；尚未达到最大尝试次数的活动 Step 保持可重试，人工重试复用原 Run 和冻结输入。重复恢复已进入终态的 Run 不会再次调用工作流失败处理。周期扫描只重新派发 `queued` Run，不扫描当前进程可能仍在正常执行的 `running` Run，避免重复领取长耗时步骤。`waiting_for_human` 保持等待，不会自动生成新 token。已超过 `timeout_at` 的非终态 Run 按前述超时事务收敛；重复扫描终态 Run 不会再次调用领域失败处理或创建新的 Run、Step 和模型调用。
 
 章节 SSE 只发布 `agent_run.updated` 的 Run、Step、checkpoint 和中断引用；不携带输入快照、checkpoint 内容、提示词、模型正文、异常堆栈或恢复 token。客户端断线重连后可通过 `GET /api/agent-runs/{runId}` 查询数据库事实，当前单用户基线固定按 `local-user` 校验 Run 归属；响应包含当前状态、步骤键、checkpoint sequence 和中断引用，不包含 token 明文。

@@ -15,6 +15,8 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ConversationHistoryMessage;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.ModelPlanningProposal;
+import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.llm.LlmCallContext;
 import com.dugnan.moqi.llm.LlmExecutionConfig;
@@ -130,6 +132,10 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
 
     @Override
     public String errorCode(Exception exception) {
+        if (exception instanceof BusinessException businessException
+                && ErrorCode.AGENT_RUN_TIMED_OUT == businessException.getErrorCode()) {
+            return ErrorCode.AGENT_RUN_TIMED_OUT.name();
+        }
         return exception instanceof IllegalArgumentException
                 ? "SELECTION_ASSISTANCE_INVALID_OUTPUT" : "SELECTION_ASSISTANCE_PROVIDER_FAILED";
     }
