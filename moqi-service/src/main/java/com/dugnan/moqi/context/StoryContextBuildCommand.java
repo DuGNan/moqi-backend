@@ -16,7 +16,19 @@ public record StoryContextBuildCommand(
         int outputReserveTokens,
         StoryContextFocus discussionFocus,
         SceneGenerationContextFocus sceneGenerationFocus,
-        MessageReference messageReference) {
+        MessageReference messageReference,
+        java.util.List<StoryContextConversationTurn> frozenConversationTurns) {
+
+    /** 保留不含冻结会话轮次的兼容构造入口。 */
+    public StoryContextBuildCommand(
+            StoryContextProfile profile, Long workId, Long chapterId, Long conversationId,
+            Long currentMessageId, String taskInstruction, String currentInput, String targetText,
+            int contextWindowTokens, int outputReserveTokens, StoryContextFocus discussionFocus,
+            SceneGenerationContextFocus sceneGenerationFocus, MessageReference messageReference) {
+        this(profile, workId, chapterId, conversationId, currentMessageId, taskInstruction, currentInput,
+                targetText, contextWindowTokens, outputReserveTokens, discussionFocus, sceneGenerationFocus,
+                messageReference, null);
+    }
 
     public StoryContextBuildCommand(
             StoryContextProfile profile, Long workId, Long chapterId, Long conversationId,
@@ -24,7 +36,7 @@ public record StoryContextBuildCommand(
             int contextWindowTokens, int outputReserveTokens, StoryContextFocus discussionFocus,
             SceneGenerationContextFocus sceneGenerationFocus) {
         this(profile, workId, chapterId, conversationId, currentMessageId, taskInstruction, currentInput,
-                targetText, contextWindowTokens, outputReserveTokens, discussionFocus, sceneGenerationFocus, null);
+                targetText, contextWindowTokens, outputReserveTokens, discussionFocus, sceneGenerationFocus, null, null);
     }
 
     /**
@@ -65,6 +77,7 @@ public record StoryContextBuildCommand(
                 outputReserveTokens,
                 null,
                 null,
+                null,
                 null);
     }
 
@@ -96,7 +109,7 @@ public record StoryContextBuildCommand(
             int outputReserveTokens,
             StoryContextFocus discussionFocus) {
         this(profile, workId, chapterId, conversationId, currentMessageId, taskInstruction, currentInput,
-                targetText, contextWindowTokens, outputReserveTokens, discussionFocus, null, null);
+                targetText, contextWindowTokens, outputReserveTokens, discussionFocus, null, null, null);
     }
 
     /**

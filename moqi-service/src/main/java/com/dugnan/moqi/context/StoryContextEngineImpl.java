@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -230,7 +231,8 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                 addBrief(candidates, command, chapter);
             }
             addOutline(candidates, command, chapter);
-            if (StringUtils.hasText(chapter.getContent())) {
+            if (command.profile() != StoryContextProfile.PROSE_DISCUSSION
+                    && StringUtils.hasText(chapter.getContent())) {
                 add(candidates, StoryContextSourceType.CHAPTER_CONTENT, id(chapter.getId()), "SYSTEM",
                         chapter.getContent(), false, 700, 300, chapter.getVersion(), chapter.getGmtModified(), Category.CURRENT);
             }
@@ -246,7 +248,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         if (command.messageReference() != null) {
             MessageReference reference = command.messageReference();
             add(candidates, StoryContextSourceType.TARGET_TEXT, "referenced-" + reference.messageId(),
-                    reference.role().toUpperCase(), "[referencedMessageId=" + reference.messageId() + "]\n" + reference.content(),
+                    reference.role().toUpperCase(), "【作者本轮引用的当前会话消息】\n" + reference.content(),
                     true, 995, 490, null, null, Category.CURRENT);
         }
         if (StringUtils.hasText(command.currentInput())) {
@@ -354,8 +356,12 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                 .last("LIMIT 1"));
         if (!briefs.isEmpty()) {
             ChapterBriefEntity brief = briefs.get(0);
+            String briefContent = confirmedConsensusContent(brief.getBriefContent());
+            if (command.profile() == StoryContextProfile.PROSE_DISCUSSION) {
+                briefContent = ModelVisibleStructuredContent.render(objectMapper, briefContent);
+            }
             add(candidates, StoryContextSourceType.CHAPTER_BRIEF, id(brief.getId()), "SYSTEM",
-                    confirmedConsensusContent(brief.getBriefContent()),
+                    briefContent,
                     false, 900, 100,
                     brief.getVersion(), brief.getGmtModified(), Category.STRUCTURE);
             addRejectedDecisionTombstones(
@@ -365,7 +371,8 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                     brief.getVersion(),
                     101);
         }
-        if (command.profile() == StoryContextProfile.CHAPTER_DISCUSSION) {
+        if (command.profile() == StoryContextProfile.CHAPTER_DISCUSSION
+                || command.profile() == StoryContextProfile.PROSE_DISCUSSION) {
             List<ChapterBriefEntity> rejected = briefMapper.selectList(new LambdaQueryWrapper<ChapterBriefEntity>()
                     .eq(ChapterBriefEntity::getChapterId, chapter.getId())
                     .eq(ChapterBriefEntity::getBriefStatus, "rejected")
@@ -376,7 +383,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             if (!rejected.isEmpty()) {
                 ChapterBriefEntity brief = rejected.get(0);
                 add(candidates, StoryContextSourceType.CHAPTER_BRIEF, id(brief.getId()), "SYSTEM",
-                        "已否定 Brief #" + brief.getId() + "，不得继承其内容。", false, 880, 105,
+                        "作者已经否定此前的章节简报，不得继承其中内容。", false, 880, 105,
                         brief.getVersion(), brief.getGmtModified(), Category.STRUCTURE,
                         StoryContextAuthorityStatus.REJECTED);
             }
@@ -393,8 +400,11 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                 .last("LIMIT 1"));
         if (!outlines.isEmpty()) {
             ChapterOutlineEntity outline = outlines.get(0);
+            String outlineContent = command.profile() == StoryContextProfile.PROSE_DISCUSSION
+                    ? ModelVisibleStructuredContent.render(objectMapper, outline.getOutlineContent())
+                    : outline.getOutlineContent();
             add(candidates, StoryContextSourceType.CHAPTER_OUTLINE, id(outline.getId()), "SYSTEM",
-                    outline.getOutlineContent(), false, "confirmed".equals(outline.getOutlineStatus()) ? 900 : 650, 110,
+                    outlineContent, false, "confirmed".equals(outline.getOutlineStatus()) ? 900 : 650, 110,
                     outline.getVersion() + ":" + outline.getRevision(), outline.getGmtModified(), Category.STRUCTURE);
         }
     }
@@ -408,7 +418,8 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                         .orderByDesc(SettingEntryEntity::getId)
                         .last("LIMIT " + SETTING_LIMIT))
                 .forEach(setting -> add(candidates, StoryContextSourceType.SETTING_ENTRY, id(setting.getId()), "SYSTEM",
-                        setting.getName() + "：" + setting.getContent(), false, 800, 200,
+                        setting.getName() + "：" + setting.getContent(), false,
+                        proseRelevancePriority(command, 800, setting.getName(), setting.getContent()), 200,
                         setting.getVersion(), setting.getGmtModified(), Category.KNOWLEDGE));
         foreshadowingMapper.selectList(new LambdaQueryWrapper<ForeshadowingItemEntity>()
                         .eq(ForeshadowingItemEntity::getWorkId, command.workId())
@@ -418,7 +429,8 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                         .orderByDesc(ForeshadowingItemEntity::getId)
                         .last("LIMIT " + FORESHADOWING_LIMIT))
                 .forEach(item -> add(candidates, StoryContextSourceType.FORESHADOWING, id(item.getId()), "SYSTEM",
-                        item.getTitle() + "：" + item.getDescription(), false, 780, 220,
+                        item.getTitle() + "：" + item.getDescription(), false,
+                        proseRelevancePriority(command, 780, item.getTitle(), item.getDescription()), 220,
                         item.getVersion(), item.getGmtModified(), Category.KNOWLEDGE));
         summaryMapper.selectList(new LambdaQueryWrapper<ChapterSummaryEntity>()
                         .eq(ChapterSummaryEntity::getWorkId, command.workId())
@@ -428,7 +440,8 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                         .orderByDesc(ChapterSummaryEntity::getId)
                         .last("LIMIT " + SUMMARY_LIMIT))
                 .forEach(summary -> add(candidates, StoryContextSourceType.CHAPTER_SUMMARY, id(summary.getId()), "SYSTEM",
-                        "章节摘要：" + summary.getSummary(), false, 760, 230,
+                        "章节摘要：" + summary.getSummary(), false,
+                        proseRelevancePriority(command, 760, summary.getSummary()), 230,
                         summary.getVersion() + ":" + summary.getContentRevision(), summary.getGmtModified(), Category.KNOWLEDGE));
         eventMapper.selectList(new LambdaQueryWrapper<ChapterKeyEventEntity>()
                         .eq(ChapterKeyEventEntity::getWorkId, command.workId())
@@ -437,14 +450,33 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                         .orderByDesc(ChapterKeyEventEntity::getId)
                         .last("LIMIT " + KEY_EVENT_LIMIT))
                 .forEach(event -> add(candidates, StoryContextSourceType.CHAPTER_KEY_EVENT, id(event.getId()), "SYSTEM",
-                        event.getEventTitle() + "：" + event.getEventContent(), false, 700, 240,
+                        event.getEventTitle() + "：" + event.getEventContent(), false,
+                        proseRelevancePriority(command, 700, event.getEventTitle(), event.getEventContent()), 240,
                         event.getVersion(), event.getGmtModified(), Category.KNOWLEDGE));
+    }
+
+    private int proseRelevancePriority(StoryContextBuildCommand command, int basePriority, String... clues) {
+        if (command.profile() != StoryContextProfile.PROSE_DISCUSSION) {
+            return basePriority;
+        }
+        String focus = Objects.requireNonNullElse(command.currentInput(), "") + "\n"
+                + Objects.requireNonNullElse(command.targetText(), "");
+        for (String clue : clues) {
+            if (StringUtils.hasText(clue) && clue.trim().length() >= 2 && focus.contains(clue.trim())) {
+                return basePriority + 150;
+            }
+        }
+        return basePriority;
     }
 
     private void addConversationHistory(
             List<Candidate> candidates,
             StoryContextBuildCommand command,
             ChapterConversationEntity conversation) {
+        if (command.frozenConversationTurns() != null) {
+            addFrozenConversationHistory(candidates, command);
+            return;
+        }
         if (conversation == null) {
             return;
         }
@@ -475,6 +507,30 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
                     assistant.getGmtModified(), Category.HISTORY, StoryContextAuthorityStatus.CANDIDATE, pairKey);
             historyOrder += 2;
             index++;
+        }
+    }
+
+    private void addFrozenConversationHistory(
+            List<Candidate> candidates,
+            StoryContextBuildCommand command) {
+        int historyOrder = command.discussionFocus() == null ? 400 : 60;
+        int turnIndex = 0;
+        for (StoryContextConversationTurn turn : command.frozenConversationTurns()) {
+            if (turn == null || !StringUtils.hasText(turn.userContent())
+                    || !StringUtils.hasText(turn.assistantContent())) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "冻结会话历史必须保持完整的作者与助手轮次");
+            }
+            String pairKey = "frozen-turn-" + turnIndex;
+            add(candidates, StoryContextSourceType.CONVERSATION_TURN,
+                    pairKey + ":user", "USER", turn.userContent(), false,
+                    600, historyOrder, null, null, Category.HISTORY,
+                    StoryContextAuthorityStatus.EVIDENCE, pairKey);
+            add(candidates, StoryContextSourceType.CONVERSATION_TURN,
+                    pairKey + ":assistant", "ASSISTANT", turn.assistantContent(), false,
+                    600, historyOrder + 1, null, null, Category.HISTORY,
+                    StoryContextAuthorityStatus.CANDIDATE, pairKey);
+            historyOrder += 2;
+            turnIndex++;
         }
     }
 

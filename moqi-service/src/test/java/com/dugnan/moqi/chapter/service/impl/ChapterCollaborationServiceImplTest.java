@@ -26,6 +26,7 @@ import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.DiscussionFocusReq
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.OutlineRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ReplyControlRequest;
 import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.SendMessageRequest;
+import com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ProseDraftRequest;
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterBriefEntity;
 import com.dugnan.moqi.chapter.entity.ChapterConversationEntity;
@@ -46,6 +47,8 @@ import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
 import com.dugnan.moqi.chapter.service.ProseObjectTargetService;
 import com.dugnan.moqi.chapter.service.ProseObjectTargetService.ProseObjectTarget;
+import com.dugnan.moqi.chapter.service.ProseObjectPromptContextService;
+import com.dugnan.moqi.chapter.service.ProseObjectPromptContextService.FrozenProseObjectContext;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
@@ -251,6 +254,47 @@ class ChapterCollaborationServiceImplTest {
                 task.getTaskInputJson().contains("\"proseObjectId\":\"candidate:18\"")
                         && task.getTaskInputJson().contains("\"proseContentHash\":\"content-hash\"")
                         && task.getTaskInputJson().contains("候选正文")));
+    }
+
+    @Test
+    void freezesUnsavedDraftAsCurrentTurnContextWithoutMarkingItSaved() {
+        ProseObjectPromptContextService promptContextService =
+                org.mockito.Mockito.mock(ProseObjectPromptContextService.class);
+        service = new ChapterCollaborationServiceImpl(
+                workMapper, chapterMapper, conversationMapper, messageMapper, briefMapper, outlineMapper,
+                aiTaskMapper, eventPublisher, focusResolver, null, null, new ObjectMapper(),
+                proseObjectTargetService, promptContextService);
+        ChapterConversationEntity scoped = conversation(8L, 1L, 2L);
+        scoped.setConversationType("prose_object");
+        scoped.setTargetObjectId("candidate:18");
+        when(conversationMapper.selectById(8L)).thenReturn(scoped);
+        when(chapterMapper.selectById(2L)).thenReturn(chapter(2L, 1L));
+        ProseObjectTarget target = new ProseObjectTarget(
+                "candidate:18", "candidate", 4, "saved-hash", "已保存候选", "由改写形成");
+        when(promptContextService.freeze(eq(2L), eq("candidate:18"), any())).thenReturn(
+                new FrozenProseObjectContext(target,
+                        "作者当前保存的正文：已保存候选\n未保存编辑器草稿：草稿内容；尚未保存"));
+        when(messageMapper.insert(any(ChapterConversationMessageEntity.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, ChapterConversationMessageEntity.class).setId(11L);
+            return 1;
+        });
+        when(aiTaskMapper.insert(any(AiTaskEntity.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, AiTaskEntity.class).setId(12L);
+            return 1;
+        });
+
+        service.sendMessage(8L, new SendMessageRequest(
+                "user", "分析当前草稿", true, null, null, null, null, "draft-message",
+                new ProseDraftRequest(4, "saved-hash", "草稿内容")));
+
+        verify(promptContextService).freeze(eq(2L), eq("candidate:18"),
+                org.mockito.ArgumentMatchers.argThat(draft -> draft.baseVersion() == 4
+                        && "saved-hash".equals(draft.baseContentHash())
+                        && "草稿内容".equals(draft.content())));
+        verify(aiTaskMapper).insert(org.mockito.ArgumentMatchers.<AiTaskEntity>argThat(task ->
+                task.getTaskInputJson().contains("未保存编辑器草稿")
+                        && task.getTaskInputJson().contains("尚未保存")
+                        && task.getTaskInputJson().contains("草稿内容")));
     }
 
     @Test

@@ -24,6 +24,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterSelectionAssistanceEntity;
+import com.dugnan.moqi.chapter.entity.ChapterConversationMessageEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterConversationMessageMapper;
@@ -42,6 +43,12 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.RetryAgentStepCommand;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
+import com.dugnan.moqi.chapter.service.ProseObjectPromptContextService;
+import com.dugnan.moqi.context.StoryContextBuildCommand;
+import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextTaskBindingService;
+import com.dugnan.moqi.llm.LlmProvider;
+import com.dugnan.moqi.llm.LlmProviderCapabilities;
 
 /**
  * @author dgn
@@ -71,6 +78,57 @@ class SelectionAssistanceServiceImplTest {
                 .contains("当前权威场景规划摘要")
                 .contains("所有正文和规划输出都只是候选")
                 .doesNotContain("operation", "rewrite", "targetKind", "requestStatus", "baseScenePlanId");
+    }
+
+    @Test
+    void buildsProseObjectSnapshotWithCurrentRequestAndFrozenBasis() {
+        Fixture fixture = new Fixture();
+        ChapterSelectionAssistanceEntity assistance = fixture.candidate("原文", "候选");
+        assistance.setRequestContractVersion(2);
+        assistance.setConversationId(30L);
+        assistance.setUserMessageId(31L);
+        assistance.setTargetObjectId("candidate:8");
+        assistance.setTargetKind("candidate");
+        assistance.setBriefContent("本章必须拿到钥匙");
+        assistance.setAdjacentBefore("前文");
+        assistance.setAdjacentAfter("后文");
+        when(fixture.assistanceMapper.selectById(9L)).thenReturn(assistance);
+        ChapterConversationMessageEntity current = new ChapterConversationMessageEntity();
+        current.setId(31L);
+        current.setConversationId(30L);
+        current.setChapterId(2L);
+        current.setMessageRole("user");
+        current.setContent("改写\n作者要求：让选择更艰难");
+        current.setDeleted(0);
+        when(fixture.messageMapper.selectById(31L)).thenReturn(current);
+        AiTaskEntity task = new AiTaskEntity();
+        task.setId(8L);
+        task.setTaskStatus("running");
+        task.setVersion(1);
+        task.setTaskInputJson("""
+                {"proseObjectContext":"作者当前保存的正文：候选正文\\n候选创建时冻结依据：主角当时不知道真相"}
+                """);
+        when(fixture.taskMapper.selectById(8L)).thenReturn(task);
+        ProseObjectPromptContextService promptContextService = mock(ProseObjectPromptContextService.class);
+        StoryContextTaskBindingService bindingService = mock(StoryContextTaskBindingService.class);
+        StoryContextSnapshot expected = mock(StoryContextSnapshot.class);
+        when(bindingService.buildAndAttach(any(), any())).thenReturn(expected);
+        fixture.service.setPromptContextDependencies(promptContextService, bindingService);
+        LlmProvider provider = mock(LlmProvider.class);
+        when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, false, false, 16384, 8192));
+
+        StoryContextSnapshot actual = fixture.service.buildModelContext(
+                9L, provider, "只生成待作者确认的修改提案");
+
+        assertThat(actual).isSameAs(expected);
+        ArgumentCaptor<StoryContextBuildCommand> command = ArgumentCaptor.forClass(StoryContextBuildCommand.class);
+        verify(bindingService).buildAndAttach(command.capture(), org.mockito.ArgumentMatchers.same(task));
+        assertThat(command.getValue().profile()).isEqualTo(com.dugnan.moqi.context.StoryContextProfile.PROSE_DISCUSSION);
+        assertThat(command.getValue().currentInput()).isEqualTo("改写\n作者要求：让选择更艰难");
+        assertThat(command.getValue().targetText())
+                .contains("本章必须拿到钥匙", "候选创建时冻结依据", "候选正文")
+                .doesNotContain("candidate:8", "hash");
+        verify(promptContextService, never()).freeze(any(), any(), any());
     }
 
     @Test

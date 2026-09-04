@@ -23,16 +23,26 @@ public interface ProseObjectTargetService {
             Integer version,
             String contentHash,
             String content,
-            String sourceDescription) {
+            String sourceDescription,
+            Long sourceGenerationId) {
 
-        /** 生成不暴露内部标识的模型可见当前目标说明。 */
+        /** 保留不含生成来源的兼容构造入口。 */
+        public ProseObjectTarget(
+                String objectId,
+                String objectKind,
+                Integer version,
+                String contentHash,
+                String content,
+                String sourceDescription) {
+            this(objectId, objectKind, version, contentHash, content, sourceDescription, null);
+        }
+
+        /** 生成不暴露对象 ID、版本号或内容哈希的模型可见当前目标说明。 */
         public String promptText() {
             String label = "formal".equals(objectKind) ? "正式正文" : "正文候选";
             return "当前讨论对象：" + label
-                    + "\n当前保存版本：" + version
-                    + "\n当前内容 hash：" + contentHash
-                    + "\n来源说明：" + sourceDescription
-                    + "\n当前正文：\n" + content;
+                    + "\n对象来源：" + sourceDescription
+                    + "\n以下是作者当前保存的正文；它不是未保存草稿：\n" + content;
         }
     }
 }

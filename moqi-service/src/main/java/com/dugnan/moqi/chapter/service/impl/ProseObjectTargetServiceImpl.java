@@ -45,7 +45,7 @@ public class ProseObjectTargetServiceImpl implements ProseObjectTargetService {
         if (objectId != null && objectId.equals(FORMAL_PREFIX + chapterId)) {
             String content = chapter.getContent() == null ? "" : chapter.getContent();
             return new ProseObjectTarget(objectId, "formal", version(chapter.getVersion()), hash(content),
-                    content, "作者当前保存的正式正文");
+                    content, "作者当前保存的正式正文", chapter.getFormalSourceGenerationId());
         }
         Long candidateId = parseCandidateId(objectId);
         ChapterProseCandidateEntity candidate = candidateMapper.selectById(candidateId);
@@ -55,7 +55,7 @@ public class ProseObjectTargetServiceImpl implements ProseObjectTargetService {
         }
         return new ProseObjectTarget(objectId, "candidate", version(candidate.getVersion()),
                 candidate.getContentHash(), candidate.getContent() == null ? "" : candidate.getContent(),
-                sourceDescription(candidate));
+                sourceDescription(candidate), candidate.getSourceGenerationId());
     }
 
     private Long parseCandidateId(String objectId) {
