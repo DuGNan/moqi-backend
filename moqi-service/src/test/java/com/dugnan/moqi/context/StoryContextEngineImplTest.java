@@ -41,6 +41,7 @@ import com.dugnan.moqi.knowledge.mapper.ChapterKeyEventMapper;
 import com.dugnan.moqi.knowledge.mapper.ChapterSummaryMapper;
 import com.dugnan.moqi.knowledge.mapper.ForeshadowingItemMapper;
 import com.dugnan.moqi.knowledge.mapper.SettingEntryMapper;
+import com.dugnan.moqi.knowledge.entity.SettingEntryEntity;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
@@ -625,6 +626,129 @@ class StoryContextEngineImplTest {
     }
 
     private record FixtureTurn(String user, String assistant) {
+    }
+
+    @Test
+    void proseProfileKeepsCurrentObjectAndItsCompleteTurnsWithoutMixingFormalProse() {
+        WorkEntity work = new WorkEntity();
+        work.setId(1L);
+        work.setTitle("星际冒险");
+        work.setDeleted(0);
+        ChapterEntity chapter = chapter(2L, 1L);
+        chapter.setContent("另一份正式正文，不应混入候选上下文");
+        ChapterConversationEntity conversation = conversation(3L, 1L, 2L);
+        conversation.setConversationType("prose_object");
+        conversation.setTargetObjectId("candidate:8");
+        ChapterConversationMessageEntity user = message(10L, 3L, 2L, "只属于候选八的问题");
+        user.setMessageRole("user");
+        ChapterConversationMessageEntity assistant = message(11L, 3L, 2L, "只属于候选八的建议");
+        assistant.setMessageRole("assistant");
+        ChapterConversationMessageEntity current = message(12L, 3L, 2L, "分析人物为什么停下");
+        when(workMapper.selectById(1L)).thenReturn(work);
+        when(chapterMapper.selectById(2L)).thenReturn(chapter);
+        when(conversationMapper.selectById(3L)).thenReturn(conversation);
+        when(messageMapper.selectById(12L)).thenReturn(current);
+        when(messageMapper.selectList(any())).thenReturn(List.of(user, assistant));
+
+        StoryContextSnapshot snapshot = engine.build(new StoryContextBuildCommand(
+                StoryContextProfile.PROSE_DISCUSSION, 1L, 2L, 3L, 12L,
+                "分析当前正文，不得宣称已经保存", current.getContent(),
+                "当前讨论对象：正文候选\n作者当前保存的正文：候选八正文", 4096, 512));
+
+        assertThat(snapshot.items()).filteredOn(item -> item.sourceType() == StoryContextSourceType.TARGET_TEXT)
+                .singleElement().satisfies(item -> {
+                    assertThat(item.required()).isTrue();
+                    assertThat(item.content()).contains("候选八正文");
+                });
+        assertThat(snapshot.toMessages()).extracting(message -> message.content())
+                .contains("只属于候选八的问题", "只属于候选八的建议", "分析人物为什么停下")
+                .noneMatch(content -> content.contains("另一份正式正文")
+                        || content.contains("candidate:8"));
+    }
+
+    @Test
+    void proseProfilePrioritizesSettingsMentionedByCurrentObject() {
+        WorkEntity work = new WorkEntity();
+        work.setId(1L);
+        work.setTitle("星际冒险");
+        work.setDeleted(0);
+        ChapterEntity chapter = chapter(2L, 1L);
+        ChapterConversationEntity conversation = conversation(3L, 1L, 2L);
+        ChapterConversationMessageEntity current = message(12L, 3L, 2L, "阿澈为何不能启动跃迁门？");
+        SettingEntryEntity relevant = setting(20L, "跃迁门", "必须由双人同时授权");
+        SettingEntryEntity unrelated = setting(21L, "农业区", "只种植耐寒作物");
+        when(workMapper.selectById(1L)).thenReturn(work);
+        when(chapterMapper.selectById(2L)).thenReturn(chapter);
+        when(conversationMapper.selectById(3L)).thenReturn(conversation);
+        when(messageMapper.selectById(12L)).thenReturn(current);
+        when(settingMapper.selectList(any())).thenReturn(List.of(unrelated, relevant));
+
+        StoryContextSnapshot snapshot = engine.build(new StoryContextBuildCommand(
+                StoryContextProfile.PROSE_DISCUSSION, 1L, 2L, 3L, 12L,
+                "分析当前正文", current.getContent(), "当前正文出现跃迁门", 4096, 512));
+
+        List<StoryContextItem> settings = snapshot.items().stream()
+                .filter(item -> item.sourceType() == StoryContextSourceType.SETTING_ENTRY)
+                .toList();
+        assertThat(settings).extracting(StoryContextItem::content)
+                .contains("【当前有效的作品资料】跃迁门：必须由双人同时授权");
+        assertThat(settings.stream().filter(item -> item.content().contains("跃迁门")).findFirst().orElseThrow()
+                .priority()).isGreaterThan(settings.stream().filter(item -> item.content().contains("农业区"))
+                        .findFirst().orElseThrow().priority());
+    }
+
+    @Test
+    void proseProfileTrimsOnlyWholeFrozenConversationTurns() {
+        WorkEntity work = new WorkEntity();
+        work.setId(1L);
+        work.setTitle("星际冒险");
+        work.setDeleted(0);
+        ChapterEntity chapter = chapter(2L, 1L);
+        ChapterConversationEntity conversation = conversation(3L, 1L, 2L);
+        conversation.setConversationType("prose_object");
+        ChapterConversationMessageEntity current = message(99L, 3L, 2L, "只回答最后一个问题");
+        when(workMapper.selectById(1L)).thenReturn(work);
+        when(chapterMapper.selectById(2L)).thenReturn(chapter);
+        when(conversationMapper.selectById(3L)).thenReturn(conversation);
+        when(messageMapper.selectById(99L)).thenReturn(current);
+        List<StoryContextConversationTurn> turns = new ArrayList<>();
+        for (int index = 0; index < 16; index++) {
+            turns.add(new StoryContextConversationTurn(
+                    "作者冻结轮次" + index + "：" + "前情".repeat(80),
+                    "助手冻结轮次" + index + "：" + "分析".repeat(80)));
+        }
+
+        StoryContextSnapshot snapshot = engine.build(new StoryContextBuildCommand(
+                StoryContextProfile.PROSE_DISCUSSION, 1L, 2L, 3L, 99L,
+                "分析当前候选正文", current.getContent(), "作者当前保存的正文：候选正文",
+                1536, 512, null, null, null, turns));
+
+        List<StoryContextItem> history = snapshot.items().stream()
+                .filter(item -> item.sourceType() == StoryContextSourceType.CONVERSATION_TURN)
+                .toList();
+        assertThat(history).isNotEmpty().hasSizeLessThan(turns.size() * 2).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(history.size()).isEven();
+        for (int index = 0; index < history.size(); index += 2) {
+            assertThat(history.get(index).messageRole()).isEqualTo("USER");
+            assertThat(history.get(index + 1).messageRole()).isEqualTo("ASSISTANT");
+            assertThat(history.get(index).sourceId().replace(":user", ""))
+                    .isEqualTo(history.get(index + 1).sourceId().replace(":assistant", ""));
+        }
+        assertThat(snapshot.toMessages()).extracting(message -> message.content())
+                .contains("只回答最后一个问题")
+                .anyMatch(content -> content.contains("作者当前保存的正文：候选正文"));
+    }
+
+    private SettingEntryEntity setting(Long id, String name, String content) {
+        SettingEntryEntity setting = new SettingEntryEntity();
+        setting.setId(id);
+        setting.setWorkId(1L);
+        setting.setName(name);
+        setting.setContent(content);
+        setting.setEntryStatus("active");
+        setting.setDeleted(0);
+        setting.setVersion(1);
+        return setting;
     }
 
     private ChapterEntity chapter(Long id, Long workId) {

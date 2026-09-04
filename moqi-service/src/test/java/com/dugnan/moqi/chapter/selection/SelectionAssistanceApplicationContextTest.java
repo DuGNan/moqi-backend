@@ -23,6 +23,8 @@ import com.dugnan.moqi.chapter.mapper.ChapterProseCandidateMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterSelectionAssistanceMapper;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.service.ProseObjectConversationService;
+import com.dugnan.moqi.chapter.service.ProseObjectPromptContextService;
+import com.dugnan.moqi.context.StoryContextTaskBindingService;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
@@ -123,6 +125,16 @@ class SelectionAssistanceApplicationContextTest {
         @Bean
         ProseObjectConversationService proseObjectConversationService() {
             return mock(ProseObjectConversationService.class);
+        }
+
+        @Bean
+        ProseObjectPromptContextService proseObjectPromptContextService() {
+            return mock(ProseObjectPromptContextService.class);
+        }
+
+        @Bean
+        StoryContextTaskBindingService storyContextTaskBindingService() {
+            return mock(StoryContextTaskBindingService.class);
         }
 
         @Bean

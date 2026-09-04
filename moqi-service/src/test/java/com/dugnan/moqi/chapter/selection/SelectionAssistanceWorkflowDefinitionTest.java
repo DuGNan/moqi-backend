@@ -25,6 +25,10 @@ import com.dugnan.moqi.llm.LlmProviderFactory;
 import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.llm.LlmResponse;
 import com.dugnan.moqi.llm.LlmRole;
+import com.dugnan.moqi.context.StoryContextItem;
+import com.dugnan.moqi.context.StoryContextProfile;
+import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextAuthorityStatus;
 
 /**
  * @author dgn
@@ -215,6 +219,48 @@ class SelectionAssistanceWorkflowDefinitionTest {
         assertThat(request.getValue().messages().get(3).content())
                 .isEqualTo("本轮任务：按作者要求重写正文\n需要处理的正文：原文")
                 .doesNotContain("operation", "targetKind", "requestStatus");
+    }
+
+    @Test
+    void sendsBoundObjectSnapshotInsteadOfMixingAnotherConversationHistory() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        SelectionAssistanceServiceImpl service = mock(SelectionAssistanceServiceImpl.class);
+        LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
+        UserConfigService configService = mock(UserConfigService.class);
+        LlmProvider provider = mock(LlmProvider.class);
+        when(configService.requireAvailableExecutionConfig()).thenReturn(mock(LlmExecutionConfig.class));
+        when(providerFactory.createObserved(any(), any())).thenReturn(provider);
+        when(service.operation(9L)).thenReturn("rewrite");
+        when(service.sourceFingerprint(9L)).thenReturn("f".repeat(64));
+        StoryContextSnapshot snapshot = new StoryContextSnapshot(
+                21L, "prose", 1L, 2L, 3L, StoryContextProfile.PROSE_DISCUSSION,
+                2, 1L, 16384, 4096, 12288, 20, "snapshot-hash",
+                List.of(
+                        item("SYSTEM", "当前作者确认的章节要求"),
+                        item("USER", "当前候选自己的上一轮问题"),
+                        item("ASSISTANT", "当前候选自己的上一轮建议"),
+                        item("USER", "请重写这一段")),
+                List.of(), null);
+        when(service.buildModelContext(org.mockito.ArgumentMatchers.eq(9L),
+                org.mockito.ArgumentMatchers.eq(provider), any())).thenReturn(snapshot);
+        when(provider.generate(any())).thenReturn(new LlmResponse(null,
+                objectMapper.readTree("{\"replacement\":\"候选\",\"factRisk\":\"safe\",\"factRiskReasons\":[]}"), null));
+        SelectionAssistanceWorkflowDefinition workflow = new SelectionAssistanceWorkflowDefinition(
+                service, providerFactory, configService, objectMapper);
+
+        workflow.execute(SelectionAssistanceServiceImpl.GENERATE_STEP, context());
+
+        ArgumentCaptor<LlmRequest> request = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).generate(request.capture());
+        assertThat(request.getValue().messages()).extracting(message -> message.content())
+                .containsExactly("当前作者确认的章节要求", "当前候选自己的上一轮问题",
+                        "当前候选自己的上一轮建议", "请重写这一段")
+                .doesNotContain("其他候选历史");
+    }
+
+    private StoryContextItem item(String role, String content) {
+        return new StoryContextItem(null, "source", null, null, role, content,
+                true, 1, 1, 1, 1, "INCLUDED", StoryContextAuthorityStatus.EVIDENCE);
     }
 
     private AgentStepExecutionContext context() {

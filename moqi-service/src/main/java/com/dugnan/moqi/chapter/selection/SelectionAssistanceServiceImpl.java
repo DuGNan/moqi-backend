@@ -11,6 +11,7 @@ import java.util.Set;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
@@ -47,12 +48,21 @@ import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.TextDiff;
 import com.dugnan.moqi.chapter.selection.SelectionAssistanceModels.View;
 import com.dugnan.moqi.chapter.service.ChapterGenerationBriefService;
 import com.dugnan.moqi.chapter.service.ProseObjectConversationService;
+import com.dugnan.moqi.chapter.service.ProseObjectPromptContextService;
+import com.dugnan.moqi.chapter.service.ProseObjectPromptContextService.FrozenProseObjectContext;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.api.PublicFailure;
 import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
+import com.dugnan.moqi.context.StoryContextBuildCommand;
+import com.dugnan.moqi.context.StoryContextConversationTurn;
+import com.dugnan.moqi.context.ModelVisibleStructuredContent;
+import com.dugnan.moqi.context.StoryContextProfile;
+import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextTaskBindingService;
+import com.dugnan.moqi.llm.LlmProvider;
 
 /**
  * @author dgn
@@ -87,6 +97,9 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             OPERATION_DISCUSS, "rewrite", "polish", "expand", "compress");
     private static final int ADJACENT_LIMIT = 800;
     private static final int MAX_HISTORY_MESSAGES = 24;
+    private static final int CONVERSATION_PAIR_SIZE = 2;
+    private static final int DEFAULT_CONTEXT_WINDOW_TOKENS = 32768;
+    private static final int OUTPUT_RESERVE_TOKENS = 4096;
 
     private final ChapterMapper chapterMapper;
     private final ChapterSelectionAssistanceMapper assistanceMapper;
@@ -100,6 +113,8 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private ChapterConversationMessageMapper messageMapper;
     private ProsePlanningChangeService planningChangeService;
     private ProseObjectConversationService proseObjectConversationService;
+    private ProseObjectPromptContextService proseObjectPromptContextService;
+    private StoryContextTaskBindingService contextBindingService;
 
     public SelectionAssistanceServiceImpl(
             ChapterMapper chapterMapper,
@@ -137,12 +152,36 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             ChapterConversationMessageMapper messageMapper,
             ProsePlanningChangeService planningChangeService,
             ProseObjectConversationService proseObjectConversationService) {
+        setWorkspaceDependencies(candidateMapper, generationMapper, conversationMapper, messageMapper,
+                planningChangeService, proseObjectConversationService, null, null);
+    }
+
+    /** 接入正文对象提示词上下文和不可变 Story Context 快照。 */
+    @Autowired
+    public void setPromptContextDependencies(
+            ProseObjectPromptContextService proseObjectPromptContextService,
+            StoryContextTaskBindingService contextBindingService) {
+        this.proseObjectPromptContextService = proseObjectPromptContextService;
+        this.contextBindingService = contextBindingService;
+    }
+
+    private void setWorkspaceDependencies(
+            ChapterProseCandidateMapper candidateMapper,
+            ChapterGenerationMapper generationMapper,
+            ChapterConversationMapper conversationMapper,
+            ChapterConversationMessageMapper messageMapper,
+            ProsePlanningChangeService planningChangeService,
+            ProseObjectConversationService proseObjectConversationService,
+            ProseObjectPromptContextService proseObjectPromptContextService,
+            StoryContextTaskBindingService contextBindingService) {
         this.candidateMapper = candidateMapper;
         this.generationMapper = generationMapper;
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
         this.planningChangeService = planningChangeService;
         this.proseObjectConversationService = proseObjectConversationService;
+        this.proseObjectPromptContextService = proseObjectPromptContextService;
+        this.contextBindingService = contextBindingService;
     }
 
     @Override
@@ -203,7 +242,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             String fingerprint,
             PlanningContext planningContext,
             ConversationContext conversationContext) {
-        AiTaskEntity task = createTask(chapter, request, fingerprint);
+        AiTaskEntity task = createTask(chapter, request, fingerprint, conversationContext);
         ChapterSelectionAssistanceEntity entity = createAssistanceEntity(
                 chapter, request, idempotencyKey, parent, target, createdCandidate, brief, fingerprint,
                 planningContext, conversationContext, task.getId());
@@ -215,13 +254,23 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         return get(entity.getId());
     }
 
-    private AiTaskEntity createTask(ChapterEntity chapter, CreateRequest request, String fingerprint) {
+    private AiTaskEntity createTask(
+            ChapterEntity chapter,
+            CreateRequest request,
+            String fingerprint,
+            ConversationContext conversationContext) {
         AiTaskEntity task = new AiTaskEntity();
         task.setTaskType(WORKFLOW_TYPE);
         task.setTaskStatus(STATUS_QUEUED);
         task.setWorkId(chapter.getWorkId());
         task.setChapterId(chapter.getId());
-        task.setTaskInputJson(json(Map.of("inputFingerprint", fingerprint, "operation", request.operation())));
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("inputFingerprint", fingerprint);
+        input.put("operation", request.operation());
+        if (conversationContext != null && StringUtils.hasText(conversationContext.modelText())) {
+            input.put("proseObjectContext", conversationContext.modelText());
+        }
+        task.setTaskInputJson(json(input));
         task.setDeleted(0);
         task.setVersion(0);
         taskMapper.insert(task);
@@ -466,7 +515,115 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                     .append(json(planningContext.scenes())).append('\n');
         }
         prompt.append("所有正文和规划输出都只是候选，不得宣称已经保存、确认或发布。");
+        appendFrozenObjectContext(prompt, entity, requireTaskInput(entity));
         return prompt.toString();
+    }
+
+    /** 为正文对象协助创建或复用完整的模型消息快照。 */
+    public StoryContextSnapshot buildModelContext(
+            Long requestId,
+            LlmProvider provider,
+            String taskInstruction) {
+        ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
+        if (!isTargetAssistance(entity) || contextBindingService == null) {
+            return null;
+        }
+        ChapterConversationMessageEntity current = entity.getUserMessageId() == null
+                ? null : messageMapper.selectById(entity.getUserMessageId());
+        AiTaskEntity task = taskMapper.selectById(entity.getAiTaskId());
+        if (current == null || task == null) {
+            throw new IllegalStateException("正文对象协助缺少当前消息或 AI 任务");
+        }
+        int contextWindow = provider.capabilities().maxContextTokens() == null
+                ? DEFAULT_CONTEXT_WINDOW_TOKENS : provider.capabilities().maxContextTokens();
+        int outputReserve = provider.capabilities().maxOutputTokens() == null
+                ? OUTPUT_RESERVE_TOKENS : Math.min(OUTPUT_RESERVE_TOKENS,
+                        provider.capabilities().maxOutputTokens());
+        outputReserve = Math.min(outputReserve, Math.max(0, contextWindow - 1));
+        return contextBindingService.buildAndAttach(new StoryContextBuildCommand(
+                StoryContextProfile.PROSE_DISCUSSION,
+                entity.getWorkId(),
+                entity.getChapterId(),
+                entity.getConversationId(),
+                current.getId(),
+                taskInstruction,
+                current.getContent(),
+                modelMaterial(entity, task),
+                contextWindow,
+                outputReserve,
+                null,
+                null,
+                null,
+                frozenTurns(modelHistory(requestId))), task);
+    }
+
+    private List<StoryContextConversationTurn> frozenTurns(List<ConversationHistoryMessage> history) {
+        List<StoryContextConversationTurn> turns = new java.util.ArrayList<>();
+        for (int index = 0; index + 1 < history.size(); index += CONVERSATION_PAIR_SIZE) {
+            ConversationHistoryMessage user = history.get(index);
+            ConversationHistoryMessage assistant = history.get(index + 1);
+            if (!ROLE_USER.equals(user.role()) || !ROLE_ASSISTANT.equals(assistant.role())) {
+                throw new IllegalStateException("正文对象会话历史没有保持完整轮次");
+            }
+            turns.add(new StoryContextConversationTurn(user.content(), assistant.content()));
+        }
+        return List.copyOf(turns);
+    }
+
+    private void appendFrozenObjectContext(
+            StringBuilder prompt,
+            ChapterSelectionAssistanceEntity entity,
+            JsonNode taskInput) {
+        if (!isTargetAssistance(entity)) {
+            return;
+        }
+        String frozen = taskInput == null ? null : taskInput.path("proseObjectContext").asText(null);
+        if (StringUtils.hasText(frozen)) {
+            prompt.append("\n\n").append(frozen);
+            return;
+        }
+        if (proseObjectPromptContextService == null) {
+            return;
+        }
+        FrozenProseObjectContext context = proseObjectPromptContextService.freeze(
+                entity.getChapterId(), entity.getTargetObjectId(), null);
+        prompt.append("\n\n").append(context.modelText());
+    }
+
+    private String modelMaterial(ChapterSelectionAssistanceEntity entity, AiTaskEntity task) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("需要处理的正文：\n").append(sourceText(entity)).append("\n\n");
+        prompt.append("正文前方的有限上下文：\n").append(entity.getAdjacentBefore()).append("\n\n");
+        prompt.append("正文后方的有限上下文：\n").append(entity.getAdjacentAfter()).append("\n\n");
+        prompt.append("当前有效的章节叙事要求：\n")
+                .append(ModelVisibleStructuredContent.render(objectMapper, entity.getBriefContent()))
+                .append("\n\n");
+        PlanningContext planningContext = readPlanningContext(entity);
+        if (planningContext == null) {
+            prompt.append("当前没有可用的权威场景规划，因此本轮不得返回规划提案。\n");
+        } else {
+            prompt.append("当前权威场景规划摘要：\n").append(planningContext.beforeSummary()).append("\n\n");
+            prompt.append("当前完整场景规划：\n")
+                    .append(ModelVisibleStructuredContent.render(objectMapper, json(planningContext.scenes())))
+                    .append('\n');
+        }
+        appendFrozenObjectContext(prompt, entity, readTaskInput(task));
+        return prompt.toString();
+    }
+
+    private JsonNode requireTaskInput(ChapterSelectionAssistanceEntity entity) {
+        return readTaskInput(taskMapper.selectById(entity.getAiTaskId()));
+    }
+
+    private JsonNode readTaskInput(AiTaskEntity task) {
+        if (task == null || !StringUtils.hasText(task.getTaskInputJson())) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(task.getTaskInputJson());
+        } catch (Exception exception) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "选区协助任务快照无法读取", exception);
+        }
     }
 
     /** 返回创建 assistance 时冻结的当前正文对象会话历史。 */
@@ -661,6 +818,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         input.put("briefFingerprint", brief.fingerprint());
         input.put("planningContext", planningContext);
         input.put("conversationHistory", conversationContext == null ? List.of() : conversationContext.history());
+        input.put("proseObjectContext", conversationContext == null ? null : conversationContext.modelText());
         return hash(json(input));
     }
 
@@ -868,7 +1026,9 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 || !target.objectId().equals(conversation.getTargetObjectId())) {
             throw new IllegalStateException("正文对象会话无法读取");
         }
-        return new ConversationContext(conversation, freezeConversationHistory(conversation.getId()));
+        String modelText = proseObjectPromptContextService == null ? null
+                : proseObjectPromptContextService.freeze(chapter.getId(), target.objectId(), null).modelText();
+        return new ConversationContext(conversation, freezeConversationHistory(conversation.getId()), modelText);
     }
 
     private List<ConversationHistoryMessage> freezeConversationHistory(Long conversationId) {
@@ -879,15 +1039,20 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                         .in(ChapterConversationMessageEntity::getMessageRole, ROLE_USER, ROLE_ASSISTANT)
                         .orderByAsc(ChapterConversationMessageEntity::getGmtCreate)
                         .orderByAsc(ChapterConversationMessageEntity::getId));
-        List<ConversationHistoryMessage> available = messages.stream()
-                .filter(message -> StringUtils.hasText(message.getContent()))
-                .map(message -> new ConversationHistoryMessage(message.getMessageRole(), message.getContent()))
-                .toList();
-        int start = Math.max(0, available.size() - MAX_HISTORY_MESSAGES);
-        while (start < available.size() && !ROLE_USER.equals(available.get(start).role())) {
-            start++;
+        List<ConversationHistoryMessage> complete = new java.util.ArrayList<>();
+        for (int index = 0; index + 1 < messages.size(); index++) {
+            ChapterConversationMessageEntity user = messages.get(index);
+            ChapterConversationMessageEntity assistant = messages.get(index + 1);
+            if (!ROLE_USER.equals(user.getMessageRole()) || !ROLE_ASSISTANT.equals(assistant.getMessageRole())
+                    || !StringUtils.hasText(user.getContent()) || !StringUtils.hasText(assistant.getContent())) {
+                continue;
+            }
+            complete.add(new ConversationHistoryMessage(ROLE_USER, user.getContent()));
+            complete.add(new ConversationHistoryMessage(ROLE_ASSISTANT, assistant.getContent()));
+            index++;
         }
-        return List.copyOf(available.subList(start, available.size()));
+        int start = Math.max(0, complete.size() - MAX_HISTORY_MESSAGES);
+        return List.copyOf(complete.subList(start, complete.size()));
     }
 
     private String conversationUserContent(ChapterSelectionAssistanceEntity assistance) {
@@ -1189,6 +1354,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
 
     private record ConversationContext(
             ChapterConversationEntity conversation,
-            List<ConversationHistoryMessage> history) {
+            List<ConversationHistoryMessage> history,
+            String modelText) {
     }
 }

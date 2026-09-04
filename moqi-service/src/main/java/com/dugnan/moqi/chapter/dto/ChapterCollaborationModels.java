@@ -145,7 +145,8 @@ public final class ChapterCollaborationModels {
             ReplyControlRequest replyControl,
             Long referencedMessageId,
             MessageInteractionResponse interactionResponse,
-            String clientMessageId) {
+            String clientMessageId,
+            ProseDraftRequest proseDraft) {
 
         public SendMessageRequest(
                 String messageRole,
@@ -153,7 +154,7 @@ public final class ChapterCollaborationModels {
                 Boolean createAiTask,
                 DiscussionFocusRequest discussionFocus,
                 ReplyControlRequest replyControl) {
-            this(messageRole, content, createAiTask, discussionFocus, replyControl, null, null, null);
+            this(messageRole, content, createAiTask, discussionFocus, replyControl, null, null, null, null);
         }
 
         public SendMessageRequest(
@@ -163,7 +164,8 @@ public final class ChapterCollaborationModels {
                 DiscussionFocusRequest discussionFocus,
                 ReplyControlRequest replyControl,
                 Long referencedMessageId) {
-            this(messageRole, content, createAiTask, discussionFocus, replyControl, referencedMessageId, null, null);
+            this(messageRole, content, createAiTask, discussionFocus, replyControl, referencedMessageId, null, null,
+                    null);
         }
 
         /**
@@ -174,7 +176,7 @@ public final class ChapterCollaborationModels {
          * @param createAiTask 是否创建 AI 回复任务
          */
         public SendMessageRequest(String messageRole, String content, Boolean createAiTask) {
-            this(messageRole, content, createAiTask, null, null, null, null, null);
+            this(messageRole, content, createAiTask, null, null, null, null, null, null);
         }
 
         /**
@@ -190,7 +192,7 @@ public final class ChapterCollaborationModels {
                 String content,
                 Boolean createAiTask,
                 DiscussionFocusRequest discussionFocus) {
-            this(messageRole, content, createAiTask, discussionFocus, null, null, null, null);
+            this(messageRole, content, createAiTask, discussionFocus, null, null, null, null, null);
         }
 
         public SendMessageRequest(
@@ -202,8 +204,32 @@ public final class ChapterCollaborationModels {
                 Long referencedMessageId,
                 MessageInteractionResponse interactionResponse) {
             this(messageRole, content, createAiTask, discussionFocus, replyControl,
-                    referencedMessageId, interactionResponse, null);
+                    referencedMessageId, interactionResponse, null, null);
         }
+
+        /** 保留只新增客户端消息幂等键的兼容构造入口。 */
+        public SendMessageRequest(
+                String messageRole,
+                String content,
+                Boolean createAiTask,
+                DiscussionFocusRequest discussionFocus,
+                ReplyControlRequest replyControl,
+                Long referencedMessageId,
+                MessageInteractionResponse interactionResponse,
+                String clientMessageId) {
+            this(messageRole, content, createAiTask, discussionFocus, replyControl,
+                    referencedMessageId, interactionResponse, clientMessageId, null);
+        }
+    }
+
+    /**
+     * 正文对象讨论时可选的未保存编辑器草稿。
+     *
+     * @param baseVersion 草稿对应的已保存正文版本
+     * @param baseContentHash 草稿对应的已保存正文哈希
+     * @param content 未保存草稿全文
+     */
+    public record ProseDraftRequest(Integer baseVersion, String baseContentHash, String content) {
     }
 
     public record MessageInteraction(

@@ -675,6 +675,7 @@ class ConversationReplyTaskRunnerTest {
         ArgumentCaptor<StoryContextBuildCommand> commandCaptor =
                 ArgumentCaptor.forClass(StoryContextBuildCommand.class);
         verify(contextBindingService).buildAndAttach(commandCaptor.capture(), any(AiTaskEntity.class));
+        assertThat(commandCaptor.getValue().profile()).isEqualTo(StoryContextProfile.PROSE_DISCUSSION);
         assertThat(commandCaptor.getValue().targetText())
                 .contains("当前讨论对象：候选 1", "来源：正式正文的有界改写", "正文：冻结候选内容");
         ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
