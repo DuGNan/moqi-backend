@@ -134,6 +134,48 @@ class ReplyPolicyPreferenceServiceImplTest {
                                 .isEqualTo(ErrorCode.AI_TASK_STATE_CONFLICT));
     }
 
+    /**
+     * 自动状态重新选择具体档位时复活软删除记录，并继续递增服务端版本。
+     */
+    @Test
+    void reactivatesDeletedPreferenceFromAutomaticState() {
+        ReplyPolicyPreferenceEntity deleted = preference("conversation", 8L, "brief");
+        deleted.setId(9L);
+        deleted.setDeleted(1);
+        deleted.setVersion(4);
+        stubValidConversationHierarchy();
+        when(preferenceMapper.selectOne(any())).thenReturn(null);
+        when(preferenceMapper.selectDeletedForUpdate("local-user", "conversation", 8L))
+                .thenReturn(deleted);
+        when(preferenceMapper.reactivateDeleted(9L, "local-user", "deep", 4)).thenReturn(1);
+
+        ReplyPolicyPreferenceModels.PreferenceDetail detail = service().save(
+                new PreferenceRequest("conversation", 8L, "deep", 0));
+
+        assertThat(detail.replyDepth()).isEqualTo("deep");
+        assertThat(detail.version()).isEqualTo(5);
+        assertThat(deleted.getDeleted()).isZero();
+    }
+
+    /**
+     * 再次切回自动前清除旧墓碑，使当前记录能够安全软删除。
+     */
+    @Test
+    void removesOldTombstoneBeforeRepeatedClear() {
+        ReplyPolicyPreferenceEntity existing = preference("conversation", 8L, "deep");
+        existing.setId(10L);
+        existing.setVersion(5);
+        stubValidConversationHierarchy();
+        when(preferenceMapper.selectOne(any())).thenReturn(existing);
+        when(preferenceMapper.deleteDeletedByScope("local-user", "conversation", 8L)).thenReturn(1);
+        when(preferenceMapper.update(any(), any())).thenReturn(1);
+
+        service().clear("conversation", 8L, 5);
+
+        org.mockito.Mockito.verify(preferenceMapper)
+                .deleteDeletedByScope("local-user", "conversation", 8L);
+    }
+
     private ReplyPolicyPreferenceServiceImpl service() {
         return new ReplyPolicyPreferenceServiceImpl(
                 preferenceMapper,
