@@ -502,8 +502,10 @@ public class ConversationReplyTaskRunner {
         }
         int inputReserve = Math.min(MIN_INPUT_RESERVE_TOKENS, contextWindow - 1);
         outputReserve = Math.min(outputReserve, contextWindow - inputReserve);
+        StoryContextProfile profile = StringUtils.hasText(taskInput.proseObjectId())
+                ? StoryContextProfile.PROSE_DISCUSSION : StoryContextProfile.CHAPTER_DISCUSSION;
         return contextBindingService.buildAndAttach(new StoryContextBuildCommand(
-                StoryContextProfile.CHAPTER_DISCUSSION,
+                profile,
                 task.getWorkId(),
                 task.getChapterId(),
                 input.getConversationId(),

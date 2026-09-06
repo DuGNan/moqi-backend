@@ -28,6 +28,7 @@ import com.dugnan.moqi.llm.LlmRequest;
 import com.dugnan.moqi.llm.LlmResponse;
 import com.dugnan.moqi.llm.LlmResponseFormat;
 import com.dugnan.moqi.llm.LlmRole;
+import com.dugnan.moqi.context.StoryContextSnapshot;
 
 /**
  * @author dgn
@@ -39,7 +40,7 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
 
     private static final String ROLE_USER = "user";
 
-    private static final String TEMPLATE_VERSION = "selection-assistance-v2";
+    private static final String TEMPLATE_VERSION = "selection-assistance-v3";
     private static final String OPERATION_DISCUSS = "discuss";
     private static final String HIDDEN_REASONING_FIELD = "reasoning";
     private static final String CHAIN_OF_THOUGHT_FIELD = "chainOfThought";
@@ -102,8 +103,23 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
                         .promptTemplateVersion(TEMPLATE_VERSION)
                         .sourceFingerprint(assistanceService.sourceFingerprint(assistanceId))
                         .build());
+        String instruction = systemInstruction(operation);
+        StoryContextSnapshot snapshot = assistanceService.buildModelContext(assistanceId, provider, instruction);
+        List<LlmMessage> messages = snapshot == null
+                ? legacyMessages(assistanceId, instruction) : snapshot.toMessages();
+        LlmResponse response = provider.generate(new LlmRequest(messages,
+                new LlmOptions(snapshot == null ? 4096 : snapshot.outputReserveTokens(),
+                        null, List.of(), LlmResponseFormat.JSON_OBJECT)));
+        ParsedResult parsed = parse(operation, response == null ? null : response.structuredContent());
+        assistanceService.complete(assistanceId, parsed.content(), parsed.factRisk(), parsed.reasons(),
+                parsed.planningProposal(), logicalCallRef);
+        return AgentStepResult.completed(Map.of("assistanceId", assistanceId, "operation", operation),
+                Map.of("assistanceId", assistanceId), null);
+    }
+
+    private List<LlmMessage> legacyMessages(Long assistanceId, String instruction) {
         List<LlmMessage> messages = new ArrayList<>();
-        messages.add(new LlmMessage(LlmRole.SYSTEM, systemInstruction(operation)));
+        messages.add(new LlmMessage(LlmRole.SYSTEM, instruction));
         List<ConversationHistoryMessage> history = assistanceService.modelHistory(assistanceId);
         if (history != null) {
             history.forEach(message -> messages.add(new LlmMessage(
@@ -111,13 +127,7 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
                     message.content())));
         }
         messages.add(new LlmMessage(LlmRole.USER, assistanceService.modelPrompt(assistanceId)));
-        LlmResponse response = provider.generate(new LlmRequest(messages,
-                new LlmOptions(4096, null, List.of(), LlmResponseFormat.JSON_OBJECT)));
-        ParsedResult parsed = parse(operation, response == null ? null : response.structuredContent());
-        assistanceService.complete(assistanceId, parsed.content(), parsed.factRisk(), parsed.reasons(),
-                parsed.planningProposal(), logicalCallRef);
-        return AgentStepResult.completed(Map.of("assistanceId", assistanceId, "operation", operation),
-                Map.of("assistanceId", assistanceId), null);
+        return messages;
     }
 
     @Override

@@ -39,7 +39,9 @@ class ProseObjectTargetServiceImplTest {
         assertThat(target.objectKind()).isEqualTo("formal");
         assertThat(target.content()).isEqualTo("正式正文");
         assertThat(target.contentHash()).hasSize(64);
-        assertThat(target.promptText()).contains("当前讨论对象：正式正文", "当前正文：");
+        assertThat(target.promptText())
+                .contains("当前讨论对象：正式正文", "作者当前保存的正文")
+                .doesNotContain("hash", "当前保存版本", "formal:2");
     }
 
     @Test

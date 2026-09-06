@@ -47,6 +47,9 @@ import com.dugnan.moqi.chapter.policy.ResolvedReplyPolicy;
 import com.dugnan.moqi.chapter.service.ChapterCollaborationService;
 import com.dugnan.moqi.chapter.service.ProseObjectTargetService;
 import com.dugnan.moqi.chapter.service.ProseObjectTargetService.ProseObjectTarget;
+import com.dugnan.moqi.chapter.service.ProseObjectPromptContextService;
+import com.dugnan.moqi.chapter.service.ProseObjectPromptContextService.FrozenProseObjectContext;
+import com.dugnan.moqi.chapter.service.ProseObjectPromptContextService.ProseObjectDraft;
 import com.dugnan.moqi.chapter.stream.ConversationReplyTaskSubmittedEvent;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -93,6 +96,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
     private final ReplyPolicyPreferenceService replyPolicyService;
     private final ObjectMapper objectMapper;
     private final ProseObjectTargetService proseObjectTargetService;
+    private final ProseObjectPromptContextService proseObjectPromptContextService;
 
     /**
      * 创建章节共创服务。
@@ -124,6 +128,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 outlineMapper,
                 aiTaskMapper,
                 eventPublisher,
+                null,
                 null,
                 null,
                 null,
@@ -166,6 +171,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 focusResolver,
                 null,
                 null,
+                null,
                 null);
     }
 
@@ -199,11 +205,10 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             ReplyPolicyPreferenceService replyPolicyService,
             ObjectMapper objectMapper) {
         this(workMapper, chapterMapper, conversationMapper, messageMapper, briefMapper, outlineMapper,
-                aiTaskMapper, eventPublisher, focusResolver, impactService, replyPolicyService, objectMapper, null);
+                aiTaskMapper, eventPublisher, focusResolver, impactService, replyPolicyService, objectMapper, null, null);
     }
 
-    /** 创建完整接入对象级正文目标解析的章节共创服务。 */
-    @Autowired
+    /** 保留只接入对象级正文目标解析器的兼容构造入口。 */
     public ChapterCollaborationServiceImpl(
             WorkMapper workMapper,
             ChapterMapper chapterMapper,
@@ -218,6 +223,28 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             ReplyPolicyPreferenceService replyPolicyService,
             ObjectMapper objectMapper,
             ProseObjectTargetService proseObjectTargetService) {
+        this(workMapper, chapterMapper, conversationMapper, messageMapper, briefMapper, outlineMapper,
+                aiTaskMapper, eventPublisher, focusResolver, impactService, replyPolicyService, objectMapper,
+                proseObjectTargetService, null);
+    }
+
+    /** 创建完整接入对象级正文提示词上下文的章节共创服务。 */
+    @Autowired
+    public ChapterCollaborationServiceImpl(
+            WorkMapper workMapper,
+            ChapterMapper chapterMapper,
+            ChapterConversationMapper conversationMapper,
+            ChapterConversationMessageMapper messageMapper,
+            ChapterBriefMapper briefMapper,
+            ChapterOutlineQueryMapper outlineMapper,
+            AiTaskMapper aiTaskMapper,
+            ApplicationEventPublisher eventPublisher,
+            ChapterDiscussionFocusResolver focusResolver,
+            ChapterConsensusImpactService impactService,
+            ReplyPolicyPreferenceService replyPolicyService,
+            ObjectMapper objectMapper,
+            ProseObjectTargetService proseObjectTargetService,
+            ProseObjectPromptContextService proseObjectPromptContextService) {
         this.workMapper = workMapper;
         this.chapterMapper = chapterMapper;
         this.conversationMapper = conversationMapper;
@@ -231,6 +258,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
         this.replyPolicyService = replyPolicyService;
         this.objectMapper = objectMapper;
         this.proseObjectTargetService = proseObjectTargetService;
+        this.proseObjectPromptContextService = proseObjectPromptContextService;
     }
 
     @Override
@@ -339,7 +367,8 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             aiTask.setChapterId(conversation.getChapterId());
             aiTask.setResultMessageId(null);
             aiTask.setTaskInputJson(taskInputJson(replyTaskInput(
-                    message.getId(), conversation, policy, continuationMessageId)));
+                    message.getId(), conversation, policy, continuationMessageId,
+                    request == null ? null : request.proseDraft())));
             aiTask.setDeleted(0);
             aiTask.setVersion(0);
             aiTaskMapper.insert(aiTask);
@@ -375,16 +404,42 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
             Long messageId,
             ChapterConversationEntity conversation,
             ResolvedReplyPolicy policy,
-            Long continuationMessageId) {
+            Long continuationMessageId,
+            com.dugnan.moqi.chapter.dto.ChapterCollaborationModels.ProseDraftRequest draftRequest) {
         if (!StringUtils.hasText(conversation.getTargetObjectId())) {
+            if (draftRequest != null) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "未保存正文草稿只能用于正文对象会话");
+            }
             return ConversationReplyTaskInputV1.from(
                     messageId, conversation.getId(), policy, continuationMessageId);
         }
-        if (proseObjectTargetService == null) {
-            throw new IllegalStateException("正文对象会话目标解析器不可用");
+        if (proseObjectPromptContextService == null) {
+            if (draftRequest != null) {
+                throw new IllegalStateException("正文对象提示词上下文服务不可用");
+            }
+            if (proseObjectTargetService == null) {
+                throw new IllegalStateException("正文对象会话目标解析器不可用");
+            }
+            ProseObjectTarget target = proseObjectTargetService.resolve(
+                    conversation.getChapterId(), conversation.getTargetObjectId());
+            return proseObjectTaskInput(messageId, conversation, policy, continuationMessageId,
+                    target, target.promptText());
         }
-        ProseObjectTarget target = proseObjectTargetService.resolve(
-                conversation.getChapterId(), conversation.getTargetObjectId());
+        ProseObjectDraft draft = draftRequest == null ? null : new ProseObjectDraft(
+                draftRequest.baseVersion(), draftRequest.baseContentHash(), draftRequest.content());
+        FrozenProseObjectContext context = proseObjectPromptContextService.freeze(
+                conversation.getChapterId(), conversation.getTargetObjectId(), draft);
+        return proseObjectTaskInput(messageId, conversation, policy, continuationMessageId,
+                context.target(), context.modelText());
+    }
+
+    private ConversationReplyTaskInputV1 proseObjectTaskInput(
+            Long messageId,
+            ChapterConversationEntity conversation,
+            ResolvedReplyPolicy policy,
+            Long continuationMessageId,
+            ProseObjectTarget target,
+            String modelText) {
         return ConversationReplyTaskInputV1.forProseObject(
                 messageId,
                 conversation.getId(),
@@ -393,7 +448,7 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 target.objectId(),
                 target.version(),
                 target.contentHash(),
-                target.promptText());
+                modelText);
     }
 
     private ResolvedReplyPolicy resolveReplyPolicy(

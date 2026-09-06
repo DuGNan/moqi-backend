@@ -8,6 +8,8 @@ package com.dugnan.moqi.context;
 public enum StoryContextProfile {
     /** 章节共创讨论。 */
     CHAPTER_DISCUSSION(4096, 15, 30, 20, 35),
+    /** 正式正文或单个候选的对象级讨论与修改。 */
+    PROSE_DISCUSSION(4096, 25, 25, 35, 15),
     /** 章节大纲调整候选生成。 */
     OUTLINE_ADJUSTMENT(4096, 30, 30, 30, 10),
     /** 场景规划候选生成。 */
