@@ -89,19 +89,17 @@ public class ReplyPolicyPreferenceServiceImpl implements ReplyPolicyPreferenceSe
         if (existing == null) {
             ReplyPolicyPreferenceEntity deleted = findDeleted(scope.type(), scope.id());
             if (deleted != null) {
-                if (request.baseVersion() == null || !request.baseVersion().equals(deleted.getVersion())) {
-                    throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "回复偏好已变化，请刷新后重试");
+                if (request.baseVersion() != null && request.baseVersion() != 0) {
+                    throw new BusinessException(ErrorCode.BAD_REQUEST, "自动状态下保存偏好的 baseVersion 必须为空或为 0");
                 }
-                int changed = preferenceMapper.update(null, new UpdateWrapper<ReplyPolicyPreferenceEntity>()
-                        .eq("id", deleted.getId()).eq("user_id", LOCAL_USER).eq("deleted", 1)
-                        .eq("version", deleted.getVersion()).set("deleted", 0)
-                        .set("reply_depth", depth.name().toLowerCase(Locale.ROOT))
-                        .set("version", deleted.getVersion() + 1));
+                String replyDepth = depth.name().toLowerCase(Locale.ROOT);
+                int changed = preferenceMapper.reactivateDeleted(
+                        deleted.getId(), LOCAL_USER, replyDepth, deleted.getVersion());
                 if (changed != 1) {
                     throw new BusinessException(ErrorCode.AI_TASK_STATE_CONFLICT, "回复偏好已变化，请刷新后重试");
                 }
                 deleted.setDeleted(0);
-                deleted.setReplyDepth(depth.name().toLowerCase(Locale.ROOT));
+                deleted.setReplyDepth(replyDepth);
                 deleted.setVersion(deleted.getVersion() + 1);
                 return detail(deleted);
             }
@@ -148,6 +146,7 @@ public class ReplyPolicyPreferenceServiceImpl implements ReplyPolicyPreferenceSe
         if (baseVersion == null || baseVersion < 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "清除偏好必须提交 baseVersion");
         }
+        preferenceMapper.deleteDeletedByScope(LOCAL_USER, scope.type(), scope.id());
         int changed = preferenceMapper.update(null, new UpdateWrapper<ReplyPolicyPreferenceEntity>()
                 .eq("id", existing.getId()).eq("user_id", LOCAL_USER).eq("deleted", 0)
                 .eq("version", baseVersion).set("deleted", 1).set("version", baseVersion + 1));
@@ -271,11 +270,7 @@ public class ReplyPolicyPreferenceServiceImpl implements ReplyPolicyPreferenceSe
     }
 
     private ReplyPolicyPreferenceEntity findDeleted(String scopeType, Long scopeId) {
-        return preferenceMapper.selectOne(new LambdaQueryWrapper<ReplyPolicyPreferenceEntity>()
-                .eq(ReplyPolicyPreferenceEntity::getUserId, LOCAL_USER)
-                .eq(ReplyPolicyPreferenceEntity::getScopeType, scopeType)
-                .eq(ReplyPolicyPreferenceEntity::getScopeId, scopeId)
-                .eq(ReplyPolicyPreferenceEntity::getDeleted, 1));
+        return preferenceMapper.selectDeletedForUpdate(LOCAL_USER, scopeType, scopeId);
     }
 
     private ReplyDepth requireDepth(String value) {
