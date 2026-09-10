@@ -27,6 +27,8 @@ class PublicFailureFactoryTest {
                 .isEqualTo(new PublicFailure("AGENT_EXECUTOR_REJECTED", "task_failure", true, "diag_task"));
         assertThat(PublicFailureFactory.from("SERVICE_UNAVAILABLE", "diag_retry"))
                 .isEqualTo(new PublicFailure("SERVICE_UNAVAILABLE", "service_unavailable", true, "diag_retry"));
+        assertThat(PublicFailureFactory.from("NETWORK", "diag_network"))
+                .isEqualTo(new PublicFailure("NETWORK", "service_unavailable", true, "diag_network"));
         assertThat(PublicFailureFactory.from("PROVIDER_RAW secret", "diag_internal"))
                 .isEqualTo(new PublicFailure("INTERNAL_ERROR", "internal", false, "diag_internal"));
     }

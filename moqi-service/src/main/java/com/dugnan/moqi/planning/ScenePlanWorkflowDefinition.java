@@ -163,7 +163,7 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
             if (LlmProviderError.INVALID_RESPONSE.equals(exception.getError())) {
                 throw new ScenePlanWorkflowException("SCENE_PLAN_JSON_INVALID", "json", "场景规划模型返回格式无效", exception);
             }
-            throw new ScenePlanWorkflowException("SCENE_PLAN_PROVIDER_FAILED", "provider", "场景规划模型调用失败", exception);
+            throw new ScenePlanWorkflowException(exception.getError().name(), "provider", "场景规划模型调用失败", exception);
         } catch (Exception exception) {
             throw new ScenePlanWorkflowException("SCENE_PLAN_PROVIDER_FAILED", "provider", "场景规划模型调用失败", exception);
         }
@@ -235,14 +235,14 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
 
     @Override
     public String errorCategory(Exception exception) {
-        return exception instanceof ScenePlanWorkflowException workflowException
-                ? workflowException.category() : "persistence";
+        ScenePlanWorkflowException workflowException = workflowException(exception);
+        return workflowException == null ? "persistence" : workflowException.category();
     }
 
     @Override
     public String errorCode(Exception exception) {
-        return exception instanceof ScenePlanWorkflowException workflowException
-                ? workflowException.code() : "SCENE_PLAN_PERSISTENCE_FAILED";
+        ScenePlanWorkflowException workflowException = workflowException(exception);
+        return workflowException == null ? "SCENE_PLAN_PERSISTENCE_FAILED" : workflowException.code();
     }
 
     @Override
@@ -251,8 +251,9 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
             return;
         }
         Long candidateId = candidateId(context);
-        String status = exception instanceof ScenePlanWorkflowException workflowException
-                && "SCENE_PLAN_SOURCE_STALE".equals(workflowException.code()) ? "stale" : STATUS_FAILED;
+        ScenePlanWorkflowException workflowException = workflowException(exception);
+        String status = workflowException != null && "SCENE_PLAN_SOURCE_STALE".equals(workflowException.code())
+                ? "stale" : STATUS_FAILED;
         planMapper.update(null, new UpdateWrapper<ChapterPlanVersionEntity>().eq("id", candidateId)
                 .eq("deleted", 0).eq("plan_status", STATUS_QUEUED).set("plan_status", status)
                 .set("validity_status", "stale".equals(status) ? "stale" : "current")
@@ -437,6 +438,20 @@ public class ScenePlanWorkflowDefinition implements AgentWorkflowDefinition {
 
     private boolean missingId(JsonNode id) {
         return id == null || id.isNull();
+    }
+
+    private ScenePlanWorkflowException workflowException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ScenePlanWorkflowException workflowException) {
+                return workflowException;
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     private void validateOutputShape(JsonNode structuredContent) {
