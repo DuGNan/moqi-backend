@@ -17,13 +17,14 @@ public final class PublicFailureFactory {
     private static final String CODE_FAILED_MARKER = "FAILED";
     private static final String CODE_INVALID_RESPONSE = "INVALID_RESPONSE";
     private static final String CODE_JSON_INVALID_SUFFIX = "_JSON_INVALID";
+    private static final String CODE_NETWORK = "NETWORK";
     private static final String CODE_RATE_LIMIT_MARKER = "RATE_LIMIT";
     private static final String CODE_TASK_PREFIX = "TASK_";
     private static final String CODE_TIMEOUT_MARKER = "TIMEOUT";
     private static final String CODE_UNAVAILABLE_MARKER = "UNAVAILABLE";
     private static final Set<String> RETRYABLE_CODES = Set.of(
             "MODEL_UNAVAILABLE", "PROVIDER_UNAVAILABLE", "TASK_QUEUE_FULL", "TIMEOUT",
-            "AGENT_RUN_TIMED_OUT", "AGENT_EXECUTOR_REJECTED", "RATE_LIMITED");
+            "AGENT_RUN_TIMED_OUT", "AGENT_EXECUTOR_REJECTED", "RATE_LIMITED", CODE_NETWORK);
     private static final Set<String> SAFE_DATA_KEYS = Set.of(
             "version", "expectedVersion", "currentVersion", "baseVersion", "latestVersion");
 
@@ -119,7 +120,8 @@ public final class PublicFailureFactory {
         try {
             return category(ErrorCode.valueOf(errorCode));
         } catch (IllegalArgumentException exception) {
-            if (errorCode.contains(CODE_UNAVAILABLE_MARKER) || errorCode.contains(CODE_RATE_LIMIT_MARKER)
+            if (CODE_NETWORK.equals(errorCode) || errorCode.contains(CODE_UNAVAILABLE_MARKER)
+                    || errorCode.contains(CODE_RATE_LIMIT_MARKER)
                     || errorCode.contains("QUEUE_FULL")) {
                 return "service_unavailable";
             }

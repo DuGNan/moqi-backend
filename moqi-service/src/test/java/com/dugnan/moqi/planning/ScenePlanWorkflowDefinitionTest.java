@@ -19,6 +19,7 @@ import org.mockito.ArgumentCaptor;
 
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepExecutionContext;
 import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentStepResult;
+import com.dugnan.moqi.agent.infrastructure.GraphAgentWorkflowInvoker;
 import com.dugnan.moqi.config.service.UserConfigService;
 import com.dugnan.moqi.chapter.outline.OutlineCandidateContentCodec;
 import com.dugnan.moqi.context.StoryContextSnapshot;
@@ -121,6 +122,19 @@ class ScenePlanWorkflowDefinitionTest {
     }
 
     @Test
+    void mapsProviderNetworkFailureThroughGraphInvokerToNetworkError() {
+        when(provider.generate(any(LlmRequest.class)))
+                .thenThrow(new LlmProviderException(LlmProviderError.NETWORK));
+
+        assertThatThrownBy(() -> new GraphAgentWorkflowInvoker()
+                .invoke(workflow, "generate_candidate", context()))
+                .satisfies(exception -> {
+                    assertThat(workflow.errorCode((Exception) exception)).isEqualTo("NETWORK");
+                    assertThat(workflow.errorCategory((Exception) exception)).isEqualTo("provider");
+                });
+    }
+
+    @Test
     void mapsStaleOutlineToStableScenePlanError() {
         outline.setRevision(3);
 
@@ -202,6 +216,24 @@ class ScenePlanWorkflowDefinitionTest {
         assertThatThrownBy(() -> workflow.applyResult("generate_candidate", context(), result))
                 .satisfies(exception -> assertThat(workflow.errorCode((Exception) exception))
                         .isEqualTo("SCENE_PLAN_PERSISTENCE_FAILED"));
+    }
+
+    @Test
+    void keepsWrappedSceneInsertFailureAsPersistenceError() throws Exception {
+        when(planMapper.update(eq(null), any())).thenReturn(1);
+        when(sceneMapper.insert(any(ScenePlanVersionEntity.class)))
+                .thenThrow(new IllegalStateException("database unavailable"));
+        AgentStepResult result = new AgentStepResult(
+                Map.of("scenesJson", objectMapper.writeValueAsString(
+                        objectMapper.readTree(validScenesJson()).get("scenes"))),
+                Map.of("candidateId", 301L), null, null, null);
+
+        assertThatThrownBy(() -> workflow.applyResult("generate_candidate", context(), result))
+                .satisfies(exception -> {
+                    Exception wrapped = new IllegalStateException("Agent 步骤执行失败", exception);
+                    assertThat(workflow.errorCode(wrapped)).isEqualTo("SCENE_PLAN_PERSISTENCE_FAILED");
+                    assertThat(workflow.errorCategory(wrapped)).isEqualTo("persistence");
+                });
     }
 
     @Test
