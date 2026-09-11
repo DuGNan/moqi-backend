@@ -66,6 +66,8 @@ public final class KnowledgeExtractionModels {
             Long workId,
             Long chapterId,
             Long generationId,
+            Long sourceProseRevisionId,
+            Long sourceStoryReleaseId,
             Long aiTaskId,
             Long agentRunId,
             String extractorVersion,

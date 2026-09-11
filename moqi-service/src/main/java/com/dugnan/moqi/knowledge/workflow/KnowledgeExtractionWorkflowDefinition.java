@@ -1,8 +1,10 @@
 package com.dugnan.moqi.knowledge.workflow;
 
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -141,10 +143,21 @@ public class KnowledgeExtractionWorkflowDefinition implements AgentWorkflowDefin
                     List.of(
                             new LlmMessage(
                                     LlmRole.SYSTEM,
-                                    "仅输出 schemaVersion=1 的 JSON 对象。candidates 只能包含 "
-                                            + "chapter_summary、key_event、setting、foreshadowing；"
-                                            + "每项必须有 candidateKey、candidateType、payload、"
-                                            + "evidence{startOffset,endOffset,text}。不要确认或修改权威事实。"),
+                                    "仅输出 schemaVersion=1 的 JSON 对象，candidates 为 1 到 50 项，"
+                                            + "且至少有一项 chapter_summary。每项必须有不超过 128 字符的 "
+                                            + "candidateKey、candidateType、payload 和 evidence。"
+                                            + "payload 严格使用以下一种结构："
+                                            + "chapter_summary={summary,characterChanges:字符串数组,openQuestions:字符串数组}；"
+                                            + "key_event={title,content,eventType,occurredOrder,"
+                                            + "relatedSettingIds:[],relatedForeshadowingIds:[]}，"
+                                            + "eventType 只能是 plot、character、world_rule、relationship、foreshadowing，"
+                                            + "occurredOrder 是从 0 开始的非负整数；"
+                                            + "setting={settingType,name,content}，settingType 只能是 "
+                                            + "character、place、organization、rule、item、other；"
+                                            + "foreshadowing={action:'seed',title,description}，不得猜测既有知识 ID。"
+                                            + "evidence={startOffset,endOffset,text} 必须逐字引用正文；offset 使用 Java UTF-16 "
+                                            + "下标和左闭右开区间，正文.substring(startOffset,endOffset) 必须等于 text。"
+                                            + "不要确认、合并或修改权威事实。"),
                             new LlmMessage(LlmRole.USER, extractionService.sourceContent(batchId))),
                     new LlmOptions(
                             MAX_OUTPUT_TOKENS,
@@ -152,17 +165,47 @@ public class KnowledgeExtractionWorkflowDefinition implements AgentWorkflowDefin
                             List.of(),
                             LlmResponseFormat.JSON_OBJECT)));
             JsonNode content = response == null ? null : response.structuredContent();
-            if (content == null || !content.isObject()
-                    || !content.has("schemaVersion") || !content.has("candidates")
-                    || !content.get("candidates").isArray()) {
-                throw new IllegalArgumentException("模型未返回合法的故事知识提取结构");
-            }
+            validateProviderTree(content);
             return objectMapper.treeToValue(content, ExtractionOutput.class);
         } catch (RuntimeException exception) {
             throw exception;
         } catch (Exception exception) {
             throw new IllegalStateException("故事知识提取 Provider 调用失败", exception);
         }
+    }
+
+    private void validateProviderTree(JsonNode content) {
+        if (content == null || !content.isObject()
+                || !fields(content).equals(Set.of("schemaVersion", "candidates"))
+                || !content.get("schemaVersion").isIntegralNumber()
+                || content.get("schemaVersion").longValue() != 1L
+                || !content.get("candidates").isArray()) {
+            throw new IllegalArgumentException("模型未返回合法的故事知识提取结构");
+        }
+        for (JsonNode candidate : content.get("candidates")) {
+            if (!candidate.isObject()
+                    || !fields(candidate).equals(Set.of(
+                            "candidateKey", "candidateType", "payload", "evidence"))
+                    || !candidate.get("candidateKey").isTextual()
+                    || !candidate.get("candidateType").isTextual()
+                    || !candidate.get("payload").isObject()) {
+                throw new IllegalArgumentException("模型候选结构不符合契约");
+            }
+            JsonNode evidence = candidate.get("evidence");
+            if (evidence == null || !evidence.isObject()
+                    || !fields(evidence).equals(Set.of("startOffset", "endOffset", "text"))
+                    || !evidence.get("startOffset").isIntegralNumber()
+                    || !evidence.get("endOffset").isIntegralNumber()
+                    || !evidence.get("text").isTextual()) {
+                throw new IllegalArgumentException("模型证据结构不符合契约");
+            }
+        }
+    }
+
+    private Set<String> fields(JsonNode node) {
+        Set<String> names = new HashSet<>();
+        node.fieldNames().forEachRemaining(names::add);
+        return names;
     }
 
     private Long batchId(AgentStepExecutionContext context) {

@@ -458,7 +458,7 @@ class ProseImpactServiceImplTest {
         var mapping = new com.dugnan.moqi.release.entity.StoryReleaseChapterEntity();
         mapping.setReleaseId(30L); mapping.setChapterId(2L); mapping.setProseRevisionId(6L); mapping.setDeleted(0);
         when(fixture.releaseChapterMapper.selectList(any())).thenReturn(List.of(mapping));
-        when(fixture.batchMapper.selectList(any())).thenReturn(List.of(fixture.batch(70L, "ready")));
+        when(fixture.batchMapper.selectOne(any())).thenReturn(fixture.batch(70L, "ready"));
         StoryKnowledgeCandidateEntity first = fixture.candidate(80L, "confirmed", 70L, 900L);
         StoryKnowledgeCandidateEntity second = fixture.candidate(81L, "confirmed", 70L, 900L);
         when(fixture.candidateMapper.selectList(any())).thenReturn(List.of(second, first));
@@ -470,6 +470,38 @@ class ProseImpactServiceImplTest {
                 com.dugnan.moqi.impact.entity.StoryReleaseKnowledgeSourceEntity.class);
         verify(fixture.knowledgeSourceMapper, times(1)).insert(captor.capture());
         assertThat(captor.getValue().getSourceCandidateId()).isEqualTo(80L);
+    }
+
+    @Test
+    void releaseActivationKeepsUnchangedChapterKnowledgeAndUsesBaselineBatchForChangedRevision() {
+        Fixture fixture = new Fixture();
+        var unchanged = new com.dugnan.moqi.release.entity.StoryReleaseChapterEntity();
+        unchanged.setReleaseId(30L); unchanged.setChapterId(2L); unchanged.setProseRevisionId(6L);
+        unchanged.setDeleted(0);
+        var changed = new com.dugnan.moqi.release.entity.StoryReleaseChapterEntity();
+        changed.setReleaseId(30L); changed.setChapterId(3L); changed.setProseRevisionId(7L);
+        changed.setDeleted(0);
+        when(fixture.releaseChapterMapper.selectList(any())).thenReturn(List.of(unchanged, changed));
+        var inherited = new com.dugnan.moqi.impact.entity.StoryReleaseKnowledgeSourceEntity();
+        inherited.setWorkId(1L); inherited.setReleaseId(29L); inherited.setChapterId(2L);
+        inherited.setProseRevisionId(6L); inherited.setKnowledgeType("setting");
+        inherited.setKnowledgeId(800L); inherited.setSourceCandidateId(70L);
+        inherited.setDeleted(0);
+        when(fixture.knowledgeSourceMapper.selectList(any()))
+                .thenReturn(List.of(inherited), List.of());
+        when(fixture.batchMapper.selectOne(any())).thenReturn(fixture.batch(71L, "ready"));
+        when(fixture.candidateMapper.selectList(any()))
+                .thenReturn(List.of(fixture.candidate(81L, "confirmed", 71L, 900L)));
+
+        fixture.service.activateRelease(1L, 30L, 29L, null);
+
+        var sourceCaptor = org.mockito.ArgumentCaptor.forClass(
+                com.dugnan.moqi.impact.entity.StoryReleaseKnowledgeSourceEntity.class);
+        verify(fixture.knowledgeSourceMapper, times(2)).insert(sourceCaptor.capture());
+        assertThat(sourceCaptor.getAllValues()).extracting(
+                com.dugnan.moqi.impact.entity.StoryReleaseKnowledgeSourceEntity::getKnowledgeId)
+                .containsExactlyInAnyOrder(800L, 900L);
+        verify(fixture.batchMapper).selectOne(any());
     }
 
     @Test
@@ -498,7 +530,7 @@ class ProseImpactServiceImplTest {
         var mapping = new com.dugnan.moqi.release.entity.StoryReleaseChapterEntity();
         mapping.setReleaseId(30L); mapping.setChapterId(2L); mapping.setProseRevisionId(6L); mapping.setDeleted(0);
         when(fixture.releaseChapterMapper.selectList(any())).thenReturn(List.of(mapping));
-        when(fixture.batchMapper.selectList(any())).thenReturn(List.of(fixture.batch(70L, "ready")));
+        when(fixture.batchMapper.selectOne(any())).thenReturn(fixture.batch(70L, "ready"));
         when(fixture.candidateMapper.selectList(any()))
                 .thenReturn(List.of(fixture.candidate(80L, "confirmed", 70L, 900L)));
         when(fixture.knowledgeSourceMapper.insert(

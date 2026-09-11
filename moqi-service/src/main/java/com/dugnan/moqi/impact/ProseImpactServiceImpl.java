@@ -477,6 +477,11 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
                         .eq(StoryKnowledgeExtractionBatchEntity::getWorkId, report.getWorkId())
                         .eq(StoryKnowledgeExtractionBatchEntity::getChapterId, report.getChapterId())
                         .eq(StoryKnowledgeExtractionBatchEntity::getSourceProseRevisionId, revisionId)
+                        .eq(report.getBaselineReleaseId() != null,
+                                StoryKnowledgeExtractionBatchEntity::getSourceStoryReleaseId,
+                                report.getBaselineReleaseId())
+                        .isNull(report.getBaselineReleaseId() == null,
+                                StoryKnowledgeExtractionBatchEntity::getSourceStoryReleaseId)
                         .eq(StoryKnowledgeExtractionBatchEntity::getDeleted, 0)
                         .orderByDesc(StoryKnowledgeExtractionBatchEntity::getId));
         StoryKnowledgeExtractionBatchEntity latestBatch = batches.isEmpty() ? null : batches.get(0);
@@ -519,7 +524,8 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
     @Override
     public void activateRelease(Long workId, Long releaseId, Long previousReleaseId, Long rollbackTargetReleaseId) {
         List<StoryReleaseKnowledgeSourceEntity> next = rollbackTargetReleaseId == null
-                ? sourcesFromReleaseRevisions(workId, releaseId) : sourcesFromHistoricalRelease(workId, releaseId, rollbackTargetReleaseId);
+                ? sourcesFromReleaseRevisions(workId, releaseId, previousReleaseId)
+                : sourcesFromHistoricalRelease(workId, releaseId, rollbackTargetReleaseId);
         next.forEach(knowledgeSourceMapper::insert);
         if (previousReleaseId != null) {
             knowledgeSourceMapper.update(null, new UpdateWrapper<StoryReleaseKnowledgeSourceEntity>()
@@ -560,20 +566,47 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
                 .map(source -> copySource(source, releaseId)).toList();
     }
 
-    private List<StoryReleaseKnowledgeSourceEntity> sourcesFromReleaseRevisions(Long workId, Long releaseId) {
+    private List<StoryReleaseKnowledgeSourceEntity> sourcesFromReleaseRevisions(
+            Long workId,
+            Long releaseId,
+            Long baselineReleaseId) {
         Map<String, StoryReleaseKnowledgeSourceEntity> deduplicated = new LinkedHashMap<>();
         List<StoryReleaseChapterEntity> mappings = releaseChapterMapper.selectList(
                 new LambdaQueryWrapper<StoryReleaseChapterEntity>().eq(StoryReleaseChapterEntity::getReleaseId, releaseId)
                         .eq(StoryReleaseChapterEntity::getDeleted, 0));
         for (StoryReleaseChapterEntity mapping : mappings) {
-            List<StoryKnowledgeExtractionBatchEntity> batches = batchMapper.selectList(
+            if (baselineReleaseId != null) {
+                List<StoryReleaseKnowledgeSourceEntity> inherited = knowledgeSourceMapper.selectList(
+                        new LambdaQueryWrapper<StoryReleaseKnowledgeSourceEntity>()
+                                .eq(StoryReleaseKnowledgeSourceEntity::getWorkId, workId)
+                                .eq(StoryReleaseKnowledgeSourceEntity::getReleaseId, baselineReleaseId)
+                                .eq(StoryReleaseKnowledgeSourceEntity::getChapterId, mapping.getChapterId())
+                                .eq(StoryReleaseKnowledgeSourceEntity::getProseRevisionId,
+                                        mapping.getProseRevisionId())
+                                .eq(StoryReleaseKnowledgeSourceEntity::getDeleted, 0));
+                if (!inherited.isEmpty()) {
+                    inherited.stream().map(source -> copySource(source, releaseId))
+                            .forEach(source -> deduplicated.merge(knowledgeKey(source), source,
+                                    (left, right) -> left.getSourceCandidateId() <= right.getSourceCandidateId()
+                                            ? left : right));
+                    continue;
+                }
+            }
+            StoryKnowledgeExtractionBatchEntity batch = batchMapper.selectOne(
                     new LambdaQueryWrapper<StoryKnowledgeExtractionBatchEntity>()
                             .eq(StoryKnowledgeExtractionBatchEntity::getSourceProseRevisionId, mapping.getProseRevisionId())
-                            .eq(StoryKnowledgeExtractionBatchEntity::getDeleted, 0));
-            if (batches.isEmpty()) { continue; }
-            List<Long> ids = batches.stream().map(StoryKnowledgeExtractionBatchEntity::getId).toList();
+                            .eq(baselineReleaseId != null,
+                                    StoryKnowledgeExtractionBatchEntity::getSourceStoryReleaseId,
+                                    baselineReleaseId)
+                            .isNull(baselineReleaseId == null,
+                                    StoryKnowledgeExtractionBatchEntity::getSourceStoryReleaseId)
+                            .eq(StoryKnowledgeExtractionBatchEntity::getBatchStatus, KNOWLEDGE_READY)
+                            .eq(StoryKnowledgeExtractionBatchEntity::getDeleted, 0)
+                            .orderByDesc(StoryKnowledgeExtractionBatchEntity::getId)
+                            .last("LIMIT 1"));
+            if (batch == null) { continue; }
             candidateMapper.selectList(new LambdaQueryWrapper<StoryKnowledgeCandidateEntity>()
-                    .in(StoryKnowledgeCandidateEntity::getBatchId, ids)
+                    .eq(StoryKnowledgeCandidateEntity::getBatchId, batch.getId())
                     .eq(StoryKnowledgeCandidateEntity::getCandidateStatus, "confirmed")
                     .eq(StoryKnowledgeCandidateEntity::getDeleted, 0)).stream()
                     .filter(candidate -> candidate.getConfirmedTargetId() != null && candidate.getConfirmedTargetType() != null)
