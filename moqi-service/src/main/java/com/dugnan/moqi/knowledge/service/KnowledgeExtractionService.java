@@ -34,6 +34,70 @@ public interface KnowledgeExtractionService {
     BatchView start(Long chapterId, Long generationId, StartExtractionRequest request);
 
     /**
+     * 为待发布正文 revision 创建或复用提取批次。
+     *
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID
+     * @param revisionId 正文 revision ID
+     * @param request 创建请求
+     * @return 提取批次
+     */
+    BatchView startRevision(
+            Long workId,
+            Long chapterId,
+            Long revisionId,
+            StartExtractionRequest request);
+
+    /**
+     * 查询正文 revision 的最新提取批次。
+     *
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID
+     * @param revisionId 正文 revision ID
+     * @return 最新提取批次，不存在时返回空
+     */
+    BatchView latestRevision(Long workId, Long chapterId, Long revisionId);
+
+    /**
+     * 查询正文 revision 的指定提取批次。
+     *
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID
+     * @param revisionId 正文 revision ID
+     * @param batchId 提取批次 ID
+     * @return 提取批次
+     */
+    BatchView getRevision(Long workId, Long chapterId, Long revisionId, Long batchId);
+
+    /**
+     * 重试正文 revision 提取批次的 Provider 步骤。
+     *
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID
+     * @param revisionId 正文 revision ID
+     * @param batchId 提取批次 ID
+     * @param request 重试请求
+     * @return Agent Run
+     */
+    AgentRunView retryRevision(
+            Long workId,
+            Long chapterId,
+            Long revisionId,
+            Long batchId,
+            RetryExtractionRequest request);
+
+    /**
+     * 取消正文 revision 提取批次。
+     *
+     * @param workId 作品 ID
+     * @param chapterId 章节 ID
+     * @param revisionId 正文 revision ID
+     * @param batchId 提取批次 ID
+     * @return Agent Run
+     */
+    AgentRunView cancelRevision(Long workId, Long chapterId, Long revisionId, Long batchId);
+
+    /**
      * 查询正文最新提取批次。
      *
      * @param chapterId 章节 ID

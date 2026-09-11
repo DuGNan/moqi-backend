@@ -8,6 +8,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -56,8 +57,12 @@ import com.dugnan.moqi.knowledge.mapper.SettingEntryMapper;
 import com.dugnan.moqi.knowledge.mapper.StoryKnowledgeCandidateMapper;
 import com.dugnan.moqi.knowledge.mapper.StoryKnowledgeExtractionBatchMapper;
 import com.dugnan.moqi.knowledge.service.KnowledgeExtractionService;
+import com.dugnan.moqi.release.entity.ChapterProseRevisionEntity;
+import com.dugnan.moqi.release.mapper.ChapterProseRevisionMapper;
 import com.dugnan.moqi.work.entity.ChapterEntity;
+import com.dugnan.moqi.work.entity.WorkEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
+import com.dugnan.moqi.work.mapper.WorkMapper;
 
 /**
  * @author dgn
@@ -71,6 +76,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     public static final String EXTRACTOR_VERSION = "story-knowledge-extractor-v1";
     private static final String LOCAL_USER = "local-user";
     private static final String STATUS_ACCEPTED = "accepted";
+    private static final String STATUS_CONFIRMABLE = "confirmable";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_RUNNING = "running";
     private static final String STATUS_READY = "ready";
@@ -109,6 +115,8 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     private final StoryKnowledgeCandidateMapper candidateMapper;
     private final ChapterGenerationMapper generationMapper;
     private final ChapterMapper chapterMapper;
+    private final ChapterProseRevisionMapper proseRevisionMapper;
+    private final WorkMapper workMapper;
     private final AiTaskMapper taskMapper;
     private final SettingEntryMapper settingMapper;
     private final ForeshadowingItemMapper foreshadowingMapper;
@@ -123,6 +131,8 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
             StoryKnowledgeCandidateMapper candidateMapper,
             ChapterGenerationMapper generationMapper,
             ChapterMapper chapterMapper,
+            ChapterProseRevisionMapper proseRevisionMapper,
+            WorkMapper workMapper,
             AiTaskMapper taskMapper,
             SettingEntryMapper settingMapper,
             ForeshadowingItemMapper foreshadowingMapper,
@@ -134,6 +144,8 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         this.candidateMapper = candidateMapper;
         this.generationMapper = generationMapper;
         this.chapterMapper = chapterMapper;
+        this.proseRevisionMapper = proseRevisionMapper;
+        this.workMapper = workMapper;
         this.taskMapper = taskMapper;
         this.settingMapper = settingMapper;
         this.foreshadowingMapper = foreshadowingMapper;
@@ -166,12 +178,110 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     }
 
     @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public BatchView startRevision(
+            Long workId,
+            Long chapterId,
+            Long revisionId,
+            StartExtractionRequest request) {
+        if (request == null || !StringUtils.hasText(request.idempotencyKey())) {
+            throw invalid("idempotencyKey 不能为空");
+        }
+        WorkEntity work = requireWorkForUpdate(workId);
+        ChapterEntity chapter = requireChapter(chapterId);
+        ChapterProseRevisionEntity revision = requireRevision(workId, chapterId, revisionId);
+        if (!Objects.equals(chapter.getWorkId(), workId)) {
+            throw invalid("正文 revision 与章节不属于同一作品");
+        }
+        if (!STATUS_CONFIRMABLE.equals(revision.getRevisionStatus())) {
+            throw conflict("只有可确认的正文 revision 能够触发知识提取");
+        }
+        ChapterGenerationEntity generation = requireRevisionGeneration(revision);
+        String source = revision.getContent() == null ? "" : revision.getContent();
+        if (!Objects.equals(revision.getContentHash(), hash(source))) {
+            throw conflict("正文 revision 内容与冻结哈希不一致");
+        }
+        return createOrReuse(new ExtractionSource(
+                workId,
+                chapterId,
+                generation.getId(),
+                revision.getId(),
+                work.getCurrentStoryReleaseId(),
+                revision.getRevisionNo(),
+                revisionFingerprint(revision),
+                source,
+                request.idempotencyKey().trim(),
+                (long) version(revision.getVersion())));
+    }
+
+    @Override
+    public BatchView latestRevision(Long workId, Long chapterId, Long revisionId) {
+        requireRevision(workId, chapterId, revisionId);
+        WorkEntity work = requireWork(workId);
+        StoryKnowledgeExtractionBatchEntity batch = batchMapper.selectOne(
+                new LambdaQueryWrapper<StoryKnowledgeExtractionBatchEntity>()
+                        .eq(StoryKnowledgeExtractionBatchEntity::getWorkId, workId)
+                        .eq(StoryKnowledgeExtractionBatchEntity::getChapterId, chapterId)
+                        .eq(StoryKnowledgeExtractionBatchEntity::getSourceProseRevisionId, revisionId)
+                        .eq(work.getCurrentStoryReleaseId() != null,
+                                StoryKnowledgeExtractionBatchEntity::getSourceStoryReleaseId,
+                                work.getCurrentStoryReleaseId())
+                        .isNull(work.getCurrentStoryReleaseId() == null,
+                                StoryKnowledgeExtractionBatchEntity::getSourceStoryReleaseId)
+                        .eq(StoryKnowledgeExtractionBatchEntity::getDeleted, 0)
+                        .orderByDesc(StoryKnowledgeExtractionBatchEntity::getId)
+                        .last("LIMIT 1"));
+        return batch == null ? null : view(batch);
+    }
+
+    @Override
+    public BatchView getRevision(Long workId, Long chapterId, Long revisionId, Long batchId) {
+        return view(requireRevisionBatch(workId, chapterId, revisionId, batchId));
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public AgentRunView retryRevision(
+            Long workId,
+            Long chapterId,
+            Long revisionId,
+            Long batchId,
+            RetryExtractionRequest request) {
+        StoryKnowledgeExtractionBatchEntity batch =
+                requireRevisionBatch(workId, chapterId, revisionId, batchId);
+        ensureCurrentForRevisionDecision(batch);
+        if (batch.getAgentRunId() == null || request == null || request.expectedAttempt() == null) {
+            throw conflict("当前知识提取批次不能重试");
+        }
+        return agentRuntime.retryStep(new RetryAgentStepCommand(
+                batch.getAgentRunId(), "extract", request.expectedAttempt()));
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public AgentRunView cancelRevision(
+            Long workId,
+            Long chapterId,
+            Long revisionId,
+            Long batchId) {
+        StoryKnowledgeExtractionBatchEntity batch =
+                requireRevisionBatch(workId, chapterId, revisionId, batchId);
+        if (batch.getAgentRunId() == null) {
+            throw conflict("知识提取批次未关联运行任务");
+        }
+        AgentRunView run = agentRuntime.cancel(batch.getAgentRunId());
+        updateTerminal(batchId, Set.of(STATUS_QUEUED, STATUS_RUNNING), STATUS_CANCELED, null);
+        return run;
+    }
+
+    @Override
     public BatchView latest(Long chapterId, Long generationId) {
         requireAcceptedGeneration(chapterId, generationId);
         StoryKnowledgeExtractionBatchEntity batch = batchMapper.selectOne(
                 new LambdaQueryWrapper<StoryKnowledgeExtractionBatchEntity>()
                         .eq(StoryKnowledgeExtractionBatchEntity::getChapterId, chapterId)
                         .eq(StoryKnowledgeExtractionBatchEntity::getGenerationId, generationId)
+                        .isNull(StoryKnowledgeExtractionBatchEntity::getSourceProseRevisionId)
                         .eq(StoryKnowledgeExtractionBatchEntity::getDeleted, 0)
                         .orderByDesc(StoryKnowledgeExtractionBatchEntity::getId)
                         .last("LIMIT 1"));
@@ -216,7 +326,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         if (STATUS_CONFIRMED.equals(candidate.getCandidateStatus())) {
             return decision(candidate);
         }
-        ensureCurrent(requireBatchById(candidate.getBatchId()));
+        ensureCurrentForDecision(requireBatchById(candidate.getBatchId()));
         if (request == null || request.baseVersion() == null
                 || !request.baseVersion().equals(candidate.getVersion())) {
             throw conflict("知识候选版本已变化，请刷新后重试");
@@ -252,6 +362,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         if (STATUS_IGNORED.equals(candidate.getCandidateStatus())) {
             return decision(candidate);
         }
+        ensureCurrentForDecision(requireBatchById(candidate.getBatchId()));
         if (request == null || request.baseVersion() == null
                 || !request.baseVersion().equals(candidate.getVersion())) {
             throw conflict("知识候选版本已变化，请刷新后重试");
@@ -294,14 +405,16 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         }
         Set<String> keys = new HashSet<>();
         boolean hasSummary = false;
+        List<ExtractedCandidate> normalized = new ArrayList<>();
         for (ExtractedCandidate item : output.candidates()) {
-            validateCandidate(batch, item, keys);
-            hasSummary = hasSummary || TYPE_CHAPTER_SUMMARY.equals(item.candidateType());
+            ExtractedCandidate candidate = validateCandidate(batch, item, keys);
+            normalized.add(candidate);
+            hasSummary = hasSummary || TYPE_CHAPTER_SUMMARY.equals(candidate.candidateType());
         }
         if (!hasSummary) {
             throw invalid("知识提取必须包含章节摘要候选");
         }
-        return new ExtractionOutput(1, List.copyOf(output.candidates()));
+        return new ExtractionOutput(1, List.copyOf(normalized));
     }
 
     @Transactional(rollbackFor = RuntimeException.class)
@@ -375,25 +488,46 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         }
         String source = chapter.getContent() == null ? "" : chapter.getContent();
         String fingerprint = fingerprint(generation.getId(), chapter.getVersion(), source);
+        return createOrReuse(new ExtractionSource(
+                generation.getWorkId(), chapterId, generation.getId(), null, null,
+                chapter.getVersion(), fingerprint, source, idempotencyKey,
+                (long) version(chapter.getVersion())));
+    }
+
+    private BatchView createOrReuse(ExtractionSource source) {
         StoryKnowledgeExtractionBatchEntity existing = batchMapper.selectOne(
                 new LambdaQueryWrapper<StoryKnowledgeExtractionBatchEntity>()
-                        .eq(StoryKnowledgeExtractionBatchEntity::getGenerationId, generation.getId())
+                        .eq(source.sourceProseRevisionId() == null,
+                                StoryKnowledgeExtractionBatchEntity::getGenerationId,
+                                source.generationId())
+                        .isNull(source.sourceProseRevisionId() == null,
+                                StoryKnowledgeExtractionBatchEntity::getSourceProseRevisionId)
+                        .eq(source.sourceProseRevisionId() != null,
+                                StoryKnowledgeExtractionBatchEntity::getSourceProseRevisionId,
+                                source.sourceProseRevisionId())
+                        .eq(source.sourceProseRevisionId() != null
+                                        && source.sourceStoryReleaseId() != null,
+                                StoryKnowledgeExtractionBatchEntity::getSourceStoryReleaseId,
+                                source.sourceStoryReleaseId())
+                        .isNull(source.sourceProseRevisionId() != null
+                                        && source.sourceStoryReleaseId() == null,
+                                StoryKnowledgeExtractionBatchEntity::getSourceStoryReleaseId)
                         .eq(StoryKnowledgeExtractionBatchEntity::getExtractorVersion, EXTRACTOR_VERSION)
                         .eq(StoryKnowledgeExtractionBatchEntity::getDeleted, 0)
                         .last("LIMIT 1"));
         if (existing != null) {
-            if (!fingerprint.equals(existing.getSourceFingerprint())) {
+            if (!sameSource(existing, source)) {
                 throw new BusinessException(ErrorCode.AGENT_RUN_IDEMPOTENCY_CONFLICT,
-                        "同一已采纳正文和提取器已绑定不同来源版本");
+                        "同一正文来源和提取器已绑定不同来源版本");
             }
             return view(existing);
         }
         StoryKnowledgeExtractionBatchEntity byKey = batchMapper.selectOne(
                 new LambdaQueryWrapper<StoryKnowledgeExtractionBatchEntity>()
-                        .eq(StoryKnowledgeExtractionBatchEntity::getIdempotencyKey, idempotencyKey)
+                        .eq(StoryKnowledgeExtractionBatchEntity::getIdempotencyKey, source.idempotencyKey())
                         .eq(StoryKnowledgeExtractionBatchEntity::getDeleted, 0));
         if (byKey != null) {
-            if (!fingerprint.equals(byKey.getSourceFingerprint())) {
+            if (!sameSource(byKey, source)) {
                 throw new BusinessException(ErrorCode.AGENT_RUN_IDEMPOTENCY_CONFLICT,
                         "幂等键已绑定其他知识提取来源");
             }
@@ -402,51 +536,75 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         AiTaskEntity task = new AiTaskEntity();
         task.setTaskType(WORKFLOW_TYPE);
         task.setTaskStatus(STATUS_QUEUED);
-        task.setWorkId(generation.getWorkId());
-        task.setChapterId(chapterId);
+        task.setWorkId(source.workId());
+        task.setChapterId(source.chapterId());
         task.setDeleted(0);
         task.setVersion(0);
         taskMapper.insert(task);
 
         StoryKnowledgeExtractionBatchEntity batch = new StoryKnowledgeExtractionBatchEntity();
-        batch.setWorkId(generation.getWorkId());
-        batch.setChapterId(chapterId);
-        batch.setGenerationId(generation.getId());
+        batch.setWorkId(source.workId());
+        batch.setChapterId(source.chapterId());
+        batch.setGenerationId(source.generationId());
+        batch.setSourceProseRevisionId(source.sourceProseRevisionId());
+        batch.setSourceStoryReleaseId(source.sourceStoryReleaseId());
         batch.setAiTaskId(task.getId());
         batch.setExtractorVersion(EXTRACTOR_VERSION);
-        batch.setIdempotencyKey(idempotencyKey);
-        batch.setSourceContentRevision(chapter.getVersion());
-        batch.setSourceFingerprint(fingerprint);
-        batch.setSourceContent(source);
+        batch.setIdempotencyKey(source.idempotencyKey());
+        batch.setSourceContentRevision(source.sourceContentRevision());
+        batch.setSourceFingerprint(source.fingerprint());
+        batch.setSourceContent(source.content());
         batch.setBatchStatus(STATUS_QUEUED);
         batch.setCandidateCount(0);
         batch.setDeleted(0);
         batch.setVersion(0);
         batchMapper.insert(batch);
-        task.setTaskInputJson(json(Map.of(
-                "batchId", batch.getId(),
-                "generationId", generation.getId(),
-                "sourceFingerprint", fingerprint)));
+        Map<String, Object> taskInput = workflowInput(batch, source);
+        task.setTaskInputJson(json(taskInput));
         taskMapper.updateById(task);
 
         AgentRunView run = agentRuntime.start(new StartAgentRunCommand(
-                LOCAL_USER, generation.getWorkId(), chapterId, WORKFLOW_TYPE,
-                idempotencyKey, chapter.getVersion().longValue(),
-                Map.of(
-                        "batchId", batch.getId(),
-                        "workId", generation.getWorkId(),
-                        "chapterId", chapterId,
-                        "generationId", generation.getId(),
-                        "aiTaskId", task.getId(),
-                        "sourceFingerprint", fingerprint),
+                LOCAL_USER, source.workId(), source.chapterId(), WORKFLOW_TYPE,
+                source.idempotencyKey(), source.sourceVersion(),
+                taskInput,
                 task.getId()));
         batchMapper.update(null, new UpdateWrapper<StoryKnowledgeExtractionBatchEntity>()
                 .eq("id", batch.getId()).eq("version", batch.getVersion())
                 .set("agent_run_id", run.runId()).setSql("version = version + 1"));
-        return get(chapterId, generation.getId(), batch.getId());
+        return view(requireBatchById(batch.getId()));
     }
 
-    private void validateCandidate(
+    private Map<String, Object> workflowInput(
+            StoryKnowledgeExtractionBatchEntity batch,
+            ExtractionSource source) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("batchId", batch.getId());
+        input.put("workId", source.workId());
+        input.put("chapterId", source.chapterId());
+        input.put("generationId", source.generationId());
+        if (source.sourceProseRevisionId() != null) {
+            input.put("sourceProseRevisionId", source.sourceProseRevisionId());
+        }
+        if (source.sourceStoryReleaseId() != null) {
+            input.put("sourceStoryReleaseId", source.sourceStoryReleaseId());
+        }
+        input.put("aiTaskId", batch.getAiTaskId());
+        input.put("sourceFingerprint", source.fingerprint());
+        return input;
+    }
+
+    private boolean sameSource(
+            StoryKnowledgeExtractionBatchEntity batch,
+            ExtractionSource source) {
+        return Objects.equals(batch.getWorkId(), source.workId())
+                && Objects.equals(batch.getChapterId(), source.chapterId())
+                && Objects.equals(batch.getGenerationId(), source.generationId())
+                && Objects.equals(batch.getSourceProseRevisionId(), source.sourceProseRevisionId())
+                && Objects.equals(batch.getSourceStoryReleaseId(), source.sourceStoryReleaseId())
+                && Objects.equals(batch.getSourceFingerprint(), source.fingerprint());
+    }
+
+    private ExtractedCandidate validateCandidate(
             StoryKnowledgeExtractionBatchEntity batch,
             ExtractedCandidate item,
             Set<String> keys) {
@@ -457,15 +615,30 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
                 || item.payload() == null || item.evidence() == null) {
             throw invalid("知识候选标识、类型或内容非法");
         }
-        Evidence evidence = item.evidence();
-        if (evidence.startOffset() == null || evidence.endOffset() == null
-                || evidence.startOffset() < 0 || evidence.endOffset() <= evidence.startOffset()
-                || evidence.endOffset() > batch.getSourceContent().length()
-                || !batch.getSourceContent().substring(
-                        evidence.startOffset(), evidence.endOffset()).equals(evidence.text())) {
+        Evidence evidence = normalizeEvidence(batch.getSourceContent(), item.evidence());
+        validateProviderPayload(item.candidateType(), item.payload());
+        validatePayload(item.candidateType(), item.payload(), batch.getWorkId());
+        return new ExtractedCandidate(
+                item.candidateKey(), item.candidateType(), item.payload(), evidence);
+    }
+
+    private Evidence normalizeEvidence(String source, Evidence evidence) {
+        if (evidence == null || !StringUtils.hasText(evidence.text())) {
             throw invalid("知识候选证据范围不属于已采纳正文");
         }
-        validatePayload(item.candidateType(), item.payload(), batch.getWorkId());
+        boolean exactRange = evidence.startOffset() != null && evidence.endOffset() != null
+                && evidence.startOffset() >= 0 && evidence.endOffset() > evidence.startOffset()
+                && evidence.endOffset() <= source.length()
+                && source.substring(evidence.startOffset(), evidence.endOffset()).equals(evidence.text());
+        if (exactRange) {
+            return evidence;
+        }
+        int start = source.indexOf(evidence.text());
+        boolean uniqueMatch = start >= 0 && source.indexOf(evidence.text(), start + 1) < 0;
+        if (!uniqueMatch) {
+            throw invalid("知识候选证据范围不属于已采纳正文");
+        }
+        return new Evidence(start, start + evidence.text().length(), evidence.text());
     }
 
     private void validatePayload(String type, Map<String, Object> payload, Long workId) {
@@ -524,15 +697,39 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     }
 
     private void classify(StoryKnowledgeCandidateEntity entity, Map<String, Object> payload) {
+        StoryKnowledgeExtractionBatchEntity sourceBatch = requireBatchById(entity.getBatchId());
         StoryKnowledgeCandidateEntity duplicate = candidateMapper.selectOne(
                 new LambdaQueryWrapper<StoryKnowledgeCandidateEntity>()
                         .eq(StoryKnowledgeCandidateEntity::getWorkId, entity.getWorkId())
                         .eq(StoryKnowledgeCandidateEntity::getCandidateType, entity.getCandidateType())
                         .eq(StoryKnowledgeCandidateEntity::getCandidateFingerprint, entity.getCandidateFingerprint())
-                        .in(StoryKnowledgeCandidateEntity::getCandidateStatus,
-                                STATUS_PENDING, STATUS_CONFLICT, STATUS_CONFIRMED, STATUS_DUPLICATE)
+                        .eq(StoryKnowledgeCandidateEntity::getCandidateStatus, STATUS_CONFIRMED)
                         .eq(StoryKnowledgeCandidateEntity::getDeleted, 0)
                         .last("LIMIT 1"));
+        if (duplicate == null) {
+            LambdaQueryWrapper<StoryKnowledgeCandidateEntity> activeDuplicate =
+                    new LambdaQueryWrapper<StoryKnowledgeCandidateEntity>()
+                            .eq(StoryKnowledgeCandidateEntity::getWorkId, entity.getWorkId())
+                            .eq(StoryKnowledgeCandidateEntity::getCandidateType, entity.getCandidateType())
+                            .eq(StoryKnowledgeCandidateEntity::getCandidateFingerprint,
+                                    entity.getCandidateFingerprint())
+                            .in(StoryKnowledgeCandidateEntity::getCandidateStatus,
+                                    STATUS_PENDING, STATUS_CONFLICT, STATUS_DUPLICATE)
+                            .eq(StoryKnowledgeCandidateEntity::getDeleted, 0);
+            String activeBatchSql = "SELECT id FROM story_knowledge_extraction_batches "
+                    + "WHERE deleted = 0 AND batch_status <> 'stale' ";
+            if (sourceBatch.getSourceProseRevisionId() == null) {
+                activeBatchSql += "AND source_prose_revision_id IS NULL";
+            } else if (sourceBatch.getSourceStoryReleaseId() == null) {
+                activeBatchSql += "AND source_prose_revision_id IS NOT NULL "
+                        + "AND source_story_release_id IS NULL";
+            } else {
+                activeBatchSql += "AND source_prose_revision_id IS NOT NULL "
+                        + "AND source_story_release_id = " + sourceBatch.getSourceStoryReleaseId();
+            }
+            duplicate = candidateMapper.selectOne(activeDuplicate.inSql(
+                    StoryKnowledgeCandidateEntity::getBatchId, activeBatchSql).last("LIMIT 1"));
+        }
         if (duplicate != null) {
             entity.setCandidateStatus(STATUS_DUPLICATE);
             entity.setConflictTargetId(duplicate.getId());
@@ -814,6 +1011,11 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     }
 
     private void ensureCurrent(StoryKnowledgeExtractionBatchEntity batch) {
+        if (batch.getSourceProseRevisionId() != null) {
+            ensureCurrentRevision(batch, requireWork(batch.getWorkId()), requireRevision(
+                    batch.getWorkId(), batch.getChapterId(), batch.getSourceProseRevisionId()));
+            return;
+        }
         ChapterGenerationEntity generation = requireAcceptedGeneration(batch.getChapterId(), batch.getGenerationId());
         ChapterEntity chapter = requireChapter(batch.getChapterId());
         String current = chapter.getContent() == null ? "" : chapter.getContent();
@@ -822,6 +1024,68 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
             staleMarker.mark(batch.getId());
             throw new BusinessException(ErrorCode.KNOWLEDGE_EXTRACTION_STALE,
                     "已采纳正文来源发生变化，知识提取批次已过期");
+        }
+    }
+
+    private void validateProviderPayload(String type, Map<String, Object> payload) {
+        Set<String> expected = switch (type) {
+            case TYPE_CHAPTER_SUMMARY -> Set.of("summary", "characterChanges", "openQuestions");
+            case TYPE_KEY_EVENT -> Set.of("title", "content", "eventType", "occurredOrder",
+                    "relatedSettingIds", "relatedForeshadowingIds");
+            case TYPE_SETTING -> Set.of("settingType", "name", "content");
+            case TYPE_FORESHADOWING -> Set.of(FIELD_ACTION, "title", "description");
+            default -> Set.of();
+        };
+        if (!payload.keySet().equals(expected)) {
+            throw invalid("知识候选 payload 字段不符合 Provider 输出契约");
+        }
+        if (TYPE_CHAPTER_SUMMARY.equals(type)) {
+            requireArray(payload, "characterChanges");
+            requireArray(payload, "openQuestions");
+        } else if (TYPE_KEY_EVENT.equals(type)) {
+            requireArray(payload, "relatedSettingIds");
+            requireArray(payload, "relatedForeshadowingIds");
+        } else if (TYPE_FORESHADOWING.equals(type)
+                && !ACTION_SEED.equals(payload.get(FIELD_ACTION))) {
+            throw invalid("Provider 只能生成 seed 伏笔候选");
+        }
+    }
+
+    private void requireArray(Map<String, Object> payload, String field) {
+        if (!(payload.get(field) instanceof List<?>)) {
+            throw invalid(field + " 必须为数组");
+        }
+    }
+
+    private void ensureCurrentForDecision(StoryKnowledgeExtractionBatchEntity batch) {
+        if (batch.getSourceProseRevisionId() == null) {
+            ensureCurrent(batch);
+            return;
+        }
+        ensureCurrentForRevisionDecision(batch);
+    }
+
+    private void ensureCurrentForRevisionDecision(StoryKnowledgeExtractionBatchEntity batch) {
+        WorkEntity work = requireWorkForUpdate(batch.getWorkId());
+        ChapterProseRevisionEntity revision = requireRevisionForUpdate(
+                batch.getWorkId(), batch.getChapterId(), batch.getSourceProseRevisionId());
+        ensureCurrentRevision(batch, work, revision);
+    }
+
+    private void ensureCurrentRevision(
+            StoryKnowledgeExtractionBatchEntity batch,
+            WorkEntity work,
+            ChapterProseRevisionEntity revision) {
+        String revisionContent = revision.getContent() == null ? "" : revision.getContent();
+        boolean stale = "abandoned".equals(revision.getRevisionStatus())
+                || !Objects.equals(work.getCurrentStoryReleaseId(), batch.getSourceStoryReleaseId())
+                || !Objects.equals(revision.getContentHash(), hash(revisionContent))
+                || !Objects.equals(revisionContent, batch.getSourceContent())
+                || !Objects.equals(revisionFingerprint(revision), batch.getSourceFingerprint());
+        if (stale) {
+            staleMarker.mark(batch.getId());
+            throw new BusinessException(ErrorCode.KNOWLEDGE_EXTRACTION_STALE,
+                    "正文 revision 或 Story Release 基线发生变化，知识提取批次已过期");
         }
     }
 
@@ -840,7 +1104,8 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
                                 .orderByAsc(StoryKnowledgeCandidateEntity::getId))
                 .stream().map(this::candidateView).toList();
         return new BatchView(batch.getId(), batch.getWorkId(), batch.getChapterId(),
-                batch.getGenerationId(), batch.getAiTaskId(), batch.getAgentRunId(),
+                batch.getGenerationId(), batch.getSourceProseRevisionId(),
+                batch.getSourceStoryReleaseId(), batch.getAiTaskId(), batch.getAgentRunId(),
                 batch.getExtractorVersion(), batch.getSourceContentRevision(),
                 batch.getSourceFingerprint(), batch.getBatchStatus(),
                 batch.getCandidateCount(), batch.getErrorCode(), candidates,
@@ -931,12 +1196,69 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         return chapter;
     }
 
+    private WorkEntity requireWork(Long workId) {
+        WorkEntity work = workId == null ? null : workMapper.selectById(workId);
+        if (work == null || Integer.valueOf(1).equals(work.getDeleted())) {
+            throw invalid("作品不存在");
+        }
+        return work;
+    }
+
+    private WorkEntity requireWorkForUpdate(Long workId) {
+        WorkEntity work = workId == null ? null : workMapper.selectByIdForUpdate(workId);
+        if (work == null || Integer.valueOf(1).equals(work.getDeleted())) {
+            throw invalid("作品不存在");
+        }
+        return work;
+    }
+
+    private ChapterProseRevisionEntity requireRevision(
+            Long workId,
+            Long chapterId,
+            Long revisionId) {
+        ChapterProseRevisionEntity revision =
+                revisionId == null ? null : proseRevisionMapper.selectById(revisionId);
+        if (revision == null || Integer.valueOf(1).equals(revision.getDeleted())
+                || !Objects.equals(workId, revision.getWorkId())
+                || !Objects.equals(chapterId, revision.getChapterId())) {
+            throw notFound("正文 revision 不存在");
+        }
+        return revision;
+    }
+
+    private ChapterProseRevisionEntity requireRevisionForUpdate(
+            Long workId,
+            Long chapterId,
+            Long revisionId) {
+        ChapterProseRevisionEntity revision = revisionId == null
+                ? null : proseRevisionMapper.selectByIdForUpdate(revisionId);
+        if (revision == null || Integer.valueOf(1).equals(revision.getDeleted())
+                || !Objects.equals(workId, revision.getWorkId())
+                || !Objects.equals(chapterId, revision.getChapterId())) {
+            throw notFound("正文 revision 不存在");
+        }
+        return revision;
+    }
+
+    private ChapterGenerationEntity requireRevisionGeneration(ChapterProseRevisionEntity revision) {
+        ChapterGenerationEntity generation = revision.getSourceGenerationId() == null
+                ? null : generationMapper.selectById(revision.getSourceGenerationId());
+        if (generation == null || Integer.valueOf(1).equals(generation.getDeleted())
+                || !Objects.equals(revision.getWorkId(), generation.getWorkId())
+                || !Objects.equals(revision.getChapterId(), generation.getChapterId())
+                || !StringUtils.hasText(generation.getGeneratedContent())) {
+            throw conflict("正文 revision 缺少可追溯的生成来源");
+        }
+        return generation;
+    }
+
     private StoryKnowledgeExtractionBatchEntity requireBatch(
             Long chapterId,
             Long generationId,
             Long batchId) {
         StoryKnowledgeExtractionBatchEntity batch = requireBatchById(batchId);
-        if (!chapterId.equals(batch.getChapterId()) || !generationId.equals(batch.getGenerationId())) {
+        if (!chapterId.equals(batch.getChapterId()) || !generationId.equals(batch.getGenerationId())
+                || batch.getSourceProseRevisionId() != null) {
             throw notFound("知识提取批次不属于当前正文");
         }
         return batch;
@@ -947,6 +1269,20 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
                 batchId == null ? null : batchMapper.selectById(batchId);
         if (batch == null || Integer.valueOf(1).equals(batch.getDeleted())) {
             throw notFound("知识提取批次不存在");
+        }
+        return batch;
+    }
+
+    private StoryKnowledgeExtractionBatchEntity requireRevisionBatch(
+            Long workId,
+            Long chapterId,
+            Long revisionId,
+            Long batchId) {
+        StoryKnowledgeExtractionBatchEntity batch = requireBatchById(batchId);
+        if (!Objects.equals(workId, batch.getWorkId())
+                || !Objects.equals(chapterId, batch.getChapterId())
+                || !Objects.equals(revisionId, batch.getSourceProseRevisionId())) {
+            throw notFound("知识提取批次不属于当前正文 revision");
         }
         return batch;
     }
@@ -1065,11 +1401,19 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     }
 
     private Integer integer(Object value) {
-        return value instanceof Number number ? number.intValue() : null;
+        if (!(value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long)) {
+            return null;
+        }
+        long longValue = ((Number) value).longValue();
+        return longValue >= Integer.MIN_VALUE && longValue <= Integer.MAX_VALUE
+                ? (int) longValue : null;
     }
 
     private Long optionalLong(Object value) {
-        return value instanceof Number number ? number.longValue() : null;
+        return value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long
+                ? ((Number) value).longValue() : null;
     }
 
     private int candidateCount(Long batchId) {
@@ -1085,6 +1429,11 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
 
     private String fingerprint(Long generationId, Integer revision, String content) {
         return hash(generationId + ":" + revision + ":" + content);
+    }
+
+    private String revisionFingerprint(ChapterProseRevisionEntity revision) {
+        return hash("revision:" + revision.getId() + ":" + version(revision.getVersion())
+                + ":" + revision.getContentHash());
     }
 
     private String hash(String value) {
@@ -1113,5 +1462,18 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     }
 
     private record Target(String type, Long id) {
+    }
+
+    private record ExtractionSource(
+            Long workId,
+            Long chapterId,
+            Long generationId,
+            Long sourceProseRevisionId,
+            Long sourceStoryReleaseId,
+            Integer sourceContentRevision,
+            String fingerprint,
+            String content,
+            String idempotencyKey,
+            Long sourceVersion) {
     }
 }
