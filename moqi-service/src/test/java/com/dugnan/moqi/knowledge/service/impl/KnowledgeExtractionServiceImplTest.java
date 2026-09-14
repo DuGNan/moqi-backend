@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
@@ -19,6 +20,8 @@ import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.knowledge.dto.KnowledgeExtractionModels.Evidence;
@@ -52,6 +55,7 @@ class KnowledgeExtractionServiceImplTest {
     private AiTaskMapper taskMapper;
     private SettingEntryMapper settingMapper;
     private KnowledgeExtractionStaleMarker staleMarker;
+    private GenerationRetryMetadataResolver retryMetadataResolver;
     private KnowledgeExtractionServiceImpl service;
 
     @BeforeEach
@@ -64,6 +68,7 @@ class KnowledgeExtractionServiceImplTest {
         taskMapper = mock(AiTaskMapper.class);
         settingMapper = mock(SettingEntryMapper.class);
         staleMarker = mock(KnowledgeExtractionStaleMarker.class);
+        retryMetadataResolver = mock(GenerationRetryMetadataResolver.class);
         service = new KnowledgeExtractionServiceImpl(
                 batchMapper,
                 mock(StoryKnowledgeCandidateMapper.class),
@@ -77,7 +82,8 @@ class KnowledgeExtractionServiceImplTest {
                 mock(ChapterSummaryMapper.class),
                 mock(ChapterKeyEventMapper.class),
                 new ObjectMapper(),
-                staleMarker);
+                staleMarker,
+                retryMetadataResolver);
     }
 
     @Test
@@ -263,9 +269,15 @@ class KnowledgeExtractionServiceImplTest {
         batch.setSourceStoryReleaseId(9L);
         batch.setSourceFingerprint(revisionFingerprint(revision));
         batch.setAgentRunId(4L);
+        batch.setBatchStatus("failed");
         when(batchMapper.selectById(9L)).thenReturn(batch);
         when(workMapper.selectByIdForUpdate(1L)).thenReturn(work(9L));
         when(proseRevisionMapper.selectByIdForUpdate(10L)).thenReturn(revision);
+        when(retryMetadataResolver.resolveOwned(
+                4L, "extract", KnowledgeExtractionServiceImpl.WORKFLOW_TYPE, 1L, 5L, null))
+                .thenReturn(new RetryMetadata("extract", 2, true));
+        when(batchMapper.update(org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(1);
         AgentRuntime runtime = mock(AgentRuntime.class);
         service.setAgentRuntime(runtime);
 
@@ -276,6 +288,146 @@ class KnowledgeExtractionServiceImplTest {
         verify(proseRevisionMapper).selectByIdForUpdate(10L);
         verify(runtime).retryStep(new com.dugnan.moqi.agent.dto.AgentRuntimeModels.RetryAgentStepCommand(
                 4L, "extract", 2));
+    }
+
+    @Test
+    void rejectsStaleRevisionRetryAttemptBeforeChangingBatchOrCallingRuntime() {
+        ChapterProseRevisionEntity revision = revision("待发布正文", 10L, "confirmable");
+        StoryKnowledgeExtractionBatchEntity batch = batch("待发布正文", 2);
+        batch.setSourceProseRevisionId(10L);
+        batch.setSourceStoryReleaseId(9L);
+        batch.setSourceFingerprint(revisionFingerprint(revision));
+        batch.setAgentRunId(4L);
+        batch.setBatchStatus("failed");
+        when(batchMapper.selectById(9L)).thenReturn(batch);
+        when(workMapper.selectByIdForUpdate(1L)).thenReturn(work(9L));
+        when(proseRevisionMapper.selectByIdForUpdate(10L)).thenReturn(revision);
+        when(retryMetadataResolver.resolveOwned(
+                4L, "extract", KnowledgeExtractionServiceImpl.WORKFLOW_TYPE, 1L, 5L, null))
+                .thenReturn(new RetryMetadata("extract", 3, true));
+        AgentRuntime runtime = mock(AgentRuntime.class);
+        service.setAgentRuntime(runtime);
+
+        assertThatThrownBy(() -> service.retryRevision(1L, 5L, 10L, 9L,
+                new com.dugnan.moqi.knowledge.dto.KnowledgeExtractionModels.RetryExtractionRequest(2)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.KNOWLEDGE_EXTRACTION_CONFLICT);
+
+        verifyNoInteractions(runtime);
+    }
+
+    @Test
+    void rejectsRevisionRetryWhenBatchCasLosesWithoutCallingRuntime() {
+        ChapterProseRevisionEntity revision = revision("待发布正文", 10L, "confirmable");
+        StoryKnowledgeExtractionBatchEntity batch = batch("待发布正文", 2);
+        batch.setSourceProseRevisionId(10L);
+        batch.setSourceStoryReleaseId(9L);
+        batch.setSourceFingerprint(revisionFingerprint(revision));
+        batch.setAgentRunId(4L);
+        batch.setBatchStatus("failed");
+        when(batchMapper.selectById(9L)).thenReturn(batch);
+        when(workMapper.selectByIdForUpdate(1L)).thenReturn(work(9L));
+        when(proseRevisionMapper.selectByIdForUpdate(10L)).thenReturn(revision);
+        when(retryMetadataResolver.resolveOwned(
+                4L, "extract", KnowledgeExtractionServiceImpl.WORKFLOW_TYPE, 1L, 5L, null))
+                .thenReturn(new RetryMetadata("extract", 2, true));
+        when(batchMapper.update(org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(0);
+        AgentRuntime runtime = mock(AgentRuntime.class);
+        service.setAgentRuntime(runtime);
+
+        assertThatThrownBy(() -> service.retryRevision(1L, 5L, 10L, 9L,
+                new com.dugnan.moqi.knowledge.dto.KnowledgeExtractionModels.RetryExtractionRequest(2)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.KNOWLEDGE_EXTRACTION_CONFLICT);
+
+        verifyNoInteractions(runtime);
+    }
+
+    @Test
+    void exposesLatestRetryAttemptForCurrentFailedRevisionBatch() {
+        ChapterProseRevisionEntity revision = revision("待发布正文", 10L, "confirmable");
+        StoryKnowledgeExtractionBatchEntity batch = batch("待发布正文", 2);
+        batch.setBatchStatus("failed");
+        batch.setSourceProseRevisionId(10L);
+        batch.setSourceStoryReleaseId(9L);
+        batch.setSourceFingerprint(revisionFingerprint(revision));
+        batch.setAgentRunId(4L);
+        batch.setAiTaskId(3L);
+        when(batchMapper.selectById(9L)).thenReturn(batch);
+        when(workMapper.selectById(1L)).thenReturn(work(9L));
+        when(proseRevisionMapper.selectById(10L)).thenReturn(revision);
+        when(retryMetadataResolver.resolveOwned(
+                4L, "extract", KnowledgeExtractionServiceImpl.WORKFLOW_TYPE, 1L, 5L, 3L))
+                .thenReturn(new RetryMetadata("extract", 2, true));
+
+        var result = service.getRevision(1L, 5L, 10L, 9L);
+
+        assertThat(result.currentAttempt()).isEqualTo(2);
+        assertThat(result.retryable()).isTrue();
+    }
+
+    @Test
+    void keepsAttemptButDisablesRetryWhenRevisionSourceIsStale() {
+        ChapterProseRevisionEntity revision = revision("待发布正文", 10L, "confirmable");
+        StoryKnowledgeExtractionBatchEntity batch = batch("待发布正文", 2);
+        batch.setBatchStatus("failed");
+        batch.setSourceProseRevisionId(10L);
+        batch.setSourceStoryReleaseId(9L);
+        batch.setSourceFingerprint(revisionFingerprint(revision));
+        batch.setAgentRunId(4L);
+        batch.setAiTaskId(3L);
+        when(batchMapper.selectById(9L)).thenReturn(batch);
+        when(workMapper.selectById(1L)).thenReturn(work(11L));
+        when(proseRevisionMapper.selectById(10L)).thenReturn(revision);
+        when(retryMetadataResolver.resolveOwned(
+                4L, "extract", KnowledgeExtractionServiceImpl.WORKFLOW_TYPE, 1L, 5L, 3L))
+                .thenReturn(new RetryMetadata("extract", 3, true));
+
+        var result = service.getRevision(1L, 5L, 10L, 9L);
+
+        assertThat(result.currentAttempt()).isEqualTo(3);
+        assertThat(result.retryable()).isFalse();
+    }
+
+    @Test
+    void disablesRetryWhenRuntimeIsNotOnExtractStep() {
+        ChapterProseRevisionEntity revision = revision("待发布正文", 10L, "confirmable");
+        StoryKnowledgeExtractionBatchEntity batch = batch("待发布正文", 2);
+        batch.setBatchStatus("failed");
+        batch.setSourceProseRevisionId(10L);
+        batch.setSourceStoryReleaseId(9L);
+        batch.setSourceFingerprint(revisionFingerprint(revision));
+        batch.setAgentRunId(4L);
+        batch.setAiTaskId(3L);
+        when(batchMapper.selectById(9L)).thenReturn(batch);
+        when(retryMetadataResolver.resolveOwned(
+                4L, "extract", KnowledgeExtractionServiceImpl.WORKFLOW_TYPE, 1L, 5L, 3L))
+                .thenReturn(new RetryMetadata("persist", 2, true));
+
+        var result = service.getRevision(1L, 5L, 10L, 9L);
+
+        assertThat(result.currentAttempt()).isEqualTo(2);
+        assertThat(result.retryable()).isFalse();
+    }
+
+    @Test
+    void exposesRetryMetadataForCurrentAcceptedGenerationBatch() {
+        StoryKnowledgeExtractionBatchEntity batch = batch("夜雨停了。", 3);
+        batch.setBatchStatus("failed");
+        batch.setAgentRunId(4L);
+        batch.setAiTaskId(3L);
+        when(batchMapper.selectById(9L)).thenReturn(batch);
+        when(generationMapper.selectById(7L)).thenReturn(acceptedGeneration());
+        when(chapterMapper.selectById(5L)).thenReturn(chapter("夜雨停了。", 3));
+        when(retryMetadataResolver.resolveOwned(
+                4L, "extract", KnowledgeExtractionServiceImpl.WORKFLOW_TYPE, 1L, 5L, 3L))
+                .thenReturn(new RetryMetadata("extract", 3, true));
+
+        var result = service.get(5L, 7L, 9L);
+
+        assertThat(result.currentAttempt()).isEqualTo(3);
+        assertThat(result.retryable()).isTrue();
     }
 
     @Test

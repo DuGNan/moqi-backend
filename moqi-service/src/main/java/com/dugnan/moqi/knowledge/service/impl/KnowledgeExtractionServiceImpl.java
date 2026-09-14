@@ -31,6 +31,8 @@ import com.dugnan.moqi.chapter.entity.AiTaskEntity;
 import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 import com.dugnan.moqi.chapter.mapper.AiTaskMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
+import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
 import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
@@ -80,6 +82,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_RUNNING = "running";
     private static final String STATUS_READY = "ready";
+    private static final String STATUS_FAILED = "failed";
     private static final String STATUS_PENDING = "pending";
     private static final String STATUS_CONFLICT = "conflict";
     private static final String STATUS_DUPLICATE = "duplicate";
@@ -125,6 +128,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     private AgentRuntime agentRuntime;
     private final ObjectMapper objectMapper;
     private final KnowledgeExtractionStaleMarker staleMarker;
+    private final GenerationRetryMetadataResolver retryMetadataResolver;
 
     public KnowledgeExtractionServiceImpl(
             StoryKnowledgeExtractionBatchMapper batchMapper,
@@ -139,7 +143,8 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
             ChapterSummaryMapper summaryMapper,
             ChapterKeyEventMapper eventMapper,
             ObjectMapper objectMapper,
-            KnowledgeExtractionStaleMarker staleMarker) {
+            KnowledgeExtractionStaleMarker staleMarker,
+            GenerationRetryMetadataResolver retryMetadataResolver) {
         this.batchMapper = batchMapper;
         this.candidateMapper = candidateMapper;
         this.generationMapper = generationMapper;
@@ -153,6 +158,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         this.eventMapper = eventMapper;
         this.objectMapper = objectMapper;
         this.staleMarker = staleMarker;
+        this.retryMetadataResolver = retryMetadataResolver;
     }
 
     @Autowired
@@ -250,11 +256,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         StoryKnowledgeExtractionBatchEntity batch =
                 requireRevisionBatch(workId, chapterId, revisionId, batchId);
         ensureCurrentForRevisionDecision(batch);
-        if (batch.getAgentRunId() == null || request == null || request.expectedAttempt() == null) {
-            throw conflict("当前知识提取批次不能重试");
-        }
-        return agentRuntime.retryStep(new RetryAgentStepCommand(
-                batch.getAgentRunId(), "extract", request.expectedAttempt()));
+        return retryBatch(batch, request);
     }
 
     @Override
@@ -294,17 +296,15 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     }
 
     @Override
+    @Transactional(rollbackFor = RuntimeException.class)
     public AgentRunView retry(
             Long chapterId,
             Long generationId,
             Long batchId,
             RetryExtractionRequest request) {
         StoryKnowledgeExtractionBatchEntity batch = requireBatch(chapterId, generationId, batchId);
-        if (batch.getAgentRunId() == null || request == null || request.expectedAttempt() == null) {
-            throw conflict("当前知识提取批次不能重试");
-        }
-        return agentRuntime.retryStep(new RetryAgentStepCommand(
-                batch.getAgentRunId(), "extract", request.expectedAttempt()));
+        ensureCurrent(batch);
+        return retryBatch(batch, request);
     }
 
     @Override
@@ -1103,13 +1103,92 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
                                 .eq(StoryKnowledgeCandidateEntity::getDeleted, 0)
                                 .orderByAsc(StoryKnowledgeCandidateEntity::getId))
                 .stream().map(this::candidateView).toList();
+        RetryMetadata metadata = retryMetadata(batch);
+        boolean failed = STATUS_FAILED.equals(batch.getBatchStatus());
+        boolean retryable = failed
+                && "extract".equals(metadata.currentStepKey())
+                && Boolean.TRUE.equals(metadata.retryable())
+                && isCurrentSource(batch);
         return new BatchView(batch.getId(), batch.getWorkId(), batch.getChapterId(),
                 batch.getGenerationId(), batch.getSourceProseRevisionId(),
                 batch.getSourceStoryReleaseId(), batch.getAiTaskId(), batch.getAgentRunId(),
                 batch.getExtractorVersion(), batch.getSourceContentRevision(),
                 batch.getSourceFingerprint(), batch.getBatchStatus(),
                 batch.getCandidateCount(), batch.getErrorCode(), candidates,
+                failed ? metadata.currentAttempt() : null, retryable,
                 batch.getVersion(), batch.getGmtCreate(), batch.getGmtModified());
+    }
+
+    private RetryMetadata retryMetadata(StoryKnowledgeExtractionBatchEntity batch) {
+        if (!STATUS_FAILED.equals(batch.getBatchStatus())) {
+            return RetryMetadata.empty();
+        }
+        RetryMetadata metadata = retryMetadataResolver.resolveOwned(
+                batch.getAgentRunId(), "extract", WORKFLOW_TYPE,
+                batch.getWorkId(), batch.getChapterId(), batch.getAiTaskId());
+        return metadata == null ? RetryMetadata.empty() : metadata;
+    }
+
+    private AgentRunView retryBatch(
+            StoryKnowledgeExtractionBatchEntity batch,
+            RetryExtractionRequest request) {
+        RetryMetadata metadata = retryMetadata(batch);
+        if (request == null || request.expectedAttempt() == null
+                || !STATUS_FAILED.equals(batch.getBatchStatus())
+                || !"extract".equals(metadata.currentStepKey())
+                || !Boolean.TRUE.equals(metadata.retryable())
+                || !Objects.equals(request.expectedAttempt(), metadata.currentAttempt())) {
+            throw conflict("知识提取重试状态已变化，请重新读取批次后再试");
+        }
+        int changed = batchMapper.update(null, new UpdateWrapper<StoryKnowledgeExtractionBatchEntity>()
+                .eq("id", batch.getId())
+                .eq("version", batch.getVersion())
+                .eq("agent_run_id", batch.getAgentRunId())
+                .eq("batch_status", STATUS_FAILED)
+                .set("batch_status", STATUS_RUNNING)
+                .set("error_code", null)
+                .setSql("version = version + 1"));
+        if (changed != 1) {
+            throw conflict("知识提取重试状态已变化，请重新读取批次后再试");
+        }
+        return agentRuntime.retryStep(new RetryAgentStepCommand(
+                batch.getAgentRunId(), "extract", request.expectedAttempt()));
+    }
+
+    private boolean isCurrentSource(StoryKnowledgeExtractionBatchEntity batch) {
+        if (batch.getSourceProseRevisionId() != null) {
+            WorkEntity work = workMapper.selectById(batch.getWorkId());
+            ChapterProseRevisionEntity revision = proseRevisionMapper.selectById(
+                    batch.getSourceProseRevisionId());
+            if (work == null || revision == null
+                    || !Integer.valueOf(0).equals(work.getDeleted())
+                    || !Integer.valueOf(0).equals(revision.getDeleted())
+                    || !Objects.equals(batch.getWorkId(), revision.getWorkId())
+                    || !Objects.equals(batch.getChapterId(), revision.getChapterId())) {
+                return false;
+            }
+            String content = revision.getContent() == null ? "" : revision.getContent();
+            return !"abandoned".equals(revision.getRevisionStatus())
+                    && Objects.equals(work.getCurrentStoryReleaseId(), batch.getSourceStoryReleaseId())
+                    && Objects.equals(revision.getContentHash(), hash(content))
+                    && Objects.equals(content, batch.getSourceContent())
+                    && Objects.equals(revisionFingerprint(revision), batch.getSourceFingerprint());
+        }
+        ChapterGenerationEntity generation = generationMapper.selectById(batch.getGenerationId());
+        ChapterEntity chapter = chapterMapper.selectById(batch.getChapterId());
+        if (generation == null || chapter == null
+                || !Integer.valueOf(0).equals(generation.getDeleted())
+                || !Integer.valueOf(0).equals(chapter.getDeleted())
+                || !STATUS_ACCEPTED.equals(generation.getGenerationStatus())
+                || !Objects.equals(batch.getWorkId(), generation.getWorkId())
+                || !Objects.equals(batch.getChapterId(), generation.getChapterId())
+                || !Objects.equals(batch.getWorkId(), chapter.getWorkId())) {
+            return false;
+        }
+        String content = chapter.getContent() == null ? "" : chapter.getContent();
+        return Objects.equals(
+                fingerprint(generation.getId(), chapter.getVersion(), content),
+                batch.getSourceFingerprint());
     }
 
     private CandidateView candidateView(StoryKnowledgeCandidateEntity item) {

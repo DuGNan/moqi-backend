@@ -51,7 +51,7 @@ class KnowledgeExtractionControllerTest {
     void startsAndRestoresExtractionBatch() throws Exception {
         BatchView batch = new BatchView(
                 9L, 1L, 5L, 7L, null, null, 3L, 4L, "story-knowledge-extractor-v1",
-                2, "fingerprint", "ready", 0, null, List.of(), 1, null, null);
+                2, "fingerprint", "ready", 0, null, List.of(), null, false, 1, null, null);
         when(service.start(5L, 7L, new StartExtractionRequest("key-1"))).thenReturn(batch);
         when(service.latest(5L, 7L)).thenReturn(batch);
 

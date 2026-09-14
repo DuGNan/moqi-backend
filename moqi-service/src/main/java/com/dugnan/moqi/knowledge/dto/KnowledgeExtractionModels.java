@@ -77,6 +77,8 @@ public final class KnowledgeExtractionModels {
             Integer candidateCount,
             String errorCode,
             List<CandidateView> candidates,
+            Integer currentAttempt,
+            Boolean retryable,
             Integer version,
             LocalDateTime gmtCreate,
             LocalDateTime gmtModified) {

@@ -45,7 +45,7 @@ class RevisionKnowledgeExtractionControllerTest {
         BatchView batch = new BatchView(
                 9L, 1L, 5L, 7L, 10L, 8L, 3L, 4L,
                 "story-knowledge-extractor-v1", 2, "fingerprint", "ready",
-                0, null, List.of(), 1, null, null);
+                0, null, List.of(), null, false, 1, null, null);
         when(service.startRevision(1L, 5L, 10L, new StartExtractionRequest("key-1")))
                 .thenReturn(batch);
         when(service.latestRevision(1L, 5L, 10L)).thenReturn(batch);
@@ -69,11 +69,13 @@ class RevisionKnowledgeExtractionControllerTest {
         when(service.getRevision(1L, 5L, 10L, 9L)).thenReturn(new BatchView(
                 9L, 1L, 5L, 7L, 10L, 8L, 3L, 4L,
                 "story-knowledge-extractor-v1", 2, "fingerprint", "failed",
-                0, null, List.of(), 1, null, null));
+                0, null, List.of(), 2, true, 1, null, null));
 
         mvc.perform(get("/api/works/1/story-revisions/chapters/5/revisions/10/knowledge-extractions/9"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.id").value(9));
+                .andExpect(jsonPath("$.data.id").value(9))
+                .andExpect(jsonPath("$.data.currentAttempt").value(2))
+                .andExpect(jsonPath("$.data.retryable").value(true));
         mvc.perform(post("/api/works/1/story-revisions/chapters/5/revisions/10/knowledge-extractions/9/retry")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"expectedAttempt\":2}"))
