@@ -822,16 +822,17 @@ public class StoryReleaseServiceImpl implements StoryReleaseService {
             Long reportId) {
         ChapterGenerationEvaluationReportEntity report = evaluationReportMapper.selectById(reportId);
         if (report == null || Integer.valueOf(1).equals(report.getDeleted())
+                || report.getGenerationId() == null
                 || !Objects.equals(report.getWorkId(), revision.getWorkId())
                 || !Objects.equals(report.getChapterId(), revision.getChapterId())
-                || revision.getSourceGenerationId() == null
-                || !Objects.equals(report.getGenerationId(), revision.getSourceGenerationId())
+                || !Objects.equals(report.getGenerationId(), revision.getQualityGenerationId() == null
+                        ? revision.getSourceGenerationId() : revision.getQualityGenerationId())
                 || report.getGenerationSceneId() != null
                 || !Objects.equals(report.getContentHash(), revision.getContentHash())) {
             throw conflict(ErrorCode.PROSE_REVISION_CONFLICT,
                     "整章评价报告与 revision 来源 generation、正文哈希或归属不匹配");
         }
-        if (revision.getSourceBoundedRevisionId() != null) {
+        if (revision.getQualityGenerationId() == null && revision.getSourceBoundedRevisionId() != null) {
             BoundedChapterRevisionEntity bounded = boundedRevisionMapper.selectById(
                     revision.getSourceBoundedRevisionId());
             if (bounded == null || Integer.valueOf(1).equals(bounded.getDeleted())
