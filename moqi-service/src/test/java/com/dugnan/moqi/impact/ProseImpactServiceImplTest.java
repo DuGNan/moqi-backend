@@ -659,7 +659,7 @@ class ProseImpactServiceImplTest {
         final ProseImpactServiceImpl service = new ProseImpactServiceImpl(reportMapper, changeMapper, assetMapper,
                 knowledgeSourceMapper, revisionMapper, workspaceMapper, workspaceChapterMapper, releaseChapterMapper,
                 batchMapper, candidateMapper, chapterMapper, workMapper, sourceChainService, sourceSnapshotMapper, agentRuntime,
-                new ObjectMapper());
+                new ObjectMapper(), mock(com.dugnan.moqi.knowledge.service.impl.KnowledgeExtractionServiceImpl.class));
 
         Fixture() {
             when(sourceSnapshotMapper.selectList(any())).thenReturn(List.of());

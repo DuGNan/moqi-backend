@@ -12,7 +12,9 @@ import java.util.Objects;
 import java.util.Set;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,6 +22,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -34,6 +37,7 @@ import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver;
 import com.dugnan.moqi.chapter.service.GenerationRetryMetadataResolver.RetryMetadata;
 import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.entity.BaseEntity;
 import com.dugnan.moqi.common.api.PublicFailureFactory;
 import com.dugnan.moqi.common.exception.BusinessException;
 import com.dugnan.moqi.knowledge.dto.KnowledgeExtractionModels.BatchView;
@@ -129,6 +133,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
     private final ObjectMapper objectMapper;
     private final KnowledgeExtractionStaleMarker staleMarker;
     private final GenerationRetryMetadataResolver retryMetadataResolver;
+    private final ReleaseKnowledgeSnapshots releaseKnowledgeSnapshots;
 
     public KnowledgeExtractionServiceImpl(
             StoryKnowledgeExtractionBatchMapper batchMapper,
@@ -144,7 +149,8 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
             ChapterKeyEventMapper eventMapper,
             ObjectMapper objectMapper,
             KnowledgeExtractionStaleMarker staleMarker,
-            GenerationRetryMetadataResolver retryMetadataResolver) {
+            GenerationRetryMetadataResolver retryMetadataResolver,
+            ReleaseKnowledgeSnapshots releaseKnowledgeSnapshots) {
         this.batchMapper = batchMapper;
         this.candidateMapper = candidateMapper;
         this.generationMapper = generationMapper;
@@ -159,6 +165,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         this.objectMapper = objectMapper;
         this.staleMarker = staleMarker;
         this.retryMetadataResolver = retryMetadataResolver;
+        this.releaseKnowledgeSnapshots = releaseKnowledgeSnapshots;
     }
 
     @Autowired
@@ -326,7 +333,9 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         if (STATUS_CONFIRMED.equals(candidate.getCandidateStatus())) {
             return decision(candidate);
         }
-        ensureCurrentForDecision(requireBatchById(candidate.getBatchId()));
+        StoryKnowledgeExtractionBatchEntity batch = requireBatchById(candidate.getBatchId());
+        requireWorkForUpdate(batch.getWorkId());
+        ensureCurrentForDecision(batch);
         if (request == null || request.baseVersion() == null
                 || !request.baseVersion().equals(candidate.getVersion())) {
             throw conflict("知识候选版本已变化，请刷新后重试");
@@ -339,6 +348,21 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
                 ? payload(candidate)
                 : Map.copyOf(request.resolvedPayload());
         validatePayload(candidate.getCandidateType(), payload, candidate.getWorkId());
+        if (batch.getSourceProseRevisionId() != null) {
+            BaseEntity target = decisionTarget(candidate, payload, resolution, request.mergeTargetId());
+            int staged = candidateMapper.update(null, new UpdateWrapper<StoryKnowledgeCandidateEntity>()
+                    .eq("id", candidateId).eq("version", candidate.getVersion())
+                    .in("candidate_status", STATUS_PENDING, STATUS_CONFLICT)
+                    .set("candidate_status", STATUS_CONFIRMED).set("payload_json", json(payload))
+                    .set("decision_resolution", resolution)
+                    .set("decision_target_id", target == null ? null : target.getId())
+                    .set("decision_target_version", target == null ? null : target.getVersion())
+                    .setSql("version = version + 1"));
+            if (staged != 1) {
+                throw conflict("知识候选已被其他操作更新");
+            }
+            return decision(requireCandidate(candidateId));
+        }
         Target target = writeTarget(candidate, payload, resolution, request.mergeTargetId());
         int changed = candidateMapper.update(null, new UpdateWrapper<StoryKnowledgeCandidateEntity>()
                 .eq("id", candidateId)
@@ -836,6 +860,97 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         return optionalLong(payload.get("existingForeshadowingId"));
     }
 
+    /** 在正文发布事务中应用作者已确认的知识决策，回退则恢复封存内容。 */
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = RuntimeException.class)
+    public void activateReleaseKnowledge(Long workId, Long releaseId, Long baselineReleaseId, Long rollbackTarget) {
+        releaseKnowledgeSnapshots.capture(workId, baselineReleaseId, true);
+        if (rollbackTarget != null) {
+            releaseKnowledgeSnapshots.restore(workId, rollbackTarget);
+        } else {
+            for (StoryKnowledgeExtractionBatchEntity batch : batchMapper.forRelease(
+                    workId, releaseId, baselineReleaseId)) {
+                for (StoryKnowledgeCandidateEntity candidate : candidateMapper.selectList(
+                        new LambdaQueryWrapper<StoryKnowledgeCandidateEntity>()
+                                .eq(StoryKnowledgeCandidateEntity::getBatchId, batch.getId())
+                                .eq(StoryKnowledgeCandidateEntity::getCandidateStatus, STATUS_CONFIRMED)
+                                .eq(StoryKnowledgeCandidateEntity::getDeleted, 0)
+                                .orderByAsc(StoryKnowledgeCandidateEntity::getId))) {
+                    applyDecision(candidate);
+                }
+            }
+        }
+        releaseKnowledgeSnapshots.capture(workId, releaseId, false);
+    }
+
+    private void applyDecision(StoryKnowledgeCandidateEntity candidate) {
+        if (candidate.getDecisionResolution() == null) {
+            // 迁移前已确认的数据只能保留已有目标，不能猜测作者的 merge/replace 决策。
+            if (candidate.getConfirmedTargetId() == null) {
+                throw conflict("历史知识确认缺少决策依据，请重新处理");
+            }
+            return;
+        }
+        if (candidate.getConfirmedTargetId() != null) {
+            throw conflict("知识决策已在其他发布中生效");
+        }
+        Map<String, Object> payload = payload(candidate);
+        BaseEntity target = decisionTarget(candidate, payload, candidate.getDecisionResolution(),
+                candidate.getDecisionTargetId());
+        if (!Objects.equals(candidate.getDecisionTargetId(), target == null ? null : target.getId())
+                || !Objects.equals(candidate.getDecisionTargetVersion(), target == null ? null : target.getVersion())) {
+            throw conflict("待发布知识的合并目标已发生变化");
+        }
+        Target written = writeTarget(candidate, payload, candidate.getDecisionResolution(),
+                candidate.getDecisionTargetId());
+        if (candidateMapper.update(null, new UpdateWrapper<StoryKnowledgeCandidateEntity>()
+                .eq("id", candidate.getId()).eq("version", candidate.getVersion())
+                .eq("candidate_status", STATUS_CONFIRMED).isNull("confirmed_target_id")
+                .set("confirmed_target_id", written.id()).set("confirmed_target_type", written.type())
+                .setSql("version = version + 1")) != 1) {
+            throw conflict("知识发布发生并发变化");
+        }
+    }
+
+    private BaseEntity decisionTarget(StoryKnowledgeCandidateEntity candidate, Map<String, Object> payload,
+            String resolution, Long requestedTarget) {
+        if (TYPE_CHAPTER_SUMMARY.equals(candidate.getCandidateType())) {
+            ChapterSummaryEntity target = summaryMapper.selectOne(new LambdaQueryWrapper<ChapterSummaryEntity>()
+                    .eq(ChapterSummaryEntity::getChapterId, candidate.getChapterId())
+                    .eq(ChapterSummaryEntity::getWorkId, candidate.getWorkId())
+                    .eq(ChapterSummaryEntity::getDeleted, 0).last("LIMIT 1 FOR UPDATE"));
+            if (target != null && !RESOLUTION_REPLACE.equals(resolution)) {
+                throw conflict("章节已有摘要，必须明确选择 replace");
+            }
+            return target;
+        }
+        if (TYPE_FORESHADOWING.equals(candidate.getCandidateType())
+                && !ACTION_SEED.equals(text(payload, FIELD_ACTION))) {
+            return lockDecisionTarget(foreshadowingMapper, requestedTarget == null
+                    ? optionalLong(payload.get("existingForeshadowingId")) : requestedTarget, candidate.getWorkId());
+        }
+        if (RESOLUTION_CREATE.equals(resolution)) {
+            return null;
+        }
+        Long targetId = conflictTarget(candidate, requestedTarget);
+        return switch (candidate.getCandidateType()) {
+            case TYPE_SETTING -> lockDecisionTarget(settingMapper, targetId, candidate.getWorkId());
+            case TYPE_KEY_EVENT -> lockDecisionTarget(eventMapper, targetId, candidate.getWorkId());
+            case TYPE_FORESHADOWING -> lockDecisionTarget(foreshadowingMapper, targetId, candidate.getWorkId());
+            default -> throw invalid("未知知识候选类型");
+        };
+    }
+
+    private <T extends BaseEntity> T lockDecisionTarget(BaseMapper<T> mapper,
+            Long targetId, Long workId) {
+        T target = targetId == null ? null : mapper.selectOne(
+                new QueryWrapper<T>()
+                        .eq("id", targetId).eq("work_id", workId).eq("deleted", 0).last("FOR UPDATE"));
+        if (target == null) {
+            throw conflict("知识目标不存在或已不属于当前作品");
+        }
+        return target;
+    }
+
     private Target writeTarget(
             StoryKnowledgeCandidateEntity candidate,
             Map<String, Object> payload,
@@ -873,7 +988,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         target.setContent(text(payload, "content"));
         target.setAttributesJson("{}");
         target.setSourceChapterId(candidate.getChapterId());
-        target.setSourceCandidateId(candidate.getId());
+        // source_candidate_id 仅引用 setting_candidates；故事知识来源由本候选的 confirmed_target_id 追溯。
         target.setEntryStatus("active");
         target.setDeleted(0);
         target.setVersion(0);
@@ -893,6 +1008,12 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         if (target != null && !RESOLUTION_REPLACE.equals(resolution)) {
             throw conflict("章节已有摘要，必须明确选择 replace");
         }
+        boolean restoreDeleted = false;
+        if (target == null) {
+            // 回退空快照会软删除摘要；章节唯一键仍存在，重新发布应复用该行。
+            target = summaryMapper.deletedForUpdate(candidate.getWorkId(), candidate.getChapterId());
+            restoreDeleted = target != null;
+        }
         if (target == null) {
             target = new ChapterSummaryEntity();
             target.setWorkId(candidate.getWorkId());
@@ -900,6 +1021,7 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
             target.setDeleted(0);
             target.setVersion(0);
         }
+        target.setDeleted(0);
         target.setSummary(text(payload, "summary"));
         target.setCharacterChangesJson(json(list(payload, "characterChanges")));
         target.setOpenQuestionsJson(json(list(payload, "openQuestions")));
@@ -909,6 +1031,10 @@ public class KnowledgeExtractionServiceImpl implements KnowledgeExtractionServic
         target.setContentRevision(requireBatchById(candidate.getBatchId()).getSourceContentRevision());
         if (target.getId() == null) {
             summaryMapper.insert(target);
+        } else if (restoreDeleted) {
+            if (summaryMapper.reactivate(target, target.getVersion()) != 1) {
+                throw conflict("摘要重新生效时发生并发修改");
+            }
         } else {
             target.setVersion(version(target.getVersion()) + 1);
             summaryMapper.updateById(target);

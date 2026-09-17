@@ -29,4 +29,7 @@ public class StoryKnowledgeCandidateEntity extends BaseEntity {
     private Long conflictTargetId;
     private String confirmedTargetType;
     private Long confirmedTargetId;
+    private String decisionResolution;
+    private Long decisionTargetId;
+    private Integer decisionTargetVersion;
 }

@@ -57,6 +57,11 @@ class KnowledgeExtractionServiceImplTest {
     private KnowledgeExtractionStaleMarker staleMarker;
     private GenerationRetryMetadataResolver retryMetadataResolver;
     private KnowledgeExtractionServiceImpl service;
+    private StoryKnowledgeCandidateMapper candidateMapper;
+    private ChapterSummaryMapper summaryMapper;
+    private ForeshadowingItemMapper foreshadowingMapper;
+    private ChapterKeyEventMapper eventMapper;
+    private ReleaseKnowledgeSnapshots snapshots;
 
     @BeforeEach
     void setUp() {
@@ -69,21 +74,112 @@ class KnowledgeExtractionServiceImplTest {
         settingMapper = mock(SettingEntryMapper.class);
         staleMarker = mock(KnowledgeExtractionStaleMarker.class);
         retryMetadataResolver = mock(GenerationRetryMetadataResolver.class);
+        candidateMapper = mock(StoryKnowledgeCandidateMapper.class);
+        summaryMapper = mock(ChapterSummaryMapper.class);
+        foreshadowingMapper = mock(ForeshadowingItemMapper.class);
+        eventMapper = mock(ChapterKeyEventMapper.class);
+        snapshots = mock(ReleaseKnowledgeSnapshots.class);
         service = new KnowledgeExtractionServiceImpl(
                 batchMapper,
-                mock(StoryKnowledgeCandidateMapper.class),
+                candidateMapper,
                 generationMapper,
                 chapterMapper,
                 proseRevisionMapper,
                 workMapper,
                 taskMapper,
                 settingMapper,
-                mock(ForeshadowingItemMapper.class),
-                mock(ChapterSummaryMapper.class),
-                mock(ChapterKeyEventMapper.class),
+                foreshadowingMapper,
+                summaryMapper,
+                eventMapper,
                 new ObjectMapper(),
                 staleMarker,
-                retryMetadataResolver);
+                retryMetadataResolver, snapshots);
+    }
+
+    @Test
+    void confirmingUnpublishedRevisionStagesSummaryWithoutWritingCurrentKnowledge() {
+        var candidate = stagedSummary();
+        candidate.setCandidateStatus("pending");
+        candidate.setDecisionResolution(null);
+        var request = new com.dugnan.moqi.knowledge.dto.KnowledgeExtractionModels.ConfirmCandidateRequest(
+                0, "create", null, null);
+        service.confirm(14L, request);
+        verify(summaryMapper, org.mockito.Mockito.never()).insert(
+                org.mockito.ArgumentMatchers.any(com.dugnan.moqi.knowledge.entity.ChapterSummaryEntity.class));
+        verify(summaryMapper, org.mockito.Mockito.never()).updateById(
+                org.mockito.ArgumentMatchers.any(com.dugnan.moqi.knowledge.entity.ChapterSummaryEntity.class));
+        verifyNoInteractions(settingMapper, eventMapper, foreshadowingMapper, snapshots);
+        var capture = org.mockito.ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(candidateMapper).update(org.mockito.ArgumentMatchers.isNull(), capture.capture());
+        assertThat(((com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<?>) capture.getValue()).getSqlSet())
+                .contains("decision_resolution", "decision_target_version").doesNotContain("confirmed_target_id");
+    }
+
+    @Test
+    void releaseWritesStagedSummaryOnlyBetweenBaselineAndNewSnapshots() {
+        stagedSummary();
+        service.activateReleaseKnowledge(1L, 12L, 9L, null);
+        var order = org.mockito.Mockito.inOrder(snapshots, summaryMapper);
+        order.verify(snapshots).capture(1L, 9L, true);
+        order.verify(summaryMapper).insert(
+                org.mockito.ArgumentMatchers.any(com.dugnan.moqi.knowledge.entity.ChapterSummaryEntity.class));
+        order.verify(snapshots).capture(1L, 12L, false);
+    }
+
+    @Test
+    void releaseRejectsChangedSummaryTargetBeforeWriting() {
+        var candidate = stagedSummary();
+        candidate.setDecisionResolution("replace");
+        candidate.setDecisionTargetId(22L);
+        candidate.setDecisionTargetVersion(1);
+        var target = new com.dugnan.moqi.knowledge.entity.ChapterSummaryEntity();
+        target.setId(22L);
+        target.setVersion(2);
+        when(summaryMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(target);
+        assertThatThrownBy(() -> service.activateReleaseKnowledge(1L, 12L, 9L, null))
+                .isInstanceOf(BusinessException.class);
+        verify(summaryMapper, org.mockito.Mockito.never()).updateById(
+                org.mockito.ArgumentMatchers.any(com.dugnan.moqi.knowledge.entity.ChapterSummaryEntity.class));
+        verify(snapshots, org.mockito.Mockito.never()).capture(1L, 12L, false);
+    }
+
+    @Test
+    void rollbackRestoresSnapshotWithoutReapplyingCandidateDecisions() {
+        service.activateReleaseKnowledge(1L, 12L, 9L, 7L);
+        var order = org.mockito.Mockito.inOrder(snapshots);
+        order.verify(snapshots).capture(1L, 9L, true);
+        order.verify(snapshots).restore(1L, 7L);
+        order.verify(snapshots).capture(1L, 12L, false);
+        verifyNoInteractions(candidateMapper, summaryMapper, settingMapper, eventMapper, foreshadowingMapper);
+    }
+
+    private com.dugnan.moqi.knowledge.entity.StoryKnowledgeCandidateEntity stagedSummary() {
+        ChapterProseRevisionEntity revision = revision("待发布正文", 10L, "confirmable");
+        StoryKnowledgeExtractionBatchEntity batch = batch("待发布正文", 2);
+        batch.setSourceProseRevisionId(10L);
+        batch.setSourceStoryReleaseId(9L);
+        batch.setSourceFingerprint(revisionFingerprint(revision));
+        batch.setBatchStatus("ready");
+        when(batchMapper.selectById(9L)).thenReturn(batch);
+        when(workMapper.selectByIdForUpdate(1L)).thenReturn(work(9L));
+        when(proseRevisionMapper.selectByIdForUpdate(10L)).thenReturn(revision);
+        when(batchMapper.forRelease(1L, 12L, 9L)).thenReturn(List.of(batch));
+        var candidate = new com.dugnan.moqi.knowledge.entity.StoryKnowledgeCandidateEntity();
+        candidate.setId(14L);
+        candidate.setWorkId(1L);
+        candidate.setChapterId(5L);
+        candidate.setBatchId(9L);
+        candidate.setCandidateType("chapter_summary");
+        candidate.setCandidateStatus("confirmed");
+        candidate.setDecisionResolution("create");
+        candidate.setPayloadJson("{\"summary\":\"新摘要\",\"characterChanges\":[],\"openQuestions\":[]}");
+        candidate.setDeleted(0);
+        candidate.setVersion(0);
+        when(candidateMapper.selectById(14L)).thenReturn(candidate);
+        when(candidateMapper.selectList(org.mockito.ArgumentMatchers.any())).thenReturn(List.of(candidate));
+        when(candidateMapper.update(org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(1);
+        return candidate;
     }
 
     @Test
