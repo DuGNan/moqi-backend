@@ -35,6 +35,7 @@
 - `POST /workspaces/{workspaceId}/abandon`：放弃工作区，不修改正文或 release。
 - `GET /releases`、`GET /releases/{releaseId}`：查询发布历史与冻结章节映射。
 - `GET /releases/{releaseId}/compare?baseReleaseId=`：比较章节 revision 映射。
+- `GET /releases/{releaseId}/knowledge`：读取当前有效知识或封存历史知识内容；缺失可靠历史快照安全拒绝。
 - `POST /releases/{releaseId}/rollback`：用户确认后以目标映射创建新的回退 release。
 
 ## 修订正文质量检查
@@ -59,3 +60,5 @@ parent、正文和哈希保持不变。重复启动复用同一快照和报告�
 发布事务依次写入新 release 和完整章节映射，按章节版本及旧 revision 指针切换变更章节或下线目标快照中缺席的章节，再按作品版本及旧 release 指针切换作品，最后更新新旧 release 和 revision 状态。任一步更新行数不为 1 都抛出冲突并回滚整个事务，不会产生半新半旧的公开作品。
 
 `chapters.content` 是兼容旧读取接口的当前发布正文投影；拥有 `current_prose_revision_id` 后，旧正文保存 SQL 不再允许更新该字段。
+
+待发布 revision 的知识确认仅保存决策。发布钩子在同一事务中封存上一 release 的有效知识、应用最新基线匹配批次的决策、保存新知识快照并激活来源映射；失败时与正文切换一并回滚。回退恢复目标版本的四类完整知识内容，不仅恢复知识 ID。历史内容一经封存不得覆盖；迁移前没有可靠快照的历史版本不允许猜测恢复。完整契约见《正文知识提取接口》。

@@ -50,6 +50,7 @@ import com.dugnan.moqi.knowledge.entity.StoryKnowledgeCandidateEntity;
 import com.dugnan.moqi.knowledge.entity.StoryKnowledgeExtractionBatchEntity;
 import com.dugnan.moqi.knowledge.mapper.StoryKnowledgeCandidateMapper;
 import com.dugnan.moqi.knowledge.mapper.StoryKnowledgeExtractionBatchMapper;
+import com.dugnan.moqi.knowledge.service.impl.KnowledgeExtractionServiceImpl;
 import com.dugnan.moqi.release.entity.ChapterProseRevisionEntity;
 import com.dugnan.moqi.release.entity.StoryReleaseChapterEntity;
 import com.dugnan.moqi.release.entity.WorkRevisionWorkspaceChapterEntity;
@@ -120,6 +121,7 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
     private final ChapterAssetSourceSnapshotMapper sourceSnapshotMapper;
     private final AgentRuntime agentRuntime;
     private final ObjectMapper objectMapper;
+    private final KnowledgeExtractionServiceImpl knowledgeExtractionService;
 
     public ProseImpactServiceImpl(ProseRevisionImpactReportMapper reportMapper,
             ProseRevisionFactChangeMapper changeMapper, ProseRevisionImpactedAssetMapper assetMapper,
@@ -130,7 +132,7 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
             WorkMapper workMapper,
             ChapterAssetSourceChainService sourceChainService, ChapterAssetSourceSnapshotMapper sourceSnapshotMapper,
             @Lazy AgentRuntime agentRuntime,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper, KnowledgeExtractionServiceImpl knowledgeExtractionService) {
         this.reportMapper = reportMapper;
         this.changeMapper = changeMapper;
         this.assetMapper = assetMapper;
@@ -147,6 +149,7 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
         this.sourceSnapshotMapper = sourceSnapshotMapper;
         this.agentRuntime = agentRuntime;
         this.objectMapper = objectMapper;
+        this.knowledgeExtractionService = knowledgeExtractionService;
     }
 
     @Override
@@ -523,6 +526,8 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
 
     @Override
     public void activateRelease(Long workId, Long releaseId, Long previousReleaseId, Long rollbackTargetReleaseId) {
+        knowledgeExtractionService.activateReleaseKnowledge(workId, releaseId, previousReleaseId,
+                rollbackTargetReleaseId);
         List<StoryReleaseKnowledgeSourceEntity> next = rollbackTargetReleaseId == null
                 ? sourcesFromReleaseRevisions(workId, releaseId, previousReleaseId)
                 : sourcesFromHistoricalRelease(workId, releaseId, rollbackTargetReleaseId);
