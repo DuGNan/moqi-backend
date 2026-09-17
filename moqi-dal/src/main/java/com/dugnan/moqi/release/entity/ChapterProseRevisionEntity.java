@@ -20,6 +20,7 @@ public class ChapterProseRevisionEntity extends BaseEntity {
     private Long sourceBoundedRevisionId;
     private Long sourceSnapshotId;
     private Long evaluationReportId;
+    private Long qualityGenerationId;
     private Integer revisionNo;
     private String revisionOrigin;
     private String revisionStatus;

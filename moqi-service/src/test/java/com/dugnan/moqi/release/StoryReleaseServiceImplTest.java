@@ -3,6 +3,7 @@ package com.dugnan.moqi.release;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -47,6 +48,24 @@ import com.dugnan.moqi.impact.ProseImpactModels.WorkspaceImpactSummary;
  * @description 验证正文 revision 和 Story Release 的候选、哈希、版本及人工确认边界。
  */
 class StoryReleaseServiceImplTest {
+
+    @Test
+    void bindsOnlyIndependentQualitySnapshotReportForEditedRevision() {
+        Fixture fixture = new Fixture();
+        ChapterProseRevisionEntity revision = fixture.revision(6L, "draft", "手工修改正文");
+        revision.setSourceGenerationId(4L);
+        revision.setQualityGenerationId(30L);
+        when(fixture.proseRevisionMapper.selectById(6L)).thenReturn(revision);
+        when(fixture.evaluationReportMapper.selectById(50L))
+                .thenReturn(fixture.report(50L, 4L, revision.getContentHash()));
+        assertThatThrownBy(() -> fixture.service.bindEvaluation(1L, 2L, 6L,
+                new StoryReleaseModels.BindEvaluationRequest(50L, 0))).isInstanceOf(BusinessException.class);
+        when(fixture.evaluationReportMapper.selectById(50L))
+                .thenReturn(fixture.report(50L, 30L, revision.getContentHash()));
+        when(fixture.proseRevisionMapper.update(eq(null), any())).thenReturn(1);
+        fixture.service.bindEvaluation(1L, 2L, 6L, new StoryReleaseModels.BindEvaluationRequest(50L, 0));
+        verify(fixture.evaluationService).requireAdoptable(2L, 30L);
+    }
 
     @Test
     void createsImmutableDraftFromCurrentPublishedParent() {
