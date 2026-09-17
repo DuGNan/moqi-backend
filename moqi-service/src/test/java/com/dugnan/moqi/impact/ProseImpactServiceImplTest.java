@@ -42,6 +42,24 @@ import com.dugnan.moqi.work.mapper.ChapterMapper;
 import com.dugnan.moqi.work.mapper.WorkMapper;
 
 class ProseImpactServiceImplTest {
+    @Test
+    void analysisSourceIncludesExactChapterIdentityAndAllowedScope() throws Exception {
+        Fixture fixture = new Fixture();
+        ProseRevisionImpactReportEntity report = fixture.report("queued", 1);
+        when(fixture.reportMapper.selectById(20L)).thenReturn(report);
+        var chapters = fixture.chapters();
+        chapters.get(1).setChapterNo(77);
+        when(fixture.chapterMapper.selectList(any())).thenReturn(chapters);
+
+        var source = new ObjectMapper().readTree(fixture.service.analysisSource(20L));
+
+        assertThat(source.path("currentChapterId").asLong()).isEqualTo(2L);
+        assertThat(source.path("allowedChapterIds").toString()).isEqualTo("[1,2,3,4]");
+        assertThat(source.path("adjacentChapterIds").toString()).isEqualTo("[1,2,3]");
+        assertThat(source.path("target").asText()).isEqualTo("林舟抵达北城");
+        assertThat(source.path("baseline").asText()).isEmpty();
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"local", "adjacent", "cross_chapter", "work", "unknown"})
     void validatesSupportedFactImpactScopes(String scope) {
