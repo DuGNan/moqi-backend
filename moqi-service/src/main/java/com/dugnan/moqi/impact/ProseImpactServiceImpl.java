@@ -75,7 +75,7 @@ import com.dugnan.moqi.work.mapper.WorkMapper;
 public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactReleaseHook {
     public static final String WORKFLOW_TYPE = "prose_revision_impact_v1";
     public static final String ANALYZE_STEP = "analyze_impact";
-    public static final String ANALYZER_VERSION = "prose-impact-analyzer-v2";
+    public static final String ANALYZER_VERSION = "prose-impact-analyzer-v3";
     private static final String STATUS_QUEUED = "queued";
     private static final String STATUS_RUNNING = "running";
     private static final String STATUS_READY = "ready";
@@ -257,7 +257,14 @@ public class ProseImpactServiceImpl implements ProseImpactService, ProseImpactRe
         ChapterProseRevisionEntity target = revisionMapper.selectById(report.getTargetRevisionId());
         ChapterProseRevisionEntity baseline = report.getBaselineRevisionId() == null ? null
                 : revisionMapper.selectById(report.getBaselineRevisionId());
-        return json(Map.of("baseline", baseline == null ? "" : baseline.getContent(), "target", target.getContent()));
+        ChapterScope scope = chapterScope(report.getWorkId(), report.getChapterId());
+        Map<String, Object> source = new LinkedHashMap<>();
+        source.put("currentChapterId", scope.currentChapterId());
+        source.put("allowedChapterIds", scope.allChapterIds().stream().sorted().toList());
+        source.put("adjacentChapterIds", scope.adjacentChapterIds().stream().sorted().toList());
+        source.put("baseline", baseline == null ? "" : baseline.getContent());
+        source.put("target", target.getContent());
+        return json(source);
     }
 
     public void markRunning(Long reportId) {
