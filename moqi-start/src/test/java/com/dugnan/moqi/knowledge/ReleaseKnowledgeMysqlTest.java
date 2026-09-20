@@ -3,11 +3,13 @@ package com.dugnan.moqi.knowledge;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -47,12 +49,35 @@ class ReleaseKnowledgeMysqlTest {
     @Autowired private PlatformTransactionManager transactions;
     @Autowired private ObjectMapper json;
     @Autowired private StoryKnowledgeExtractionBatchMapper batches;
+    private Long baselineReleaseId;
+    private Long fixtureBatchId;
+    private Map<String, List<Map<String, Object>>> persistedRows;
 
     @BeforeEach
     void isolatedDatabaseOnly() {
         assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo("moqi_issue_184_v56");
-        assertThat(jdbc.queryForObject("SELECT current_story_release_id FROM works WHERE id=1", Long.class))
-                .isEqualTo(10L);
+        baselineReleaseId = jdbc.queryForObject("SELECT current_story_release_id FROM works WHERE id=1", Long.class);
+        assertThat(baselineReleaseId).as("隔离验收作品必须存在当前发布版本").isNotNull();
+        persistedRows = snapshotPersistedRows();
+    }
+
+    @AfterEach
+    void leavesExistingKnowledgeAndReleaseDataUnchanged() {
+        if (persistedRows == null) {
+            return;
+        }
+        assertThat(snapshotPersistedRows()).isEqualTo(persistedRows);
+    }
+
+    private Map<String, List<Map<String, Object>>> snapshotPersistedRows() {
+        Map<String, List<Map<String, Object>>> rows = new LinkedHashMap<>();
+        // 固定的小型隔离验收库：逐表比较完整行，含软删除资产与历史快照，排除自增序列。
+        for (String table : List.of("works", "story_knowledge_candidates", "story_knowledge_extraction_batches",
+                "story_releases", "story_release_chapters", "story_release_knowledge_snapshots",
+                "chapter_summaries", "setting_entries", "chapter_key_events", "foreshadowing_items")) {
+            rows.put(table, jdbc.queryForList("SELECT * FROM " + table + " ORDER BY id"));
+        }
+        return rows;
     }
 
     @Test
@@ -69,14 +94,14 @@ class ReleaseKnowledgeMysqlTest {
             assertThat(count("chapter_key_events")).isEqualTo(initialEvents);
             assertThat(count("foreshadowing_items")).isEqualTo(initialForeshadowing);
             Long next = preparingRelease();
-            releaseHook.activateRelease(1L, next, 10L, null);
+            releaseHook.activateRelease(1L, next, baselineReleaseId, null);
             assertThat(summary()).isEqualTo("QA184_NEW_SUMMARY");
             assertThat(count("setting_entries")).isEqualTo(initialSettings + 1);
             assertThat(count("chapter_key_events")).isEqualTo(initialEvents + 1);
             assertThat(count("foreshadowing_items")).isEqualTo(initialForeshadowing + 1);
             assertThat(query.get(1L, next).items()).anyMatch(item -> item.content().containsValue("QA184_NEW_SUMMARY"));
             Long restored = preparingRelease();
-            releaseHook.activateRelease(1L, restored, next, 10L);
+            releaseHook.activateRelease(1L, restored, next, baselineReleaseId);
             assertThat(summary()).isEqualTo(before);
             assertThat(count("setting_entries")).isEqualTo(initialSettings);
             assertThat(count("chapter_key_events")).isEqualTo(initialEvents);
@@ -100,17 +125,18 @@ class ReleaseKnowledgeMysqlTest {
         assertThatThrownBy(() -> new TransactionTemplate(transactions).executeWithoutResult(status -> {
             seedFourDecisions();
             Long next = preparingRelease();
-            releaseHook.activateRelease(1L, next, 10L, null);
+            releaseHook.activateRelease(1L, next, baselineReleaseId, null);
             assertThat(summary()).isEqualTo("QA184_NEW_SUMMARY");
             jdbc.update("UPDATE works SET current_story_release_id=? WHERE id=1", next);
             throw new IllegalStateException("QA184 injected failure after knowledge activation");
-        })).isInstanceOf(IllegalStateException.class);
+        })).isInstanceOf(IllegalStateException.class)
+                .hasMessage("QA184 injected failure after knowledge activation");
         assertThat(summary()).isEqualTo(before);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM story_releases", Long.class)).isEqualTo(releaseCount);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM story_release_knowledge_snapshots", Long.class))
                 .isEqualTo(snapshotCount);
         assertThat(jdbc.queryForObject("SELECT current_story_release_id FROM works WHERE id=1", Long.class))
-                .isEqualTo(10L);
+                .isEqualTo(baselineReleaseId);
     }
 
     @Test
@@ -119,10 +145,10 @@ class ReleaseKnowledgeMysqlTest {
             status.setRollbackOnly();
             seedFourDecisions();
             jdbc.update("UPDATE chapter_summaries SET version=version+1 WHERE id=1");
-            assertThatThrownBy(() -> releaseHook.activateRelease(1L, preparingRelease(), 10L, null))
+            assertThatThrownBy(() -> releaseHook.activateRelease(1L, preparingRelease(), baselineReleaseId, null))
                     .isInstanceOf(com.dugnan.moqi.common.exception.BusinessException.class);
             assertThat(summary()).isNotEqualTo("QA184_NEW_SUMMARY");
-            assertThatThrownBy(() -> query.get(2L, 10L))
+            assertThatThrownBy(() -> query.get(2L, baselineReleaseId))
                     .isInstanceOf(com.dugnan.moqi.common.exception.BusinessException.class);
         });
     }
@@ -132,7 +158,7 @@ class ReleaseKnowledgeMysqlTest {
     void stagesUpdatesAndRestoresAllExistingKnowledge(String resolution) {
         new TransactionTemplate(transactions).executeWithoutResult(status -> {
             status.setRollbackOnly();
-            excludeHttpDecisions();
+            prepareFixtureBatch();
             jdbc.update("INSERT INTO setting_entries(work_id,setting_type,name,content,entry_status) "
                     + "VALUES(1,'place','QA184_BASE','QA184_OLD_SETTING','active')");
             Long setting = jdbc.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
@@ -152,11 +178,11 @@ class ReleaseKnowledgeMysqlTest {
             assertThat(jdbc.queryForObject("SELECT content FROM setting_entries WHERE id=?", String.class, setting))
                     .isEqualTo("QA184_OLD_SETTING");
             Long next = preparingRelease();
-            releaseHook.activateRelease(1L, next, 10L, null);
+            releaseHook.activateRelease(1L, next, baselineReleaseId, null);
             assertThat(query.get(1L, next).items()).anyMatch(item -> item.content().containsValue("QA184_UPDATED_SETTING"))
                     .anyMatch(item -> item.content().containsValue("QA184_UPDATED_EVENT"))
                     .anyMatch(item -> item.content().containsValue("QA184_UPDATED_HINT"));
-            releaseHook.activateRelease(1L, preparingRelease(), next, 10L);
+            releaseHook.activateRelease(1L, preparingRelease(), next, baselineReleaseId);
             assertThat(jdbc.queryForObject("SELECT content FROM setting_entries WHERE id=?", String.class, setting))
                     .isEqualTo("QA184_OLD_SETTING");
             assertThat(jdbc.queryForObject("SELECT event_content FROM chapter_key_events WHERE id=?", String.class, event))
@@ -170,15 +196,15 @@ class ReleaseKnowledgeMysqlTest {
     void republishesSummaryAfterEmptySnapshotRollbackWithoutUniqueKeyCollision() {
         new TransactionTemplate(transactions).executeWithoutResult(status -> {
             status.setRollbackOnly();
-            excludeHttpDecisions();
+            prepareFixtureBatch();
             jdbc.update("UPDATE chapter_summaries SET deleted=1 WHERE id=1");
             seed("chapter_summary", "create", Map.of("summary", "QA184_RESTORED_SUMMARY",
                     "characterChanges", List.of(), "openQuestions", List.of()));
             Long next = preparingRelease();
-            releaseHook.activateRelease(1L, next, 10L, null);
+            releaseHook.activateRelease(1L, next, baselineReleaseId, null);
             assertThat(summary()).isEqualTo("QA184_RESTORED_SUMMARY");
             assertThat(jdbc.queryForObject("SELECT deleted FROM chapter_summaries WHERE id=1", Integer.class)).isZero();
-            releaseHook.activateRelease(1L, preparingRelease(), next, 10L);
+            releaseHook.activateRelease(1L, preparingRelease(), next, baselineReleaseId);
             assertThat(jdbc.queryForObject("SELECT deleted FROM chapter_summaries WHERE id=1", Integer.class)).isEqualTo(1);
         });
     }
@@ -187,29 +213,42 @@ class ReleaseKnowledgeMysqlTest {
     void releaseBatchSelectionMatchesLatestGateEvenWhenLatestIsNotReady() {
         new TransactionTemplate(transactions).executeWithoutResult(status -> {
             status.setRollbackOnly();
+            prepareFixtureBatch();
             Long next = preparingRelease();
-            assertThat(batches.forRelease(1L, next, 10L)).extracting("id").contains(5L);
-            var newer = batches.selectById(5L);
+            assertThat(batches.forRelease(1L, next, baselineReleaseId)).extracting("id").containsExactly(fixtureBatchId);
+            var newer = batches.selectById(fixtureBatchId);
             newer.setId(null);
             newer.setExtractorVersion("qa184-v2");
             newer.setIdempotencyKey("qa184-" + UUID.randomUUID());
             newer.setBatchStatus("running");
             batches.insert(newer);
-            assertThat(batches.forRelease(1L, next, 10L)).isEmpty();
+            assertThat(batches.forRelease(1L, next, baselineReleaseId)).isEmpty();
             newer.setBatchStatus("ready");
             batches.updateById(newer);
-            assertThat(batches.forRelease(1L, next, 10L)).extracting("id").containsExactly(newer.getId());
+            assertThat(batches.forRelease(1L, next, baselineReleaseId)).extracting("id").containsExactly(newer.getId());
         });
     }
 
-    private void excludeHttpDecisions() {
-        jdbc.update("UPDATE story_knowledge_candidates SET candidate_status='ignored' "
-                + "WHERE batch_id=5 AND decision_resolution IS NOT NULL AND confirmed_target_id IS NULL");
+    private void prepareFixtureBatch() {
+        // 只复用验收正文及其指纹，不共享 HTTP 验收批次或决策；调用方必须处于回滚事务中。
+        var fixture = batches.selectById(5L);
+        assertThat(fixture).as("隔离库必须预置 revision 11 的抽取批次模板 5").isNotNull();
+        assertThat(fixture.getSourceProseRevisionId()).isEqualTo(11L);
+        fixture.setId(null);
+        fixture.setSourceStoryReleaseId(baselineReleaseId);
+        fixture.setAiTaskId(null);
+        fixture.setAgentRunId(null);
+        fixture.setIdempotencyKey("qa184-" + UUID.randomUUID());
+        fixture.setBatchStatus("ready");
+        fixture.setCandidateCount(0);
+        fixture.setErrorCode(null);
+        fixture.setVersion(0);
+        batches.insert(fixture);
+        fixtureBatchId = fixture.getId();
     }
 
     private void seedFourDecisions() {
-        // 隔离库可能保留 HTTP 验收决策；只在本测试的回滚事务内排除它们。
-        excludeHttpDecisions();
+        prepareFixtureBatch();
         seed("chapter_summary", "replace", Map.of("summary", "QA184_NEW_SUMMARY",
                 "characterChanges", List.of(), "openQuestions", List.of()));
         seed("setting", "create", Map.of("settingType", "place", "name", "QA184_PLACE", "content", "QA184_PLACE_DETAIL"));
@@ -224,7 +263,7 @@ class ReleaseKnowledgeMysqlTest {
 
     private void seed(String type, String resolution, Long targetId, Map<String, Object> payload) {
         StoryKnowledgeCandidateEntity candidate = new StoryKnowledgeCandidateEntity();
-        candidate.setBatchId(5L);
+        candidate.setBatchId(fixtureBatchId);
         candidate.setWorkId(1L);
         candidate.setChapterId(1L);
         candidate.setGenerationId(4L);
@@ -255,9 +294,9 @@ class ReleaseKnowledgeMysqlTest {
         jdbc.update("""
                 INSERT INTO story_releases
                 (work_id,parent_release_id,release_no,release_status,release_hash,idempotency_key,confirmed_by,confirmed_at)
-                SELECT 1,10,COALESCE(MAX(release_no),0)+1,'preparing',REPEAT('0',64),?,'qa184',NOW()
+                SELECT 1,?,COALESCE(MAX(release_no),0)+1,'preparing',REPEAT('0',64),?,'qa184',NOW()
                 FROM story_releases WHERE work_id=1
-                """, "qa184-" + UUID.randomUUID());
+                """, baselineReleaseId, "qa184-" + UUID.randomUUID());
         Long id = jdbc.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
         jdbc.update("""
                 INSERT INTO story_release_chapters(work_id,release_id,chapter_id,prose_revision_id,chapter_no,content_hash)
