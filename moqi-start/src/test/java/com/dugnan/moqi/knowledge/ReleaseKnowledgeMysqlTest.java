@@ -21,13 +21,24 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.dugnan.moqi.common.api.ErrorCode;
+import com.dugnan.moqi.common.exception.BusinessException;
+import com.dugnan.moqi.context.StoryContextBuildCommand;
+import com.dugnan.moqi.context.StoryContextEngine;
+import com.dugnan.moqi.context.StoryContextProfile;
+import com.dugnan.moqi.context.StoryContextSnapshot;
+import com.dugnan.moqi.context.StoryContextSnapshotQueryPort;
+import com.dugnan.moqi.context.StoryContextSourceType;
 import com.dugnan.moqi.impact.ProseImpactReleaseHook;
 import com.dugnan.moqi.knowledge.dto.KnowledgeExtractionModels.ConfirmCandidateRequest;
+import com.dugnan.moqi.knowledge.dto.KnowledgeExtractionModels.StartExtractionRequest;
 import com.dugnan.moqi.knowledge.entity.StoryKnowledgeCandidateEntity;
 import com.dugnan.moqi.knowledge.mapper.StoryKnowledgeCandidateMapper;
 import com.dugnan.moqi.knowledge.mapper.StoryKnowledgeExtractionBatchMapper;
 import com.dugnan.moqi.knowledge.service.KnowledgeExtractionService;
 import com.dugnan.moqi.knowledge.service.impl.ReleaseKnowledgeQuery;
+import com.dugnan.moqi.release.StoryReleaseModels.AbandonRevisionRequest;
+import com.dugnan.moqi.release.StoryReleaseService;
 
 /**
  * @author dgn
@@ -49,6 +60,9 @@ class ReleaseKnowledgeMysqlTest {
     @Autowired private PlatformTransactionManager transactions;
     @Autowired private ObjectMapper json;
     @Autowired private StoryKnowledgeExtractionBatchMapper batches;
+    @Autowired private StoryContextEngine contextEngine;
+    @Autowired private StoryContextSnapshotQueryPort contextSnapshots;
+    @Autowired private StoryReleaseService releaseService;
     private Long baselineReleaseId;
     private Long fixtureBatchId;
     private Map<String, List<Map<String, Object>>> persistedRows;
@@ -74,7 +88,8 @@ class ReleaseKnowledgeMysqlTest {
         // 固定的小型隔离验收库：逐表比较完整行，含软删除资产与历史快照，排除自增序列。
         for (String table : List.of("works", "story_knowledge_candidates", "story_knowledge_extraction_batches",
                 "story_releases", "story_release_chapters", "story_release_knowledge_snapshots",
-                "chapter_summaries", "setting_entries", "chapter_key_events", "foreshadowing_items")) {
+                "chapter_summaries", "setting_entries", "chapter_key_events", "foreshadowing_items",
+                "chapter_prose_revisions", "story_context_snapshots")) {
             rows.put(table, jdbc.queryForList("SELECT * FROM " + table + " ORDER BY id"));
         }
         return rows;
@@ -227,6 +242,75 @@ class ReleaseKnowledgeMysqlTest {
             batches.updateById(newer);
             assertThat(batches.forRelease(1L, next, baselineReleaseId)).extracting("id").containsExactly(newer.getId());
         });
+    }
+
+    @Test
+    void contextReadsOnlyEffectiveKnowledgeAndKeepsFrozenSnapshotsAcrossRollback() {
+        new TransactionTemplate(transactions).executeWithoutResult(status -> {
+            status.setRollbackOnly();
+            StoryContextSnapshot before = buildContext();
+            List<String> oldKnowledge = contextKnowledge(before);
+            assertThat(before.items()).anyMatch(item -> item.sourceType() == StoryContextSourceType.CHAPTER_SUMMARY);
+            seedFourDecisions();
+            assertThat(contextKnowledge(buildContext())).isEqualTo(oldKnowledge);
+
+            Long next = preparingRelease();
+            releaseHook.activateRelease(1L, next, baselineReleaseId, null);
+            StoryContextSnapshot published = buildContext();
+            assertThat(contextKnowledge(published))
+                    .anyMatch(item -> item.contains("QA184_NEW_SUMMARY"))
+                    .anyMatch(item -> item.contains("QA184_PLACE_DETAIL"))
+                    .anyMatch(item -> item.contains("QA184_EVENT_DETAIL"))
+                    .anyMatch(item -> item.contains("QA184_HINT_DETAIL"));
+            assertThat(contextKnowledge(contextSnapshots.load(before.id()))).isEqualTo(oldKnowledge);
+
+            releaseHook.activateRelease(1L, preparingRelease(), next, baselineReleaseId);
+            assertThat(contextKnowledge(buildContext())).isEqualTo(oldKnowledge);
+            assertThat(contextKnowledge(contextSnapshots.load(published.id())))
+                    .isEqualTo(contextKnowledge(published));
+            assertThat(query.get(1L, next).items())
+                    .anyMatch(item -> item.content().containsValue("QA184_NEW_SUMMARY"));
+        });
+    }
+
+    @Test
+    void abandoningConfirmedRevisionLeavesEffectiveKnowledgeAndContextUnchanged() {
+        new TransactionTemplate(transactions).executeWithoutResult(status -> {
+            status.setRollbackOnly();
+            var before = query.get(1L, baselineReleaseId);
+            List<String> oldKnowledge = contextKnowledge(buildContext());
+            seedFourDecisions();
+            Integer version = jdbc.queryForObject(
+                    "SELECT version FROM chapter_prose_revisions WHERE id=11", Integer.class);
+            var abandoned = releaseService.abandonRevision(1L, 1L, 11L, new AbandonRevisionRequest(version));
+            assertThat(abandoned.revisionStatus()).isEqualTo("abandoned");
+            assertThat(query.get(1L, baselineReleaseId)).isEqualTo(before);
+            assertThat(contextKnowledge(buildContext())).isEqualTo(oldKnowledge);
+            assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM story_knowledge_candidates
+                    WHERE batch_id=? AND candidate_status='confirmed' AND confirmed_target_id IS NULL
+                    """, Long.class, fixtureBatchId)).isEqualTo(4L);
+            assertThatThrownBy(() -> extraction.startRevision(1L, 1L, 11L,
+                    new StartExtractionRequest("qa184-abandoned-" + UUID.randomUUID())))
+                    .isInstanceOfSatisfying(BusinessException.class, exception ->
+                            assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.KNOWLEDGE_EXTRACTION_CONFLICT));
+            assertThat(query.get(1L, baselineReleaseId)).isEqualTo(before);
+        });
+    }
+
+    private StoryContextSnapshot buildContext() {
+        return contextEngine.build(new StoryContextBuildCommand(
+                StoryContextProfile.CONSISTENCY_REVIEW, 1L, 1L, null, null,
+                "核对已生效的作品知识", "核对当前章节", null, 32768, 4096));
+    }
+
+    private List<String> contextKnowledge(StoryContextSnapshot snapshot) {
+        return snapshot.items().stream()
+                .filter(item -> List.of(StoryContextSourceType.SETTING_ENTRY, StoryContextSourceType.FORESHADOWING,
+                        StoryContextSourceType.CHAPTER_SUMMARY, StoryContextSourceType.CHAPTER_KEY_EVENT)
+                        .contains(item.sourceType()))
+                .map(item -> item.sourceType() + ":" + item.sourceId() + ":" + item.content())
+                .sorted().toList();
     }
 
     private void prepareFixtureBatch() {
