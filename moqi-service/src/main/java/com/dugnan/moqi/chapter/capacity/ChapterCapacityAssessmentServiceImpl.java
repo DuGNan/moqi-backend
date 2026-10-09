@@ -153,9 +153,7 @@ public class ChapterCapacityAssessmentServiceImpl implements ChapterCapacityAsse
         if (updated != 1) {
             throw conflict("容量评估关联运行任务时发生并发冲突");
         }
-        assessment.setAgentRunId(run.runId());
-        assessment.setVersion(assessment.getVersion() + 1);
-        return view(assessment);
+        return view(requireAssessment(assessment.getId()));
     }
 
     @Override
