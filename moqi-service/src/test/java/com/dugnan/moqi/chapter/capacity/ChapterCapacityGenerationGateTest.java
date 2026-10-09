@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.mock;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -18,6 +19,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.dugnan.moqi.agent.AgentRuntime;
+import com.dugnan.moqi.agent.dto.AgentRuntimeModels.AgentRunView;
+import com.dugnan.moqi.chapter.capacity.ChapterCapacityModels.CreateAssessmentRequest;
 import com.dugnan.moqi.chapter.brief.ChapterGenerationBrief;
 import com.dugnan.moqi.chapter.capacity.ChapterCapacityCompiler.CompiledCapacity;
 import com.dugnan.moqi.chapter.capacity.ChapterCapacityModels.CapacityResult;
@@ -35,6 +38,7 @@ import com.dugnan.moqi.planning.PlanningModels.ChapterPlanContent;
 import com.dugnan.moqi.planning.PlanningModels.ChapterPlanView;
 import com.dugnan.moqi.planning.PublishedScenePlanQueryPort;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
+import com.dugnan.moqi.work.entity.ChapterEntity;
 
 /**
  * @author dgn
@@ -69,6 +73,51 @@ class ChapterCapacityGenerationGateTest {
         service = new ChapterCapacityAssessmentServiceImpl(chapterMapper, assessmentMapper, taskMapper,
                 planQueryPort, briefService, new ChapterGenerationLengthPolicy(), compiler, objectMapper, agentRuntime,
                 retryMetadataResolver);
+    }
+
+    @Test
+    void returnsPersistedTimestampsWhenCreatingAnAssessment() throws Exception {
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                new org.apache.ibatis.builder.MapperBuilderAssistant(
+                        new com.baomidou.mybatisplus.core.MybatisConfiguration(), "capacity-test"),
+                ChapterCapacityAssessmentEntity.class);
+        ChapterEntity chapter = new ChapterEntity();
+        chapter.setId(12L);
+        chapter.setWorkId(2L);
+        when(chapterMapper.selectById(12L)).thenReturn(chapter);
+        when(planQueryPort.loadPublished(12L, 4)).thenReturn(plan());
+        when(briefService.compile(any(), any())).thenReturn(brief());
+        when(compiler.compile(any(), any(), anyInt())).thenReturn(
+                new CompiledCapacity(Map.of(), result("fits"), "input-hash"));
+        when(taskMapper.insert(any(AiTaskEntity.class))).thenAnswer(invocation -> {
+            invocation.<AiTaskEntity>getArgument(0).setId(6L);
+            return 1;
+        });
+        when(assessmentMapper.insert(any(ChapterCapacityAssessmentEntity.class))).thenAnswer(invocation -> {
+            invocation.<ChapterCapacityAssessmentEntity>getArgument(0).setId(8L);
+            return 1;
+        });
+        AgentRunView run = mock(AgentRunView.class);
+        when(run.runId()).thenReturn(7L);
+        when(agentRuntime.start(any())).thenReturn(run);
+        when(assessmentMapper.update(any(), any(com.baomidou.mybatisplus.core.conditions.Wrapper.class)))
+                .thenReturn(1);
+        ChapterCapacityAssessmentEntity persisted = entity(result("fits"));
+        LocalDateTime createdAt = LocalDateTime.of(2026, 10, 9, 18, 0);
+        persisted.setGmtCreate(createdAt);
+        persisted.setGmtModified(createdAt.plusSeconds(1));
+        persisted.setAgentRunId(7L);
+        persisted.setVersion(1);
+        when(assessmentMapper.selectById(8L)).thenReturn(persisted);
+        when(retryMetadataResolver.resolve(7L, "semantic_assess"))
+                .thenReturn(new RetryMetadata("semantic_assess", 1, false));
+
+        var response = service.create(12L, new CreateAssessmentRequest(4, "about_1500", null, "create-test"));
+
+        assertThat(response.gmtCreate()).isEqualTo(createdAt);
+        assertThat(response.gmtModified()).isEqualTo(createdAt.plusSeconds(1));
+        assertThat(response.agentRunId()).isEqualTo(7L);
+        assertThat(response.version()).isEqualTo(1);
     }
 
     @Test
