@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.annotation.Propagation;
 
@@ -34,6 +35,12 @@ public class ProseCandidateMaterializationServiceImpl implements ProseCandidateM
     private final ChapterProseCandidateMapper candidateMapper;
     private final BoundedChapterRevisionMapper boundedRevisionMapper;
     private final ChapterGenerationMapper generationMapper;
+    private ProseGenerationTargetService generationTargetService;
+
+    @Autowired
+    public void setGenerationTargetService(ProseGenerationTargetService generationTargetService) {
+        this.generationTargetService = generationTargetService;
+    }
 
     public ProseCandidateMaterializationServiceImpl(
             ChapterProseCandidateMapper candidateMapper,
@@ -64,6 +71,10 @@ public class ProseCandidateMaterializationServiceImpl implements ProseCandidateM
     }
 
     private void doMaterialize(ChapterGenerationEntity generation) {
+        if (generation != null && generation.getTargetObjectId() != null) {
+            generationTargetService.complete(generation);
+            return;
+        }
         if (generation == null || generation.getId() == null || generation.getGeneratedContent() == null) {
             return;
         }

@@ -58,6 +58,7 @@ class ProseWorkspaceServiceImplTest {
     @Test
     void keepsFailedQualityCandidateVisibleAndReadDoesNotCreateEvaluation() {
         Fixture fixture = new Fixture();
+        fixture.candidate.setSourceGenerationId(8L);
         ChapterGenerationEvaluationReportEntity report = new ChapterGenerationEvaluationReportEntity();
         report.setReportStatus("failed");
         report.setContentHash("candidate-hash");
@@ -79,6 +80,7 @@ class ProseWorkspaceServiceImplTest {
         var workspace = fixture.service.getWorkspace(12L);
 
         assertThat(workspace.candidates()).hasSize(1);
+        assertThat(workspace.candidates().get(0).sourceGenerationId()).isEqualTo(8L);
         assertThat(workspace.candidates().get(0).quality().status()).isEqualTo("failed");
         assertThat(workspace.candidates().get(0).quality().generationId()).isEqualTo(3L);
         assertThat(workspace.candidates().get(0).quality().reportId()).isEqualTo(19L);

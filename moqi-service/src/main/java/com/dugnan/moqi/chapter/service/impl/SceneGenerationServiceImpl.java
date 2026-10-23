@@ -97,6 +97,12 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     private final ChapterGenerationBriefService briefService;
     private final ChapterCapacityAssessmentService capacityAssessmentService;
     private SourcePropagationService sourcePropagationService = SourcePropagationService.noop();
+    private ProseGenerationTargetService generationTargetService;
+
+    @Autowired
+    public void setGenerationTargetService(ProseGenerationTargetService generationTargetService) {
+        this.generationTargetService = generationTargetService;
+    }
 
     @Autowired
     public void setSourcePropagationService(SourcePropagationService sourcePropagationService) {
@@ -135,15 +141,20 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public SceneGenerationCreated create(Long chapterId, CreateSceneGenerationRequest request) {
-        ChapterEntity chapter = requireChapter(chapterId);
+        ChapterEntity chapter = request != null && request.resultMode() != null
+                ? generationTargetService.lockChapter(chapterId) : requireChapter(chapterId);
         validateRequest(request);
         ChapterGenerationEntity existing = findByIdempotency(chapterId, request.idempotencyKey());
         if (existing != null) {
             return created(existing);
         }
-        ChapterPlanView chapterPlan = request.scenePlanNo() == null
+        ChapterPlanView chapterPlan = request.resultMode() != null || request.scenePlanNo() == null
                 ? scenePlanQueryPort.loadCurrent(chapterId)
                 : scenePlanQueryPort.loadPublished(chapterId, request.scenePlanNo());
+        if (request.resultMode() != null && request.scenePlanNo() != null
+                && !request.scenePlanNo().equals(chapterPlan.planNo())) {
+            throw invalidSelection("章节规划已变化，请刷新后重新生成");
+        }
         ChapterGenerationBrief generationBrief = briefService.compile(chapterId, chapterPlan);
         List<ScenePlanView> plannedScenes = chapterPlan.scenes().stream()
                 .filter(scene -> "planned".equals(scene.content().status()))
@@ -164,6 +175,9 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
         ChapterGenerationEntity generation = createGeneration(
                 chapter, chapterPlan, request, task, executionConfig, generationBrief,
                 lengthPreset, targetWordCount, capacitySnapshot, baseGeneration);
+        if (request.resultMode() != null) {
+            generationTargetService.prepare(chapter, generation, request);
+        }
         generationMapper.insert(generation);
         sourcePropagationService.generationCreated(chapterId, generation.getId());
 
@@ -207,6 +221,9 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
 
     @Override
     public SceneGenerationCreated regenerate(Long generationId, CreateSceneGenerationRequest request) {
+        if (request != null && request.resultMode() != null) {
+            throw invalidSelection("稳定对象生成请使用章节生成接口");
+        }
         ChapterGenerationEntity source = requireGeneration(generationId);
         if (!Set.of(SELECTION_CONTINUE_FROM, SELECTION_REWRITE_SELECTED)
                 .contains(normalizedMode(request.selectionMode()))) {
@@ -322,6 +339,10 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
     @Transactional(rollbackFor = RuntimeException.class)
     public AgentRunView retryGeneration(Long generationId, RetryGenerationRequest request) {
         ChapterGenerationEntity generation = requireGeneration(generationId);
+        if (generation.getTargetObjectId() != null) {
+            throw new BusinessException(ErrorCode.GENERATION_STATUS_CONFLICT,
+                    "此任务绑定当前正文版本，请使用重新生成创建新任务");
+        }
         if (!STATUS_FAILED.equals(generation.getGenerationStatus())
                 || !ASSEMBLY_WHOLE_CHAPTER_ONCE.equals(generation.getContentAssemblyMode())
                 || generation.getAgentRunId() == null
@@ -559,7 +580,8 @@ public class SceneGenerationServiceImpl implements SceneGenerationService {
 
     private SceneGenerationCreated created(ChapterGenerationEntity generation) {
         return new SceneGenerationCreated(generation.getId(), generation.getAiTaskId(), generation.getAgentRunId(),
-                generation.getChapterPlanVersionId(), generation.getGenerationStatus(), generation.getGmtCreate());
+                generation.getChapterPlanVersionId(), generation.getGenerationStatus(), generation.getGmtCreate(),
+                generation.getTargetObjectId());
     }
 
     private GenerationSceneView view(ChapterGenerationSceneEntity entity, Long agentRunId) {

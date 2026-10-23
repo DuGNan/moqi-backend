@@ -3,12 +3,14 @@ package com.dugnan.moqi.chapter.workflow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 import com.dugnan.moqi.chapter.event.ChapterGenerationCompletedEvent;
 import com.dugnan.moqi.chapter.service.GenerationEvaluationService;
 import com.dugnan.moqi.chapter.service.ProseCandidateMaterializationService;
+import com.dugnan.moqi.chapter.service.impl.ProseGenerationTargetService;
 
 /**
  * @author dgn
@@ -23,6 +25,12 @@ public class ProseCandidateGenerationCompletedListener {
 
     private final ProseCandidateMaterializationService materializationService;
     private final GenerationEvaluationService evaluationService;
+    private ProseGenerationTargetService generationTargetService;
+
+    @Autowired(required = false)
+    public void setGenerationTargetService(ProseGenerationTargetService generationTargetService) {
+        this.generationTargetService = generationTargetService;
+    }
 
     public ProseCandidateGenerationCompletedListener(
             ProseCandidateMaterializationService materializationService,
@@ -38,6 +46,9 @@ public class ProseCandidateGenerationCompletedListener {
         } catch (RuntimeException exception) {
             LOGGER.error("正文候选提交后物化失败，chapterId={}，generationId={}",
                     event.chapterId(), event.generationId(), exception);
+            return;
+        }
+        if (generationTargetService != null && !generationTargetService.canEvaluate(event.generationId())) {
             return;
         }
         try {

@@ -20,7 +20,18 @@ public final class ProseWorkspaceModels {
             FormalProseView formal,
             List<ProseCandidateSummary> candidates,
             WorkspaceSelectionView selection,
-            List<RunningTaskSummary> runningTasks) {
+            List<RunningTaskSummary> runningTasks,
+            List<GenerationTaskSummary> generationTasks) {
+        public ProseWorkspaceView(Long chapterId, FormalProseView formal,
+                List<ProseCandidateSummary> candidates, WorkspaceSelectionView selection,
+                List<RunningTaskSummary> runningTasks) {
+            this(chapterId, formal, candidates, selection, runningTasks, List.of());
+        }
+    }
+
+    public record GenerationTaskSummary(
+            String objectId, Long generationId, String status,
+            boolean originalContentPreserved, String message) {
     }
 
     public record FormalProseView(
@@ -49,7 +60,8 @@ public final class ProseWorkspaceModels {
             AdoptionReadiness adoptionReadiness,
             LocalDateTime createdAt,
             LocalDateTime modifiedAt,
-            Integer displayNo) {
+            Integer displayNo,
+            Long sourceGenerationId) {
 
         public ProseCandidateSummary(
                 Long candidateId,
@@ -68,7 +80,7 @@ public final class ProseWorkspaceModels {
                 LocalDateTime modifiedAt) {
             this(candidateId, objectId, rootCandidateId, parentCandidateId, sourceKind, candidateStatus,
                     adoptionStatus, contentVersion, contentHash, wordCount, quality, adoptionReadiness,
-                    createdAt, modifiedAt, null);
+                    createdAt, modifiedAt, null, null);
         }
     }
 

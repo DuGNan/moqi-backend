@@ -457,7 +457,7 @@ public class WorkChapterServiceImpl implements WorkChapterService {
             return "editor";
         }
         if (preview != null) {
-            return "generation_preview";
+            return "editor";
         }
         return "co_creation";
     }

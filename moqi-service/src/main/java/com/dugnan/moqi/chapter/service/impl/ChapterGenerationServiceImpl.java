@@ -92,6 +92,14 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     private final GenerationRetryMetadataResolver retryMetadataResolver;
     private final GenerationEvaluationService evaluationService;
     private ProseCandidateMaterializationService materializationService;
+    private com.dugnan.moqi.chapter.selection.SelectionAssistanceServiceImpl selectionAssistanceService;
+
+    @Autowired
+    public void setSelectionAssistanceService(
+            @org.springframework.context.annotation.Lazy
+            com.dugnan.moqi.chapter.selection.SelectionAssistanceServiceImpl selectionAssistanceService) {
+        this.selectionAssistanceService = selectionAssistanceService;
+    }
 
     /**
      * 创建章节生成服务。
@@ -327,7 +335,10 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
     @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public ContentSaved saveContent(Long chapterId, SaveContentRequest request) {
-        ChapterEntity chapter = requireChapter(chapterId);
+        ChapterEntity chapter = chapterMapper.selectByIdForUpdate(chapterId);
+        if (chapter == null) {
+            throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
+        }
         if (chapter.getCurrentProseRevisionId() != null) {
             throw new BusinessException(ErrorCode.PROSE_REVISION_CONFLICT,
                     "已有 Story Release 的正式正文只读，请先创建正文候选");
@@ -340,6 +351,9 @@ public class ChapterGenerationServiceImpl implements ChapterGenerationService {
             throw versionConflict(requireChapter(chapterId));
         }
         ChapterEntity saved = requireChapter(chapterId);
+        if (request.appliedProposalIds() != null && !request.appliedProposalIds().isEmpty()) {
+            selectionAssistanceService.settleFormalSave(chapter, saved, request.appliedProposalIds());
+        }
         return new ContentSaved(
                 chapterId,
                 true,
