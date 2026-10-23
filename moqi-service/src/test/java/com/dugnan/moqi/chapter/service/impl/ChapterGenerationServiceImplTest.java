@@ -570,7 +570,8 @@ class ChapterGenerationServiceImplTest {
         current.setGmtModified(LocalDateTime.of(2026, 7, 18, 20, 0));
         ChapterEntity saved = chapter(12L, "新正文", 4);
         saved.setGmtModified(LocalDateTime.of(2026, 7, 18, 20, 1));
-        when(chapterMapper.selectById(12L)).thenReturn(current, current, saved);
+        when(chapterMapper.selectById(12L)).thenReturn(current, saved);
+        when(chapterMapper.selectByIdForUpdate(12L)).thenReturn(current);
         when(chapterMapper.updateContentIfVersion(12L, "新正文", 3)).thenReturn(1);
 
         var content = service.getContent(12L);
@@ -587,7 +588,7 @@ class ChapterGenerationServiceImplTest {
     void rejectsDirectSaveForReleasedFormalContent() {
         ChapterEntity released = chapter(12L, "已发布正文", 3);
         released.setCurrentProseRevisionId(20L);
-        when(chapterMapper.selectById(12L)).thenReturn(released);
+        when(chapterMapper.selectByIdForUpdate(12L)).thenReturn(released);
 
         assertThatThrownBy(() -> service.saveContent(
                 12L, new SaveContentRequest("试图覆盖", 3, "manual")))
@@ -606,7 +607,8 @@ class ChapterGenerationServiceImplTest {
         ChapterEntity current = chapter(12L, "旧正文", 3);
         ChapterEntity server = chapter(12L, "服务端正文", 4);
         server.setGmtModified(LocalDateTime.of(2026, 7, 18, 20, 30));
-        when(chapterMapper.selectById(12L)).thenReturn(current, server);
+        when(chapterMapper.selectByIdForUpdate(12L)).thenReturn(current);
+        when(chapterMapper.selectById(12L)).thenReturn(server);
         when(chapterMapper.updateContentIfVersion(12L, "新正文", 3)).thenReturn(0);
 
         assertThatThrownBy(() -> service.saveContent(

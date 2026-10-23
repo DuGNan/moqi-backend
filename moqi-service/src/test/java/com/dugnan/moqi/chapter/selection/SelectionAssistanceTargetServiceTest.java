@@ -54,6 +54,33 @@ import com.dugnan.moqi.work.mapper.ChapterMapper;
 class SelectionAssistanceTargetServiceTest {
 
     @Test
+    void conversationalRequestKeepsFormalObjectAndDoesNotAllocateCandidate() {
+        Fixture fixture = new Fixture();
+        var view = fixture.service.create(2L, fixture.request("formal", "formal:2", 3, "auto", "chat-edit"));
+        assertThat(view.targetId()).isEqualTo("formal:2");
+        assertThat(view.operation()).isEqualTo("auto");
+        assertThat(view.createdCandidateId()).isNull();
+        verify(fixture.candidateMapper, never()).insert(any(ChapterProseCandidateEntity.class));
+        verify(fixture.generationMapper, never()).insert(any(ChapterGenerationEntity.class));
+        verify(fixture.chapterMapper, never()).updateContentIfVersion(any(), any(), any());
+    }
+
+    @Test
+    void formalSaveRejectsProposalFromChangedVersion() {
+        Fixture fixture = new Fixture();
+        var proposal = fixture.persistedFormalRewrite();
+        proposal.setOperationType("auto");
+        proposal.setTargetObjectId("formal:2");
+        proposal.setTargetContentVersion(2);
+        proposal.setProposalStatus("ready");
+        proposal.setRequestStatus("ready");
+        proposal.setDiffJson("{}");
+        when(fixture.assistanceMapper.selectByIdForUpdate(9L)).thenReturn(proposal);
+        assertThatThrownBy(() -> fixture.service.settleFormalSave(fixture.chapter, fixture.chapter, List.of(9L)))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
     void formalRewriteCreatesStableCandidateWithoutUpdatingFormalProse() {
         Fixture fixture = new Fixture();
 

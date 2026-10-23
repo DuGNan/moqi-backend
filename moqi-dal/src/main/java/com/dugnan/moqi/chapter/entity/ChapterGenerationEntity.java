@@ -7,8 +7,8 @@ import com.dugnan.moqi.common.entity.BaseEntity;
 
 /**
  * @author dgn
- * @date:2026-07-13
- * @description:映射章节生成记录数据。
+ * @date 2026-07-13
+ * @description 映射章节生成记录、稳定正文目标与写回快照。
  */
 @Data
 @TableName("chapter_generations")
@@ -71,4 +71,18 @@ public class ChapterGenerationEntity extends BaseEntity {
     private String validityStatus;
 
     private String validityReasonCodesJson;
+
+    private String resultMode;
+
+    private String targetObjectId;
+
+    private Integer targetVersion;
+
+    private String targetContentHash;
+
+    private String targetContentSnapshot;
+
+    private String writebackStatus;
+
+    private String writebackMessage;
 }

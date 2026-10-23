@@ -41,6 +41,7 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
     private static final String ROLE_USER = "user";
 
     private static final String TEMPLATE_VERSION = "selection-assistance-v3";
+    private static final String OPERATION_AUTO = "auto";
     private static final String OPERATION_DISCUSS = "discuss";
     private static final String HIDDEN_REASONING_FIELD = "reasoning";
     private static final String CHAIN_OF_THOUGHT_FIELD = "chainOfThought";
@@ -51,6 +52,12 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
     private final LlmProviderFactory providerFactory;
     private final UserConfigService userConfigService;
     private final ObjectMapper objectMapper;
+    private ProseConversationStream conversationStream;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setConversationStream(ProseConversationStream conversationStream) {
+        this.conversationStream = conversationStream;
+    }
 
     public SelectionAssistanceWorkflowDefinition(
             SelectionAssistanceServiceImpl assistanceService,
@@ -107,6 +114,13 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
         StoryContextSnapshot snapshot = assistanceService.buildModelContext(assistanceId, provider, instruction);
         List<LlmMessage> messages = snapshot == null
                 ? legacyMessages(assistanceId, instruction) : snapshot.toMessages();
+        if (OPERATION_AUTO.equals(operation)) {
+            conversationStream.generate(assistanceId, provider, new LlmRequest(messages,
+                    new LlmOptions(snapshot == null ? 4096 : snapshot.outputReserveTokens(),
+                            null, List.of(), LlmResponseFormat.JSON_OBJECT)), logicalCallRef);
+            return AgentStepResult.completed(Map.of("assistanceId", assistanceId, "operation", operation),
+                    Map.of("assistanceId", assistanceId), null);
+        }
         LlmResponse response = provider.generate(new LlmRequest(messages,
                 new LlmOptions(snapshot == null ? 4096 : snapshot.outputReserveTokens(),
                         null, List.of(), LlmResponseFormat.JSON_OBJECT)));
@@ -209,6 +223,15 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
     private String systemInstruction(String operation) {
         String historyRule = "此前消息来自当前正文对象自己的会话；历史作者消息用于理解作者意图，"
                 + "历史助手回复只是候选建议，除非作者随后明确确认，否则不得当成权威事实。";
+        if (OPERATION_AUTO.equals(operation)) {
+            return "你是作者的正文编辑搭档。根据当前要求和会话上下文直接行动。只输出一个 JSON 对象且只能有一个字段："
+                    + "作者要求改写、润色、压缩、扩写、改改、按建议改或继续调整时，输出 {\"replacement\":\"纯正文改写稿\"}；"
+                    + "询问评价、解释或讨论时输出 {\"advice\":\"讨论回答\"}。不必再问作者是否开始改写。"
+                    + "replacement 只能包含绑定范围的完整新正文，不含说明、标题、Markdown 围栏或修改理由，"
+                    + "保留范围外的正文，不得声称已替换、保存或发布。若作者指向不明或要求超出绑定范围，用 advice 澄清。"
+                    + "继续调整时依据上轮改写稿与最新要求，但返回完整的范围内正文。不能擅自改变已确认故事事实或规划。"
+                    + historyRule;
+        }
         if (OPERATION_DISCUSS.equals(operation)) {
             return "只输出 JSON 对象 {\"advice\":\"...\",\"factRisk\":\"safe|review_required\","
                     + "\"factRiskReasons\":[]}。仅给出写作建议，不生成替换正文，不确认任何故事事实。"

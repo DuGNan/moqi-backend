@@ -14,6 +14,7 @@ import com.dugnan.moqi.chapter.entity.ChapterGenerationSceneEntity;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationMapper;
 import com.dugnan.moqi.chapter.mapper.ChapterGenerationSceneMapper;
 import com.dugnan.moqi.chapter.stream.SceneGenerationEvent;
+import com.dugnan.moqi.common.api.PublicFailureFactory;
 
 /**
  * @author dgn
@@ -51,6 +52,8 @@ public class SceneGenerationRunLifecycleListener {
         int changed = generationMapper.update(null, new UpdateWrapper<ChapterGenerationEntity>()
                 .eq("agent_run_id", event.runId()).eq("deleted", 0)
                 .in("generation_status", Set.of("queued", "running"))
+                .set(event.failure() != null, "writeback_message", event.failure() == null ? null
+                        : PublicFailureFactory.safeMessage(event.failure().code(), null))
                 .set("generation_status", generationStatus).setSql("version = version + 1")
                 .set("gmt_modified", LocalDateTime.now()));
         if (changed > 0) {

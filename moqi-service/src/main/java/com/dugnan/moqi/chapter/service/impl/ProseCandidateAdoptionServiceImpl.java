@@ -108,6 +108,9 @@ public class ProseCandidateAdoptionServiceImpl implements ProseCandidateAdoption
         ChapterEntity chapter = chapterMapper.selectById(candidate.getChapterId());
         String mode = chapter != null && chapter.getCurrentProseRevisionId() != null ? MODE_RELEASE : MODE_DIRECT;
         List<String> blocking = new ArrayList<>();
+        if (!StringUtils.hasText(candidate.getContent())) {
+            blocking.add("empty_content");
+        }
         ChapterGenerationEvaluationReportEntity report = latestWholeReport(candidate.getQualityGenerationId());
         if (!CANDIDATE_ACTIVE.equals(candidate.getCandidateStatus())) {
             blocking.add(BLOCK_CANDIDATE_NOT_ACTIVE);
@@ -154,6 +157,9 @@ public class ProseCandidateAdoptionServiceImpl implements ProseCandidateAdoption
         }
         ChapterProseCandidateEntity candidate = candidateMapper.selectByIdForUpdate(chapterId, candidateId);
         requireCandidateInput(candidate, request);
+        if (!StringUtils.hasText(candidate.getContent())) {
+            throw blocked("候选尚未生成有效正文，不能采纳");
+        }
         ProseCandidateAdoptionEntity replay = replayOrConflict(candidate, request);
         if (replay != null) {
             if (MODE_RELEASE.equals(replay.getAdoptionMode())) {

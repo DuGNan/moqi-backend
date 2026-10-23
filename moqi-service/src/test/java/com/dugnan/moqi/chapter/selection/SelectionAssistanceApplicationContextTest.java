@@ -55,7 +55,8 @@ class SelectionAssistanceApplicationContextTest {
      * @description 复现 Agent Runtime、工作流注册、选区服务和 Brief 之间的启动依赖图。
      */
     @Configuration(proxyBeanMethods = false)
-    @Import(SelectionAssistanceServiceImpl.class)
+    @Import({SelectionAssistanceServiceImpl.class, ProseConversationStream.class,
+            com.dugnan.moqi.llm.LlmStreamCallRegistry.class})
     static class CycleRegressionConfiguration {
 
         @Bean

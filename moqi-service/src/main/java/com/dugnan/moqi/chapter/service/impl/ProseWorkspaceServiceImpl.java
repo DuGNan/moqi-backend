@@ -87,6 +87,12 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
     private ProseProposalSettlementService proposalSettlementService;
     private ProseCandidateAdoptionService adoptionService;
     private ObjectMapper objectMapper;
+    private ProseGenerationTargetService generationTargetService;
+
+    @Autowired
+    public void setGenerationTargetService(ProseGenerationTargetService generationTargetService) {
+        this.generationTargetService = generationTargetService;
+    }
 
     public ProseWorkspaceServiceImpl(
             ChapterMapper chapterMapper,
@@ -143,7 +149,8 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
                 formal(chapter),
                 candidates,
                 selection == null ? defaultSelection(chapter) : selectionView(selection),
-                runningTasks(chapterId));
+                runningTasks(chapterId),
+                generationTargetService == null ? List.of() : generationTargetService.tasks(chapterId));
     }
 
     @Override
@@ -449,7 +456,7 @@ public class ProseWorkspaceServiceImpl implements ProseWorkspaceService {
                 item.getId(), candidateId(item.getId()), rootId(item), item.getParentCandidateId(), item.getSourceKind(),
                 item.getCandidateStatus(), item.getAdoptionStatus(), item.getVersion(), item.getContentHash(),
                 item.getWordCount(), quality(item), adoptionService.readiness(item),
-                item.getGmtCreate(), item.getGmtModified(), displayNo);
+                item.getGmtCreate(), item.getGmtModified(), displayNo, item.getSourceGenerationId());
     }
 
     private ProseCandidateDetail detail(ChapterProseCandidateEntity item) {

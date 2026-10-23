@@ -107,6 +107,53 @@ class SceneGenerationServiceImplTest {
     }
 
     @Test
+    void rejectsLegacyRetryForStableObjectTask() {
+        ChapterGenerationEntity generation = new ChapterGenerationEntity();
+        generation.setId(51L);
+        generation.setTargetObjectId("candidate:72");
+        generation.setGenerationStatus("failed");
+        when(generationMapper.selectById(51L)).thenReturn(generation);
+        assertThatThrownBy(() -> service.retryGeneration(51L, new RetryGenerationRequest(1)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("重新生成");
+        verify(agentRuntime, never()).retryStep(any());
+    }
+
+    @Test
+    void rejectsStalePlanForStableObjectGeneration() {
+        ProseGenerationTargetService targets = org.mockito.Mockito.mock(ProseGenerationTargetService.class);
+        service.setGenerationTargetService(targets);
+        when(targets.lockChapter(12L)).thenReturn(chapter());
+        when(generationMapper.selectOne(any())).thenReturn(null);
+        when(scenePlanQueryPort.loadCurrent(12L)).thenReturn(plan());
+        CreateSceneGenerationRequest request = new CreateSceneGenerationRequest(
+                999, "all", null, List.of(), null, "stale-plan", "about_3000", null, null,
+                null, null, false, "new_candidate", "formal:12", 0, "hash", null);
+        assertThatThrownBy(() -> service.create(12L, request))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("章节规划已变化");
+        verify(agentRuntime, never()).start(any());
+    }
+
+    @Test
+    void replaysStableTargetIdWithoutCreatingAnotherCandidateOrRun() {
+        ProseGenerationTargetService targets = org.mockito.Mockito.mock(ProseGenerationTargetService.class);
+        service.setGenerationTargetService(targets);
+        when(targets.lockChapter(12L)).thenReturn(chapter());
+        ChapterGenerationEntity existing = new ChapterGenerationEntity();
+        existing.setId(51L);
+        existing.setTargetObjectId("candidate:72");
+        existing.setGenerationStatus("queued");
+        when(generationMapper.selectOne(any())).thenReturn(existing);
+        CreateSceneGenerationRequest request = new CreateSceneGenerationRequest(
+                null, "all", null, List.of(), null, "stable-idempotent", "about_3000", null, null,
+                null, null, false, "new_candidate", "formal:12", 0, "hash", null);
+
+        assertThat(service.create(12L, request).targetObjectId()).isEqualTo("candidate:72");
+        verify(targets, never()).prepare(any(), any(), any());
+        verify(agentRuntime, never()).start(any());
+        verify(generationMapper, never()).insert(any(ChapterGenerationEntity.class));
+    }
+
+    @Test
     void createsWholeChapterRunWithoutPendingSceneDrafts() {
         ChapterEntity chapter = chapter();
         chapter.setContent("当前章节正文");

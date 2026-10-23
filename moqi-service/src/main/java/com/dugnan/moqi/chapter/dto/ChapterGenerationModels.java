@@ -1,6 +1,7 @@
 package com.dugnan.moqi.chapter.dto;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -185,7 +186,10 @@ public final class ChapterGenerationModels {
             LocalDateTime gmtModified) {
     }
 
-    public record SaveContentRequest(String content, Integer baseVersion, String saveSource) {
+    public record SaveContentRequest(String content, Integer baseVersion, String saveSource, List<Long> appliedProposalIds) {
+        public SaveContentRequest(String content, Integer baseVersion, String saveSource) {
+            this(content, baseVersion, saveSource, List.of());
+        }
     }
 
     public record ContentSaved(

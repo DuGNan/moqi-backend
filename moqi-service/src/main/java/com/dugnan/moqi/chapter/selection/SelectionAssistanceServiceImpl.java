@@ -80,6 +80,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private static final String STATUS_READY = "ready";
     private static final String STATUS_REVIEW_REQUIRED = "review_required";
     private static final String STATUS_FAILED = "failed";
+    private static final String OPERATION_AUTO = "auto";
     private static final String OPERATION_DISCUSS = "discuss";
     private static final String WORKFLOW_CO_CREATION = "co_creation";
     private static final String TARGET_FORMAL = "formal";
@@ -91,10 +92,11 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private static final String CANDIDATE_PREFIX = "candidate:";
     private static final String FORMAL_PREFIX = "formal:";
     private static final int TARGET_CONTRACT_VERSION = 2;
+    private static final int MAX_PROPOSALS_PER_SAVE = 100;
     private static final int MAX_SELECTED_LENGTH = 100000;
     private static final int MAX_INSTRUCTION_LENGTH = 2000;
     private static final Set<String> OPERATIONS = Set.of(
-            OPERATION_DISCUSS, "rewrite", "polish", "expand", "compress");
+            OPERATION_DISCUSS, OPERATION_AUTO, "rewrite", "polish", "expand", "compress");
     private static final int ADJACENT_LIMIT = 800;
     private static final int MAX_HISTORY_MESSAGES = 24;
     private static final int CONVERSATION_PAIR_SIZE = 2;
@@ -115,6 +117,12 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private ProseObjectConversationService proseObjectConversationService;
     private ProseObjectPromptContextService proseObjectPromptContextService;
     private StoryContextTaskBindingService contextBindingService;
+    private com.dugnan.moqi.llm.LlmStreamCallRegistry streamCallRegistry;
+
+    @Autowired
+    public void setStreamCallRegistry(com.dugnan.moqi.llm.LlmStreamCallRegistry streamCallRegistry) {
+        this.streamCallRegistry = streamCallRegistry;
+    }
 
     public SelectionAssistanceServiceImpl(
             ChapterMapper chapterMapper,
@@ -214,6 +222,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         ChapterSelectionAssistanceEntity parent = requireParent(chapter, request.parentId());
         Target target = resolveTarget(chapter, request, lockedCandidate);
         validateTarget(request, target);
+        validateConversationParent(request, parent, target);
         ChapterProseCandidateEntity createdCandidate = createFormalModificationCandidate(
                 chapter, request, target, normalizedKey);
         if (createdCandidate != null) {
@@ -221,7 +230,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                     target.selectionEnd(), target.selectedText());
         }
         GenerationBriefPreview brief = briefService.preview(chapterId, null);
-        PlanningContext planningContext = OPERATION_DISCUSS.equals(request.operation())
+        PlanningContext planningContext = Set.of(OPERATION_DISCUSS, OPERATION_AUTO).contains(request.operation())
                 ? null : planningChangeService.freezeContext(chapterId);
         ConversationContext conversationContext = isTargetRequest(request)
                 ? conversationContext(chapter, target) : null;
@@ -229,6 +238,20 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 chapter, request, target, parent, brief, planningContext, conversationContext);
         return persistAssistanceRun(chapter, request, normalizedKey, parent, target,
                 createdCandidate, brief, fingerprint, planningContext, conversationContext);
+    }
+
+    private void validateConversationParent(CreateRequest request, ChapterSelectionAssistanceEntity parent, Target target) {
+        if (parent == null || !OPERATION_AUTO.equals(request.operation())) {
+            return;
+        }
+        boolean sameTarget = Objects.equals(parent.getTargetObjectId(), target.objectId())
+                && Objects.equals(parent.getTargetContentVersion(), target.version())
+                && Objects.equals(parent.getTargetContentHash(), target.contentHash());
+        boolean sameRange = Objects.equals(parent.getSelectionStart(), target.selectionStart())
+                && Objects.equals(parent.getSelectionEnd(), target.selectionEnd());
+        if (!sameTarget || !sameRange || parent.getDiffJson() == null) {
+            throw conflict("继续修改的原文范围或版本已经变化");
+        }
     }
 
     private View persistAssistanceRun(
@@ -374,6 +397,9 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             throw conflict("选区协助运行尚未建立");
         }
         AgentRunView run = agentRuntime.cancel(entity.getAgentRunId());
+        if (streamCallRegistry != null) {
+            streamCallRegistry.cancel(entity.getAiTaskId());
+        }
         assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", entity.getId()).in("request_status", STATUS_QUEUED, STATUS_RUNNING)
                 .set("request_status", "canceled").set("proposal_status", "canceled")
@@ -665,6 +691,49 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             List<String> reasons,
             ModelPlanningProposal planningProposal,
             String modelCallRef) {
+        completeResult(requestId, resultContent, factRiskStatus, reasons, planningProposal, modelCallRef,
+                OPERATION_DISCUSS.equals(operation(requestId)));
+    }
+
+    /** 对话模式只持久化预览，不自动建立候选或写回正文。 */
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void completeConversation(Long requestId, String content, boolean replacement, String modelCallRef) {
+        completeResult(requestId, content, "safe", List.of(), null, modelCallRef, !replacement);
+    }
+
+    /** 在正式正文保存事务内结算作者明确应用的对话改写，不改变未应用提案。 */
+    public void settleFormalSave(ChapterEntity previous, ChapterEntity saved, List<Long> proposalIds) {
+        if (proposalIds == null || proposalIds.isEmpty()) {
+            return;
+        }
+        if (proposalIds.size() > MAX_PROPOSALS_PER_SAVE || proposalIds.stream().anyMatch(Objects::isNull)
+                || proposalIds.stream().distinct().count() != proposalIds.size()) {
+            throw badRequest("修改提案标识无效");
+        }
+        for (Long id : proposalIds.stream().sorted().toList()) {
+            ChapterSelectionAssistanceEntity proposal = assistanceMapper.selectByIdForUpdate(id);
+            if (proposal == null || !Objects.equals(proposal.getChapterId(), previous.getId())
+                    || !Objects.equals(proposal.getTargetObjectId(), FORMAL_PREFIX + previous.getId())
+                    || !OPERATION_AUTO.equals(proposal.getOperationType()) || proposal.getDiffJson() == null
+                    || !"ready".equals(proposal.getProposalStatus())
+                    || !Set.of(STATUS_READY, STATUS_REVIEW_REQUIRED).contains(proposal.getRequestStatus())
+                    || !Objects.equals(proposal.getTargetContentVersion(), previous.getVersion())
+                    || !Objects.equals(proposal.getTargetContentHash(), hash(content(previous)))) {
+                throw conflict("改写稿已过期或不属于当前正式正文");
+            }
+            int updated = assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
+                    .eq("id", id).eq("version", proposal.getVersion()).eq("proposal_status", "ready")
+                    .set("proposal_status", "applied").set("accepted_chapter_version", saved.getVersion())
+                    .set("applied_candidate_version", saved.getVersion())
+                    .set("applied_candidate_hash", hash(content(saved))).setSql("version = version + 1"));
+            if (updated != 1) {
+                throw conflict("改写稿保存状态已变化");
+            }
+        }
+    }
+
+    private void completeResult(Long requestId, String resultContent, String factRiskStatus,
+            List<String> reasons, ModelPlanningProposal planningProposal, String modelCallRef, boolean discussion) {
         ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
         if (!StringUtils.hasText(resultContent) || resultContent.length() > MAX_SELECTED_LENGTH) {
             throw badRequest("模型结果为空或超过局部候选长度限制");
@@ -675,8 +744,8 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 .filter(StringUtils::hasText).limit(20).map(value -> value.substring(0, Math.min(300, value.length()))).toList();
         String normalizedContent = resultContent.trim();
         String status = STATUS_REVIEW_REQUIRED.equals(normalizedRisk) ? STATUS_REVIEW_REQUIRED : STATUS_READY;
-        String originalForDiff = sourceText(entity);
-        String diff = OPERATION_DISCUSS.equals(entity.getOperationType()) ? null
+        String originalForDiff = OPERATION_AUTO.equals(entity.getOperationType()) ? entity.getSelectedText() : sourceText(entity);
+        String diff = discussion ? null
                 : json(new TextDiff(originalForDiff, normalizedContent,
                         originalForDiff.length(), normalizedContent.length()));
         if (planningProposal != null) {
@@ -685,7 +754,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         int updated = assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                 .eq("id", requestId).eq("request_status", STATUS_RUNNING)
                 .set("request_status", status).set("result_content", normalizedContent)
-                .set("proposal_status", OPERATION_DISCUSS.equals(entity.getOperationType())
+                .set("proposal_status", discussion
                         ? "discussion" : "ready")
                 .set("diff_json", diff).set("fact_risk_status", normalizedRisk)
                 .set("fact_risk_reasons_json", json(safeReasons)).set("model_call_ref", modelCallRef)
@@ -695,6 +764,12 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         }
         if (isTargetAssistance(entity)) {
             persistAssistanceAssistantMessage(entity, normalizedContent);
+        }
+        if (OPERATION_AUTO.equals(entity.getOperationType()) && entity.getParentId() != null && !discussion) {
+            assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
+                    .eq("id", entity.getParentId()).eq("proposal_status", "ready")
+                    .set("request_status", "rejected").set("proposal_status", "rejected")
+                    .setSql("version = version + 1"));
         }
         updateTaskStatus(entity.getAiTaskId(), "completed", null, null);
     }
@@ -825,6 +900,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private String operationInstruction(String operation) {
         return switch (operation) {
             case OPERATION_DISCUSS -> "分析作者引用的正文并给出建议，不生成替换正文";
+            case OPERATION_AUTO -> "根据作者本轮意图直接讨论或生成改写稿；改写仅限绑定范围，未明确要求时只讨论";
             case "rewrite" -> "按作者要求重写正文";
             case "polish" -> "润色正文，但不擅自改变情节事实";
             case "expand" -> "扩写正文，并保持既有事实边界";
@@ -921,7 +997,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             Target target,
             String idempotencyKey) {
         if (!isTargetRequest(request) || !TARGET_FORMAL.equals(target.kind())
-                || OPERATION_DISCUSS.equals(request.operation())) {
+                || Set.of(OPERATION_DISCUSS, OPERATION_AUTO).contains(request.operation())) {
             return null;
         }
         ChapterGenerationEntity formalBasisSource = formalBasisSource(chapter);
@@ -1073,7 +1149,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         message.setConversationId(assistance.getConversationId());
         message.setChapterId(assistance.getChapterId());
         message.setMessageRole(ROLE_ASSISTANT);
-        message.setContent(OPERATION_DISCUSS.equals(assistance.getOperationType())
+        message.setContent(Set.of(OPERATION_DISCUSS, OPERATION_AUTO).contains(assistance.getOperationType())
                 ? resultContent
                 : "已生成" + operationLabel(assistance.getOperationType())
                         + "提案，以下内容尚未应用或保存：\n" + resultContent);
@@ -1091,6 +1167,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private String operationLabel(String operation) {
         return switch (operation) {
             case OPERATION_DISCUSS -> "讨论选区";
+            case OPERATION_AUTO -> "正文对话";
             case "rewrite" -> "改写";
             case "polish" -> "润色";
             case "expand" -> "扩写";

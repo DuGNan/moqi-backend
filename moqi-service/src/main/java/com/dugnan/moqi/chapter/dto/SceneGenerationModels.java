@@ -25,11 +25,27 @@ public final class SceneGenerationModels {
             Double temperature,
             Long capacityAssessmentId,
             String capacityDecision,
-            Boolean includeCurrentContent) {
+            Boolean includeCurrentContent,
+            String resultMode,
+            String targetObjectId,
+            Integer expectedVersion,
+            String expectedContentHash,
+            String referenceObjectId) {
 
         public CreateSceneGenerationRequest {
             sceneKeys = sceneKeys == null ? List.of() : List.copyOf(sceneKeys);
             includeCurrentContent = Boolean.TRUE.equals(includeCurrentContent);
+        }
+
+        /** 兼容稳定对象生成发布前的调用。 */
+        public CreateSceneGenerationRequest(
+                Integer scenePlanNo, String selectionMode, String fromSceneKey, List<String> sceneKeys,
+                Long baseGenerationId, String idempotencyKey, String lengthPreset, Integer customWordCount,
+                Double temperature, Long capacityAssessmentId, String capacityDecision,
+                Boolean includeCurrentContent) {
+            this(scenePlanNo, selectionMode, fromSceneKey, sceneKeys, baseGenerationId, idempotencyKey,
+                    lengthPreset, customWordCount, temperature, capacityAssessmentId, capacityDecision,
+                    includeCurrentContent, null, null, null, null, null);
         }
 
         /** 兼容容量评估契约发布前的服务端调用。 */
@@ -71,7 +87,12 @@ public final class SceneGenerationModels {
             Long agentRunId,
             Long chapterPlanVersionId,
             String generationStatus,
-            LocalDateTime gmtCreate) {
+            LocalDateTime gmtCreate,
+            String targetObjectId) {
+        public SceneGenerationCreated(Long generationId, Long aiTaskId, Long agentRunId,
+                Long chapterPlanVersionId, String generationStatus, LocalDateTime gmtCreate) {
+            this(generationId, aiTaskId, agentRunId, chapterPlanVersionId, generationStatus, gmtCreate, null);
+        }
     }
 
     public record GenerationSceneView(

@@ -9,10 +9,30 @@ import com.dugnan.moqi.chapter.entity.ChapterGenerationEntity;
 
 /**
  * @author dgn
- * @date:2026-07-13
- * @description:提供章节生成记录的数据访问能力。
+ * @date 2026-07-13
+ * @description 提供章节生成记录和待恢复正文写回任务的数据访问能力。
  */
 public interface ChapterGenerationMapper extends BaseMapper<ChapterGenerationEntity> {
+
+    /**
+     * 恢复已提交输出但尚未写回，或写回后尚未启动候选评价的任务；每轮有界处理。
+     *
+     * @return 最多 100 个待恢复生成任务
+     */
+    @Select("""
+            SELECT generation.*
+            FROM chapter_generations generation
+            WHERE generation.deleted = 0 AND generation.generation_status = 'preview'
+              AND generation.target_object_id IS NOT NULL
+              AND (generation.writeback_status = 'pending'
+                   OR (generation.writeback_status = 'succeeded' AND EXISTS (
+                       SELECT 1 FROM chapter_prose_candidates candidate
+                       WHERE candidate.quality_generation_id = generation.id
+                         AND candidate.quality_request_status = 'pending' AND candidate.deleted = 0)))
+            ORDER BY generation.id
+            LIMIT 100
+            """)
+    java.util.List<ChapterGenerationEntity> findPendingTargetWritebacks();
 
     /**
      * 查询章节最近的待处理预览，仅读取摘要字段。

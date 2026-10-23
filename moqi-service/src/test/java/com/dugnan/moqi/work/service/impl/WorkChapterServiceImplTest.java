@@ -205,10 +205,10 @@ class WorkChapterServiceImplTest {
     }
 
     /**
-     * 验证打开章节时按预览、编辑器、共创顺序选择工作区。
+     * 验证已有正文或候选均进入正文工作台，无正文及候选才进入共创。
      */
     @Test
-    void openPrefersEditorThenPreviewThenCoCreation() {
+    void openUsesEditorForFormalOrCandidateThenCoCreation() {
         WorkEntity work = work(1L);
         ChapterEntity chapter = chapter(2L, 1L, 1, "正文");
         when(chapterMapper.selectById(2L)).thenReturn(chapter);
@@ -224,7 +224,7 @@ class WorkChapterServiceImplTest {
         assertThat(service.openChapter(2L).latestPreviewGenerationId()).isEqualTo(9L);
 
         chapter.setContent("  \n");
-        assertThat(service.openChapter(2L).defaultWorkspace()).isEqualTo("generation_preview");
+        assertThat(service.openChapter(2L).defaultWorkspace()).isEqualTo("editor");
         when(generationMapper.selectList(any())).thenReturn(List.of());
         assertThat(service.openChapter(2L).defaultWorkspace()).isEqualTo("co_creation");
     }
