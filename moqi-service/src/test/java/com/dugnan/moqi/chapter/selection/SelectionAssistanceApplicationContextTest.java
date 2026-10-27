@@ -60,6 +60,16 @@ class SelectionAssistanceApplicationContextTest {
     static class CycleRegressionConfiguration {
 
         @Bean
+        ProseExecutionService proseExecutionService() {
+            return mock(ProseExecutionService.class);
+        }
+
+        @Bean
+        com.dugnan.moqi.chapter.mapper.ProseExecutionCallMapper proseExecutionCallMapper() {
+            return mock(com.dugnan.moqi.chapter.mapper.ProseExecutionCallMapper.class);
+        }
+
+        @Bean
         AgentRuntime agentRuntime(AgentWorkflowRegistry workflowRegistry) {
             return mock(AgentRuntime.class);
         }
@@ -111,6 +121,11 @@ class SelectionAssistanceApplicationContextTest {
         @Bean
         ChapterConversationMapper conversationMapper() {
             return mock(ChapterConversationMapper.class);
+        }
+
+        @Bean
+        ProseConversationMemoryService proseConversationMemoryService() {
+            return mock(ProseConversationMemoryService.class);
         }
 
         @Bean

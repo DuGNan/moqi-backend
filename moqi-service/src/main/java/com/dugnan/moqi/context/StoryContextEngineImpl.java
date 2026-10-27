@@ -69,6 +69,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
     private static final int MESSAGE_LIMIT = 100;
     private static final int MAX_VERSION_INSERT_RETRIES = 3;
     private static final String DECISIONS_FIELD = "decisions";
+    private static final String CHAPTER_TASK_FIELD = "chapterTask";
     private static final String STATUS_CONFIRMED = "confirmed";
     private static final String STATUS_CANDIDATE = "candidate";
     private static final String STATUS_REJECTED = "rejected";
@@ -358,7 +359,7 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             ChapterBriefEntity brief = briefs.get(0);
             String briefContent = confirmedConsensusContent(brief.getBriefContent());
             if (command.profile() == StoryContextProfile.PROSE_DISCUSSION) {
-                briefContent = ModelVisibleStructuredContent.render(objectMapper, briefContent);
+                briefContent = proseBriefContent(briefContent);
             }
             add(candidates, StoryContextSourceType.CHAPTER_BRIEF, id(brief.getId()), "SYSTEM",
                     briefContent,
@@ -403,6 +404,12 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
             String outlineContent = command.profile() == StoryContextProfile.PROSE_DISCUSSION
                     ? ModelVisibleStructuredContent.render(objectMapper, outline.getOutlineContent())
                     : outline.getOutlineContent();
+            if (command.profile() == StoryContextProfile.PROSE_DISCUSSION) {
+                Set<String> included = candidates.stream().filter(item -> item.sourceType() == StoryContextSourceType.CHAPTER_BRIEF)
+                        .flatMap(item -> item.content().lines()).map(this::constraintValue).collect(Collectors.toSet());
+                outlineContent = outlineContent.lines().filter(line -> !included.contains(constraintValue(line)))
+                        .distinct().collect(Collectors.joining("\n"));
+            }
             add(candidates, StoryContextSourceType.CHAPTER_OUTLINE, id(outline.getId()), "SYSTEM",
                     outlineContent, false, "confirmed".equals(outline.getOutlineStatus()) ? 900 : 650, 110,
                     outline.getVersion() + ":" + outline.getRevision(), outline.getGmtModified(), Category.STRUCTURE);
@@ -833,6 +840,27 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         };
     }
 
+    private String constraintValue(String line) {
+        int delimiter = line.indexOf('：');
+        return delimiter < 0 ? line.strip() : line.substring(delimiter + 1).strip();
+    }
+
+    private String proseBriefContent(String content) {
+        try {
+            JsonNode value = objectMapper.readTree(content);
+            if (value instanceof ObjectNode object && object.has(CHAPTER_TASK_FIELD)) {
+                ObjectNode projection = object.deepCopy();
+                // The brief's chapter-facing fields are authoritative here. Decision provenance can
+                // contain deliberately undisclosed world mechanics and superseded author wording.
+                projection.retain("chapterTask", "stateChange", "keyPush", "readerProgress", "writingBoundaries");
+                return ModelVisibleStructuredContent.render(objectMapper, projection.toString());
+            }
+            return ModelVisibleStructuredContent.render(objectMapper, content);
+        } catch (JsonProcessingException exception) {
+            return content;
+        }
+    }
+
     private String confirmedConsensusContent(String content) {
         if (!StringUtils.hasText(content)) {
             return content;
@@ -987,7 +1015,10 @@ public class StoryContextEngineImpl implements StoryContextEngine, StoryContextS
         }
         ChapterConversationMessageEntity message = messageMapper.selectById(command.currentMessageId());
         if (!belongsToCurrentScope(message, conversation, chapter)
-                || !normalize(command.currentInput()).equals(normalize(message.getContent()))) {
+                || !normalize(command.currentInput()).equals(normalize(
+                        command.profile() == StoryContextProfile.PROSE_DISCUSSION
+                                ? com.dugnan.moqi.chapter.selection.ProseConversationProtocol.modelText(message)
+                                : message.getContent()))) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "当前消息不属于上下文作用域");
         }
     }

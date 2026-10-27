@@ -46,6 +46,37 @@ public class ProseObjectConversationServiceImpl implements ProseObjectConversati
     }
 
     @Override
+    public java.util.List<ConversationDetail> history(Long chapterId, String objectId) {
+        targetService.resolve(chapterId, objectId);
+        return conversationMapper.selectList(new LambdaQueryWrapper<ChapterConversationEntity>()
+                .eq(ChapterConversationEntity::getChapterId, chapterId)
+                .eq(ChapterConversationEntity::getTargetObjectId, objectId)
+                .eq(ChapterConversationEntity::getConversationType, TYPE_PROSE_OBJECT)
+                .eq(ChapterConversationEntity::getDeleted, 0)
+                .orderByDesc(ChapterConversationEntity::getId)).stream().map(this::detail).toList();
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public ConversationDetail restart(Long chapterId, String objectId, Long expectedConversationId) {
+        ChapterEntity chapter = chapterMapper.selectByIdForUpdate(chapterId);
+        if (chapter == null || Integer.valueOf(1).equals(chapter.getDeleted())) {
+            throw new BusinessException(ErrorCode.CHAPTER_NOT_FOUND, "章节不存在");
+        }
+        targetService.resolve(chapterId, objectId);
+        ChapterConversationEntity active = find(chapterId, objectId);
+        // 同一个旧会话的重复请求返回新会话，不再创建另一条。
+        if (active != null && !java.util.Objects.equals(active.getId(), expectedConversationId)) {
+            return detail(active);
+        }
+        if (active != null) {
+            active.setConversationStatus("archived");
+            conversationMapper.updateById(active);
+        }
+        return createOrGet(chapterId, objectId);
+    }
+
+    @Override
     @Transactional(rollbackFor = RuntimeException.class)
     public ConversationDetail createOrGet(Long chapterId, String objectId) {
         ChapterEntity chapter = chapterId == null ? null : chapterMapper.selectByIdForUpdate(chapterId);

@@ -707,6 +707,7 @@ class StoryContextEngineImplTest {
         ChapterConversationEntity conversation = conversation(3L, 1L, 2L);
         conversation.setConversationType("prose_object");
         ChapterConversationMessageEntity current = message(99L, 3L, 2L, "只回答最后一个问题");
+        current.setProseReferenceJson("{\"text\":\"引用片段\"}");
         when(workMapper.selectById(1L)).thenReturn(work);
         when(chapterMapper.selectById(2L)).thenReturn(chapter);
         when(conversationMapper.selectById(3L)).thenReturn(conversation);
@@ -720,7 +721,9 @@ class StoryContextEngineImplTest {
 
         StoryContextSnapshot snapshot = engine.build(new StoryContextBuildCommand(
                 StoryContextProfile.PROSE_DISCUSSION, 1L, 2L, 3L, 99L,
-                "分析当前候选正文", current.getContent(), "作者当前保存的正文：候选正文",
+                "分析当前候选正文",
+                com.dugnan.moqi.chapter.selection.ProseConversationProtocol.modelText(current),
+                "作者当前保存的正文：候选正文",
                 1536, 512, null, null, null, turns));
 
         List<StoryContextItem> history = snapshot.items().stream()
@@ -735,7 +738,7 @@ class StoryContextEngineImplTest {
                     .isEqualTo(history.get(index + 1).sourceId().replace(":assistant", ""));
         }
         assertThat(snapshot.toMessages()).extracting(message -> message.content())
-                .contains("只回答最后一个问题")
+                .contains(com.dugnan.moqi.chapter.selection.ProseConversationProtocol.modelText(current))
                 .anyMatch(content -> content.contains("作者当前保存的正文：候选正文"));
     }
 

@@ -91,6 +91,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private static final String ROLE_ASSISTANT = "assistant";
     private static final String CANDIDATE_PREFIX = "candidate:";
     private static final String FORMAL_PREFIX = "formal:";
+    private static final int OBJECT_CONVERSATION_PROTOCOL = 2;
     private static final int TARGET_CONTRACT_VERSION = 2;
     private static final int MAX_PROPOSALS_PER_SAVE = 100;
     private static final int MAX_SELECTED_LENGTH = 100000;
@@ -99,9 +100,16 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             OPERATION_DISCUSS, OPERATION_AUTO, "rewrite", "polish", "expand", "compress");
     private static final int ADJACENT_LIMIT = 800;
     private static final int MAX_HISTORY_MESSAGES = 24;
+    private static final int MAX_HISTORY_CHARACTERS = 24000;
+    private static final String SKIP_CLARIFICATION_PREFIX = "跳过";
+    private static final String SKIP_CLARIFICATION_INSTRUCTION = "跳过这个问题，继续讨论；本轮不修改编辑器正文。";
     private static final int CONVERSATION_PAIR_SIZE = 2;
     private static final int DEFAULT_CONTEXT_WINDOW_TOKENS = 32768;
     private static final int OUTPUT_RESERVE_TOKENS = 4096;
+    private static final String CONVERSATION_PROTOCOL_FIELD = "conversationProtocol";
+    private static final int EXECUTION_PROTOCOL = 3;
+    private static final int CONTINUOUS_PROTOCOL = 4;
+    private static final String LEGACY_ADVICE_FIELD = "advice";
 
     private final ChapterMapper chapterMapper;
     private final ChapterSelectionAssistanceMapper assistanceMapper;
@@ -117,6 +125,12 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private ProseObjectConversationService proseObjectConversationService;
     private ProseObjectPromptContextService proseObjectPromptContextService;
     private StoryContextTaskBindingService contextBindingService;
+    private ProseConversationMemoryService memoryService;
+
+    @Autowired
+    public void setMemoryService(ProseConversationMemoryService memoryService) {
+        this.memoryService = memoryService;
+    }
     private com.dugnan.moqi.llm.LlmStreamCallRegistry streamCallRegistry;
 
     @Autowired
@@ -233,7 +247,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         PlanningContext planningContext = Set.of(OPERATION_DISCUSS, OPERATION_AUTO).contains(request.operation())
                 ? null : planningChangeService.freezeContext(chapterId);
         ConversationContext conversationContext = isTargetRequest(request)
-                ? conversationContext(chapter, target) : null;
+                ? conversationContext(chapter, target, request) : null;
         String fingerprint = inputFingerprint(
                 chapter, request, target, parent, brief, planningContext, conversationContext);
         return persistAssistanceRun(chapter, request, normalizedKey, parent, target,
@@ -270,7 +284,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 chapter, request, idempotencyKey, parent, target, createdCandidate, brief, fingerprint,
                 planningContext, conversationContext, task.getId());
         if (conversationContext != null) {
-            persistAssistanceUserMessage(chapter, entity, idempotencyKey);
+            persistAssistanceUserMessage(chapter, entity, idempotencyKey, request);
         }
         assistanceMapper.insert(entity);
         startRun(chapter, idempotencyKey, task.getId(), entity);
@@ -290,6 +304,11 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("inputFingerprint", fingerprint);
         input.put("operation", request.operation());
+        input.put("editorContent", request.editorContent());
+        input.put("includeHistory", Integer.valueOf(CONTINUOUS_PROTOCOL).equals(request.conversationProtocol())
+                ? Boolean.TRUE : request.includeHistory());
+        input.put(CONVERSATION_PROTOCOL_FIELD, request.conversationProtocol());
+        input.put("reference", oneTimeReference(request));
         if (conversationContext != null && StringUtils.hasText(conversationContext.modelText())) {
             input.put("proseObjectContext", conversationContext.modelText());
         }
@@ -560,12 +579,34 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         if (current == null || task == null) {
             throw new IllegalStateException("正文对象协助缺少当前消息或 AI 任务");
         }
+        if (task.getContextSnapshotId() != null) {
+            return contextBindingService.buildAndAttach(null, task);
+        }
         int contextWindow = provider.capabilities().maxContextTokens() == null
                 ? DEFAULT_CONTEXT_WINDOW_TOKENS : provider.capabilities().maxContextTokens();
+        int requestedReserve = isExecutionProtocol(readTaskInput(task).path(CONVERSATION_PROTOCOL_FIELD).asInt())
+                ? 8192 : OUTPUT_RESERVE_TOKENS;
         int outputReserve = provider.capabilities().maxOutputTokens() == null
-                ? OUTPUT_RESERVE_TOKENS : Math.min(OUTPUT_RESERVE_TOKENS,
+                ? requestedReserve : Math.min(requestedReserve,
                         provider.capabilities().maxOutputTokens());
         outputReserve = Math.min(outputReserve, Math.max(0, contextWindow - 1));
+        boolean objectConversation = isObjectConversation(entity);
+        ProseConversationMemoryService.Context memory = objectConversation
+                && (readTaskInput(task).path(CONVERSATION_PROTOCOL_FIELD).asInt() == CONTINUOUS_PROTOCOL
+                        || readTaskInput(task).path("includeHistory").asBoolean(true))
+                ? memoryService.prepare(entity.getConversationId(), current.getId(), provider, entity.getId())
+                : new ProseConversationMemoryService.Context("", List.of());
+        String material = objectConversation
+                ? "【当前编辑器全文，以此定位修改；未保存不代表已确认】\n"
+                        + readTaskInput(task).path("editorContent").asText() + "\n\n" + memory.summary()
+                : modelMaterial(entity, task);
+        if (isExecutionProtocol(readTaskInput(task).path(CONVERSATION_PROTOCOL_FIELD).asInt())) {
+            String editorText = readTaskInput(task).path("editorContent").asText();
+            material += "\n\n【程序统计，仅针对当前编辑器全文】按 Unicode 字符计数，含标点与空白："
+                    + editorText.codePointCount(0, editorText.length()) + "；汉字‘他’出现次数（含‘他的’等组合）："
+                    + editorText.chars().filter(character -> character == '他').count()
+                    + "。这些是字面计数，不表示指代有误或表达质量；没有提供的句首或比例统计不得伪称精确统计。";
+        }
         return contextBindingService.buildAndAttach(new StoryContextBuildCommand(
                 StoryContextProfile.PROSE_DISCUSSION,
                 entity.getWorkId(),
@@ -573,14 +614,134 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 entity.getConversationId(),
                 current.getId(),
                 taskInstruction,
-                current.getContent(),
-                modelMaterial(entity, task),
+                objectConversation ? currentConversationInput(current, readTaskInput(task)) : current.getContent(),
+                material,
                 contextWindow,
                 outputReserve,
                 null,
                 null,
                 null,
-                frozenTurns(modelHistory(requestId))), task);
+                objectConversation ? conversationTurns(memory, readTaskInput(task)
+                        .path(CONVERSATION_PROTOCOL_FIELD).asInt(), readTaskInput(task).path("editorContent").asText())
+                        : frozenTurns(modelHistory(requestId))), task);
+    }
+
+    private String currentConversationInput(ChapterConversationMessageEntity current, JsonNode input) {
+        String text = ProseConversationProtocol.modelText(current);
+        return input.path(CONVERSATION_PROTOCOL_FIELD).asInt() == CONTINUOUS_PROTOCOL
+                ? referToCurrentText(text, input.path("editorContent").asText()) : text;
+    }
+
+    private String referToCurrentText(String text, String editorContent) {
+        if (editorContent.isEmpty()) {
+            return text;
+        }
+        String pointer = "【与本轮编辑器全文一致，见唯一全文基准】";
+        String quote = "\n\n【作者本轮引用的正文片段，仅用于理解指代】\n";
+        if (text.endsWith(quote + editorContent)) {
+            return text.substring(0, text.length() - editorContent.length()) + pointer;
+        }
+        String labelEnding = "】\n";
+        int labelEnd = text.indexOf(labelEnding);
+        int contentStart = labelEnd + labelEnding.length();
+        if (labelEnd >= 0 && text.substring(contentStart).equals(editorContent)) {
+            return text.substring(0, contentStart) + pointer;
+        }
+        return text.equals(editorContent) ? pointer : text;
+    }
+
+    private List<StoryContextConversationTurn> conversationTurns(
+            ProseConversationMemoryService.Context memory, int protocol, String editorContent) {
+        if (protocol != CONTINUOUS_PROTOCOL) {
+            return memory.turns();
+        }
+        return memory.turns().stream().map(turn -> {
+            JsonNode legacy = ProseConversationProtocol.reference(turn.assistantContent());
+            if (legacy == null || !legacy.path(LEGACY_ADVICE_FIELD).isTextual()) {
+                throw new IllegalStateException("正文历史缺少可读的助手内容");
+            }
+            return new StoryContextConversationTurn(referToCurrentText(turn.userContent(), editorContent),
+                    json(Map.of(LEGACY_ADVICE_FIELD,
+                            referToCurrentText(legacy.path(LEGACY_ADVICE_FIELD).asText(), editorContent))));
+        }).toList();
+    }
+
+    private static boolean isObjectProtocol(Integer protocol) {
+        return protocol != null && (protocol == OBJECT_CONVERSATION_PROTOCOL || isExecutionProtocol(protocol));
+    }
+
+    private static boolean isExecutionProtocol(int protocol) {
+        return protocol == EXECUTION_PROTOCOL || protocol == CONTINUOUS_PROTOCOL;
+    }
+
+    public boolean isTwoStageConversation(Long requestId) {
+        return isExecutionProtocol(requireTaskInput(requireAssistance(requestId))
+                .path(CONVERSATION_PROTOCOL_FIELD).asInt());
+    }
+
+    public boolean isContinuousConversation(Long requestId) {
+        return requireTaskInput(requireAssistance(requestId)).path(CONVERSATION_PROTOCOL_FIELD).asInt()
+                == CONTINUOUS_PROTOCOL;
+    }
+
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void completeExecution(Long requestId, String content, boolean edit, String reply, String callRef) {
+        completeResult(requestId, content, "safe", List.of(), null, callRef, !edit, reply);
+    }
+
+    public boolean isObjectConversation(Long requestId) {
+        return isObjectConversation(requireAssistance(requestId));
+    }
+
+    private boolean isObjectConversation(ChapterSelectionAssistanceEntity entity) {
+        JsonNode input = requireTaskInput(entity);
+        return input != null && isObjectProtocol(input.path(CONVERSATION_PROTOCOL_FIELD).asInt());
+    }
+
+    private Map<String, Object> oneTimeReference(CreateRequest request) {
+        if (!isObjectProtocol(request.conversationProtocol())) {
+            return null;
+        }
+        if (!OPERATION_AUTO.equals(request.operation()) || request.editorContent() == null
+                || request.conversationId() == null) {
+            throw badRequest("正文会话需要当前编辑器快照及活动会话");
+        }
+        if (request.selectedText() == null && request.selectionStart() == null && request.selectionEnd() == null) {
+            return null;
+        }
+        if (request.selectedText() == null || request.selectionStart() == null || request.selectionEnd() == null
+                || !validRange(request.editorContent(), request.selectionStart(), request.selectionEnd())
+                || !request.selectedText().equals(request.editorContent().substring(
+                        request.selectionStart(), request.selectionEnd()))) {
+            throw badRequest("本轮引用与当前编辑器正文不匹配，请重新引用");
+        }
+        return Map.of("objectId", request.targetId(), "objectVersion", request.targetVersion(),
+                "start", request.selectionStart(), "end", request.selectionEnd(), "text", request.selectedText(),
+                "contentHash", hash(request.editorContent()));
+    }
+
+    /** 原子验证所有修改，只生成供当前编辑器应用的全文差异。 */
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void completeConversationEdits(Long requestId, JsonNode edits, String callRef) {
+        ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
+        if (!isObjectConversation(entity)) {
+            throw badRequest("当前请求不支持多处正文修改");
+        }
+        if (isClarificationSkipped(requestId)) {
+            completeConversation(requestId, "已跳过，正文保持不变。", false, callRef);
+            return;
+        }
+        String updated;
+        try {
+            updated = ProseConversationProtocol.apply(entity.getSelectedText(), edits);
+        } catch (IllegalArgumentException exception) {
+            completeConversation(requestId, "【需要澄清】\n" + exception.getMessage(), false, callRef);
+            return;
+        }
+        StringBuilder reply = new StringBuilder("已生成以下修改，是否进入编辑器以当前编辑器状态为准：\n");
+        edits.forEach(edit -> reply.append('\n').append(edit.path("replacement").asText().isEmpty()
+                ? "删除所指段落。" : edit.path("replacement").asText()).append('\n'));
+        completeResult(requestId, updated, "safe", List.of(), null, callRef, false, reply.toString());
     }
 
     private List<StoryContextConversationTurn> frozenTurns(List<ConversationHistoryMessage> history) {
@@ -669,6 +830,12 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 throw new IllegalStateException("正文对象会话历史快照不符合模型消息契约");
             }
         }
+        if (OPERATION_AUTO.equals(entity.getOperationType())) {
+            // 历史仍是未确认的建议；按当前响应协议编码，避免 JSON 模式续写纯文本历史时只生成空白。
+            return history.stream().map(message -> ROLE_ASSISTANT.equals(message.role())
+                    ? new ConversationHistoryMessage(ROLE_ASSISTANT, json(Map.of(LEGACY_ADVICE_FIELD, message.content())))
+                    : message).toList();
+        }
         return List.copyOf(history);
     }
 
@@ -698,7 +865,17 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     /** 对话模式只持久化预览，不自动建立候选或写回正文。 */
     @Transactional(rollbackFor = RuntimeException.class)
     public void completeConversation(Long requestId, String content, boolean replacement, String modelCallRef) {
+        ChapterSelectionAssistanceEntity request = requireAssistance(requestId);
+        if (request.getUserInstruction() != null
+                && request.getUserInstruction().startsWith(SKIP_CLARIFICATION_PREFIX)) {
+            replacement = false;
+        }
         completeResult(requestId, content, "safe", List.of(), null, modelCallRef, !replacement);
+    }
+
+    /** 跳过按钮是确定的用户动作，无需模型推测或继续提出问题。 */
+    public boolean isClarificationSkipped(Long requestId) {
+        return SKIP_CLARIFICATION_INSTRUCTION.equals(requireAssistance(requestId).getUserInstruction());
     }
 
     /** 在正式正文保存事务内结算作者明确应用的对话改写，不改变未应用提案。 */
@@ -724,6 +901,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             int updated = assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
                     .eq("id", id).eq("version", proposal.getVersion()).eq("proposal_status", "ready")
                     .set("proposal_status", "applied").set("accepted_chapter_version", saved.getVersion())
+                    .set("application_status", "saved")
                     .set("applied_candidate_version", saved.getVersion())
                     .set("applied_candidate_hash", hash(content(saved))).setSql("version = version + 1"));
             if (updated != 1) {
@@ -734,15 +912,22 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
 
     private void completeResult(Long requestId, String resultContent, String factRiskStatus,
             List<String> reasons, ModelPlanningProposal planningProposal, String modelCallRef, boolean discussion) {
+        completeResult(requestId, resultContent, factRiskStatus, reasons, planningProposal, modelCallRef, discussion, null);
+    }
+
+    private void completeResult(Long requestId, String resultContent, String factRiskStatus,
+            List<String> reasons, ModelPlanningProposal planningProposal, String modelCallRef, boolean discussion,
+            String assistantContent) {
         ChapterSelectionAssistanceEntity entity = requireAssistance(requestId);
-        if (!StringUtils.hasText(resultContent) || resultContent.length() > MAX_SELECTED_LENGTH) {
+        boolean emptyNotAllowed = !StringUtils.hasText(resultContent) && (discussion || !isObjectConversation(entity));
+        if (resultContent == null || emptyNotAllowed || resultContent.length() > MAX_SELECTED_LENGTH) {
             throw badRequest("模型结果为空或超过局部候选长度限制");
         }
         String normalizedRisk = planningProposal == null && "safe".equals(factRiskStatus)
                 ? "safe" : STATUS_REVIEW_REQUIRED;
         List<String> safeReasons = reasons == null ? List.of() : reasons.stream()
                 .filter(StringUtils::hasText).limit(20).map(value -> value.substring(0, Math.min(300, value.length()))).toList();
-        String normalizedContent = resultContent.trim();
+        String normalizedContent = isObjectConversation(entity) && !discussion ? resultContent : resultContent.trim();
         String status = STATUS_REVIEW_REQUIRED.equals(normalizedRisk) ? STATUS_REVIEW_REQUIRED : STATUS_READY;
         String originalForDiff = OPERATION_AUTO.equals(entity.getOperationType()) ? entity.getSelectedText() : sourceText(entity);
         String diff = discussion ? null
@@ -763,7 +948,7 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             throw conflict("选区协助已被取消或状态已经变化");
         }
         if (isTargetAssistance(entity)) {
-            persistAssistanceAssistantMessage(entity, normalizedContent);
+            persistAssistanceAssistantMessage(entity, assistantContent == null ? normalizedContent : assistantContent);
         }
         if (OPERATION_AUTO.equals(entity.getOperationType()) && entity.getParentId() != null && !discussion) {
             assistanceMapper.update(null, new UpdateWrapper<ChapterSelectionAssistanceEntity>()
@@ -803,6 +988,9 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         if (missingSelectionReference(request)) {
             throw badRequest("选区引用必须提交偏移和原文");
         }
+        if (request.conversationProtocol() != null && !isObjectProtocol(request.conversationProtocol())) {
+            throw badRequest("不支持的正文会话协议");
+        }
         if (request.selectedText() != null && request.selectedText().length() > MAX_SELECTED_LENGTH) {
             throw badRequest("选区原文超过局部候选长度限制");
         }
@@ -812,6 +1000,33 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     }
 
     private boolean matchesRequest(ChapterSelectionAssistanceEntity existing, CreateRequest request) {
+        JsonNode frozen = requireTaskInput(existing);
+        if (isObjectConversation(existing) || isObjectProtocol(request.conversationProtocol())) {
+            return isObjectConversation(existing) && isObjectProtocol(request.conversationProtocol())
+                    && frozen.path(CONVERSATION_PROTOCOL_FIELD).asInt() == request.conversationProtocol()
+                    && Objects.equals(existing.getTargetObjectId(), request.targetId())
+                    && Objects.equals(existing.getTargetKind(), request.targetKind())
+                    && Objects.equals(existing.getTargetContentVersion(), request.targetVersion())
+                    && Objects.equals(existing.getConversationId(), request.conversationId())
+                    && Objects.equals(existing.getTargetContentHash(), request.contentHash())
+                    && Objects.equals(existing.getUserInstruction(), normalizeInstruction(request.instruction()))
+                    && Objects.equals(frozen.path("editorContent").asText(null), request.editorContent())
+                    && (request.conversationProtocol() == CONTINUOUS_PROTOCOL
+                            || frozen.path("includeHistory").asBoolean(true) == !Boolean.FALSE.equals(request.includeHistory()))
+                    && Objects.equals(frozen.get("reference"), objectMapper.valueToTree(oneTimeReference(request)));
+        }
+        if (request.includeHistory() != null && !Objects.equals(
+                frozen.path("includeHistory").asBoolean(true), request.includeHistory())) {
+            return false;
+        }
+        if (request.editorContent() != null && !Objects.equals(
+                frozen.path("editorContent").asText(null), request.editorContent())) {
+            return false;
+        }
+        if (request.conversationId() != null
+                && !Objects.equals(existing.getConversationId(), request.conversationId())) {
+            return false;
+        }
         if (!matchesTargetIdentity(existing, request)) {
             return false;
         }
@@ -964,18 +1179,34 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             Integer version,
             String targetContent,
             CreateRequest request) {
+        String serverHash = hash(targetContent);
+        if (request.editorContent() != null) {
+            if (!OPERATION_AUTO.equals(request.operation()) || request.editorContent().length() > MAX_SELECTED_LENGTH) {
+                throw badRequest("编辑器快照不符合正文对话要求");
+            }
+            targetContent = request.editorContent();
+        }
+        if (isObjectProtocol(request.conversationProtocol())) {
+            oneTimeReference(request);
+            return new Target(kind, objectId, candidateId, version, serverHash, targetContent,
+                    SCOPE_WHOLE, 0, targetContent.length(), targetContent);
+        }
         String scope = SCOPE_WHOLE.equals(request.referenceScope()) ? SCOPE_WHOLE : SCOPE_SELECTION;
         int start = SCOPE_WHOLE.equals(scope) ? 0 : request.selectionStart();
         int end = SCOPE_WHOLE.equals(scope) ? targetContent.length() : request.selectionEnd();
         String selected = SCOPE_WHOLE.equals(scope) ? targetContent : request.selectedText();
-        if (!validRange(targetContent, start, end)
-                || !Objects.equals(selected, targetContent.substring(start, end))) {
+        boolean emptyConversation = OPERATION_AUTO.equals(request.operation())
+                && targetContent.isEmpty() && start == 0 && end == 0;
+        if (!validRange(targetContent, start, end) && !emptyConversation) {
+            throw badRequest("引用范围超出当前正文");
+        }
+        if (!Objects.equals(selected, targetContent.substring(start, end))) {
             throw badRequest("引用范围、偏移与目标正文不匹配");
         }
         if (selected.length() > MAX_SELECTED_LENGTH) {
             throw badRequest("引用正文超过协助长度限制");
         }
-        return new Target(kind, objectId, candidateId, version, hash(targetContent), targetContent,
+        return new Target(kind, objectId, candidateId, version, serverHash, targetContent,
                 scope, start, end, selected);
     }
 
@@ -1078,13 +1309,17 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     private void persistAssistanceUserMessage(
             ChapterEntity chapter,
             ChapterSelectionAssistanceEntity assistance,
-            String idempotencyKey) {
+            String idempotencyKey, CreateRequest request) {
         ChapterConversationMessageEntity message = new ChapterConversationMessageEntity();
         message.setConversationId(assistance.getConversationId());
         message.setChapterId(chapter.getId());
         message.setMessageRole(ROLE_USER);
-        message.setContent(conversationUserContent(assistance));
+        message.setContent(isObjectProtocol(request.conversationProtocol())
+                ? request.instruction() : conversationUserContent(assistance));
+        Map<String, Object> quote = oneTimeReference(request);
+        message.setProseReferenceJson(quote == null ? null : json(quote));
         message.setClientMessageId("selection-assistance-user:" + hash(idempotencyKey));
+        message.setAiTaskId(assistance.getAiTaskId());
         message.setGenerationStatus("completed");
         message.setDeleted(0);
         message.setVersion(0);
@@ -1092,19 +1327,26 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
         assistance.setUserMessageId(message.getId());
     }
 
-    private ConversationContext conversationContext(ChapterEntity chapter, Target target) {
+    private ConversationContext conversationContext(ChapterEntity chapter, Target target, CreateRequest request) {
         if (proseObjectConversationService == null) {
             throw new IllegalStateException("正文对象会话服务不可用");
         }
         var detail = proseObjectConversationService.createOrGet(chapter.getId(), target.objectId());
+        if (request.conversationId() != null && !Objects.equals(detail.id(), request.conversationId())) {
+            throw conflict("当前对话已变化，请刷新后继续");
+        }
         ChapterConversationEntity conversation = conversationMapper.selectById(detail.id());
         if (conversation == null || !chapter.getId().equals(conversation.getChapterId())
                 || !target.objectId().equals(conversation.getTargetObjectId())) {
             throw new IllegalStateException("正文对象会话无法读取");
         }
-        String modelText = proseObjectPromptContextService == null ? null
-                : proseObjectPromptContextService.freeze(chapter.getId(), target.objectId(), null).modelText();
-        return new ConversationContext(conversation, freezeConversationHistory(conversation.getId()), modelText);
+        String modelText = proseObjectPromptContextService == null || isObjectProtocol(request.conversationProtocol()) ? null
+                : proseObjectPromptContextService.freeze(chapter.getId(), target.objectId(), request.editorContent() == null
+                        ? null : new ProseObjectPromptContextService.ProseObjectDraft(
+                                target.version(), target.contentHash(), request.editorContent())).modelText();
+        return new ConversationContext(conversation, Boolean.FALSE.equals(request.includeHistory())
+                || isObjectProtocol(request.conversationProtocol())
+                ? List.of() : freezeConversationHistory(conversation.getId()), modelText);
     }
 
     private List<ConversationHistoryMessage> freezeConversationHistory(Long conversationId) {
@@ -1113,8 +1355,10 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                         .eq(ChapterConversationMessageEntity::getConversationId, conversationId)
                         .eq(ChapterConversationMessageEntity::getDeleted, 0)
                         .in(ChapterConversationMessageEntity::getMessageRole, ROLE_USER, ROLE_ASSISTANT)
-                        .orderByAsc(ChapterConversationMessageEntity::getGmtCreate)
-                        .orderByAsc(ChapterConversationMessageEntity::getId));
+                        .orderByDesc(ChapterConversationMessageEntity::getId)
+                        .last("LIMIT 40"));
+        messages = new java.util.ArrayList<>(messages);
+        java.util.Collections.reverse(messages);
         List<ConversationHistoryMessage> complete = new java.util.ArrayList<>();
         for (int index = 0; index + 1 < messages.size(); index++) {
             ChapterConversationMessageEntity user = messages.get(index);
@@ -1128,6 +1372,14 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
             index++;
         }
         int start = Math.max(0, complete.size() - MAX_HISTORY_MESSAGES);
+        int characters = 0;
+        for (int index = complete.size() - CONVERSATION_PAIR_SIZE; index >= start; index -= CONVERSATION_PAIR_SIZE) {
+            characters += complete.get(index).content().length() + complete.get(index + 1).content().length();
+            if (characters > MAX_HISTORY_CHARACTERS) {
+                start = index + CONVERSATION_PAIR_SIZE;
+                break;
+            }
+        }
         return List.copyOf(complete.subList(start, complete.size()));
     }
 
@@ -1154,6 +1406,9 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 : "已生成" + operationLabel(assistance.getOperationType())
                         + "提案，以下内容尚未应用或保存：\n" + resultContent);
         message.setClientMessageId("selection-assistance-assistant:" + assistance.getId());
+        if (assistance.getResultKind() != null) {
+            message.setProseResultJson(json(Map.of("assistanceId", assistance.getId(), "kind", assistance.getResultKind())));
+        }
         message.setGenerationStatus("completed");
         message.setAiTaskId(assistance.getAiTaskId());
         message.setDeleted(0);
@@ -1219,6 +1474,9 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
     }
 
     private boolean missingSelectionReference(CreateRequest request) {
+        if (isObjectProtocol(request.conversationProtocol())) {
+            return false;
+        }
         if (SCOPE_WHOLE.equals(request.referenceScope())) {
             return false;
         }
@@ -1301,7 +1559,8 @@ public class SelectionAssistanceServiceImpl implements SelectionAssistanceServic
                 referenceStale(entity), entity.getCreatedCandidateId(), candidateObjectId(entity.getCreatedCandidateId()),
                 entity.getProposalStatus(), entity.getAppliedCandidateVersion(), entity.getAppliedCandidateHash(),
                 entity.getConversationId(), entity.getUserMessageId(),
-                entity.getAssistantMessageId(), planningPackage == null ? null : planningPackage.id());
+                entity.getAssistantMessageId(), planningPackage == null ? null : planningPackage.id(),
+                ProseExecutionStateService.details(entity));
     }
 
     private boolean referenceStale(ChapterSelectionAssistanceEntity entity) {

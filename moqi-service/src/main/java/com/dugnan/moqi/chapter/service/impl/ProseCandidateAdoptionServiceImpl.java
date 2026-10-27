@@ -392,6 +392,7 @@ public class ProseCandidateAdoptionServiceImpl implements ProseCandidateAdoption
                 .in(com.dugnan.moqi.chapter.entity.ChapterSelectionAssistanceEntity::getRequestStatus,
                         "ready", "review_required")
                 .eq(com.dugnan.moqi.chapter.entity.ChapterSelectionAssistanceEntity::getProposalStatus, "ready")
+                .ne(com.dugnan.moqi.chapter.entity.ChapterSelectionAssistanceEntity::getOperationType, "auto")
                 .eq(com.dugnan.moqi.chapter.entity.ChapterSelectionAssistanceEntity::getDeleted, 0));
     }
 

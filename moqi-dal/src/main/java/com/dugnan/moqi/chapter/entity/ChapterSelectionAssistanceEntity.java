@@ -61,4 +61,9 @@ public class ChapterSelectionAssistanceEntity extends BaseEntity {
     private String errorCode;
     private String errorMessage;
     private Integer acceptedChapterVersion;
+    private String executionPlanJson;
+    private String executionStage;
+    private String resultKind;
+    private String clarificationStatus;
+    private String applicationStatus;
 }

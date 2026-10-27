@@ -22,6 +22,9 @@ public class ChapterConversationMessageEntity extends BaseEntity {
 
     private String content;
 
+    private String proseReferenceJson;
+    private String proseResultJson;
+
     private String clientMessageId;
 
     private String generationStatus;

@@ -24,8 +24,11 @@ import com.dugnan.moqi.llm.LlmStreamStatus;
  */
 @Component
 public class ProseConversationStream {
-    private static final Pattern CONTENT_START = Pattern.compile("^\\s*\\{\\s*\"(advice|replacement)\"\\s*:\\s*\"");
+    private static final Pattern CONTENT_START = Pattern.compile("^\\s*\\{\\s*\"(advice|replacement|clarification)\"\\s*:\\s*\"");
+    private static final String EDITS = "edits";
+    private static final String REPLACEMENT = "replacement";
     private static final int MAX_RESPONSE_LENGTH = 700000;
+    private static final java.util.Set<String> OUTPUT_FIELDS = java.util.Set.of("advice", "replacement", "clarification", "edits");
     private final SelectionAssistanceServiceImpl assistanceService;
     private final ApplicationEventPublisher publisher;
     private final LlmStreamCallRegistry registry;
@@ -68,16 +71,32 @@ public class ProseConversationStream {
                     || "length".equalsIgnoreCase(finish) || "max_tokens".equalsIgnoreCase(finish)) {
                 throw new IllegalArgumentException("正文对话未完整生成");
             }
-            JsonNode output = objectMapper.readTree(response.toString());
-            if (output == null || !output.isObject() || output.size() != 1
-                    || !(output.has("advice") ^ output.has("replacement"))) {
+            // 部分 Provider 在 JSON 字符串内返回原始换行；仅放宽控制字符，不接受截断或多余字段。
+            JsonNode output = objectMapper.reader()
+                    .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_UNESCAPED_CONTROL_CHARS)
+                    .with(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                    .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(response.toString());
+            if (output == null || !output.isObject() || output.size() != 1) {
+                throw new IllegalArgumentException("正文对话结果必须只有一个输出字段");
+            }
+            if (!OUTPUT_FIELDS.contains(output.fieldNames().next())) {
                 throw new IllegalArgumentException("正文对话结果必须区分建议与改写稿");
             }
-            JsonNode text = output.get(output.has("replacement") ? "replacement" : "advice");
-            if (!text.isTextual() || text.textValue().isBlank()) {
-                throw new IllegalArgumentException("正文对话结果为空");
+            if (output.has(EDITS)) {
+                assistanceService.completeConversationEdits(assistanceId, output.get(EDITS), callRef);
+            } else {
+                if (output.has(REPLACEMENT) && assistanceService.isObjectConversation(assistanceId)) {
+                    throw new IllegalArgumentException("正文会话修改必须明确原文与新文");
+                }
+                JsonNode text = output.elements().next();
+                if (!text.isTextual() || text.textValue().isBlank()) {
+                    throw new IllegalArgumentException("正文对话结果为空");
+                }
+                assistanceService.completeConversation(assistanceId,
+                        output.has("clarification") ? "【需要澄清】\n" + text.textValue() : text.textValue(),
+                        output.has(REPLACEMENT), callRef);
             }
-            assistanceService.completeConversation(assistanceId, text.textValue(), output.has("replacement"), callRef);
             SelectionAssistanceModels.View completed = assistanceService.get(assistanceId);
             publisher.publishEvent(ChapterReplyEvent.completed(view.chapterId(), view.aiTaskId(),
                     view.conversationId(), completed.assistantMessageId()));

@@ -34,6 +34,30 @@ import com.dugnan.moqi.llm.LlmStreamStatus;
  */
 class ProseConversationStreamTest {
     @Test
+    void clarificationRemainsDiscussionAndNeverEdits() throws Exception {
+        Fixture fixture = new Fixture(List.of("{\"clarification\":\"你指的是哪段？\"}"));
+        fixture.run();
+        verify(fixture.service).completeConversation(1L, "【需要澄清】\n你指的是哪段？", false, "call");
+    }
+
+    @Test
+    void acceptsProviderLineBreaksWithoutAcceptingTruncatedJson() throws Exception {
+        Fixture fixture = new Fixture(List.of("{\"advice\":\"第一段\n第二段\"}"));
+        fixture.run();
+        verify(fixture.service).completeConversation(1L, "第一段\n第二段", false, "call");
+    }
+
+    @Test
+    void rejectsRepeatedFieldsAndTrailingObjects() {
+        for (String output : List.of("{\"replacement\":\"甲\",\"replacement\":\"乙\"}",
+                "{\"replacement\":\"甲\"}{\"advice\":\"乙\"}")) {
+            Fixture fixture = new Fixture(List.of(output));
+            assertThatThrownBy(fixture::run).isInstanceOf(Exception.class);
+            verify(fixture.service, never()).completeConversation(any(), anyString(), anyBoolean(), anyString());
+        }
+    }
+
+    @Test
     void decodesOnlyProseAndWaitsForSplitEscapes() {
         assertThat(ProseConversationStream.visibleText("{\"replacement\":\"风\\n变")) .isEqualTo("风\n变");
         assertThat(ProseConversationStream.visibleText("{\"advice\":\"风\\u53")) .isEqualTo("风");

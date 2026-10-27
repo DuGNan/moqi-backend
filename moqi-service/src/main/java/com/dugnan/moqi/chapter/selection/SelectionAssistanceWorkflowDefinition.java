@@ -53,6 +53,12 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
     private final UserConfigService userConfigService;
     private final ObjectMapper objectMapper;
     private ProseConversationStream conversationStream;
+    private ProseExecutionService executionService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setExecutionService(ProseExecutionService executionService) {
+        this.executionService = executionService;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public void setConversationStream(ProseConversationStream conversationStream) {
@@ -98,6 +104,12 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
         Long assistanceId = assistanceId(context);
         assistanceService.markRunning(assistanceId);
         String operation = assistanceService.operation(assistanceId);
+        if (OPERATION_AUTO.equals(operation) && assistanceService.isClarificationSkipped(assistanceId)) {
+            assistanceService.completeConversation(assistanceId,
+                    "已跳过。正文保持不变，你可以继续讨论或提出新的要求。", false, null);
+            return AgentStepResult.completed(Map.of("assistanceId", assistanceId, "operation", operation),
+                    Map.of("assistanceId", assistanceId), null);
+        }
         LlmExecutionConfig config = userConfigService.requireAvailableExecutionConfig();
         String logicalCallRef = "agent-step:" + context.stepId() + ":selection-assistance";
         LlmProvider provider = providerFactory.createObserved(config,
@@ -110,7 +122,31 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
                         .promptTemplateVersion(TEMPLATE_VERSION)
                         .sourceFingerprint(assistanceService.sourceFingerprint(assistanceId))
                         .build());
+        if (OPERATION_AUTO.equals(operation) && assistanceService.isTwoStageConversation(assistanceId)) {
+            executionService.generate(assistanceId, provider, logicalCallRef);
+            return AgentStepResult.completed(Map.of("assistanceId", assistanceId, "operation", operation),
+                    Map.of("assistanceId", assistanceId), null);
+        }
         String instruction = systemInstruction(operation);
+        if (assistanceService.isObjectConversation(assistanceId)) {
+            instruction = "你是作者的正文编辑搭档，这个会话属于当前整篇正文或候选。引用只标明当轮讨论起点，"
+                    + "不限制后续讨论或修改范围。根据最近交流理解这段、刚才方案等指代，新的作者要求优先。"
+                    + "只输出一个 JSON 对象，且仅有以下字段之一："
+                    + "advice（字符串）：评价、解释、自由讨论或先写一版看看，均只在聊天中输出；"
+                    + "clarification（字符串）：仅意图或修改对象不清时提问，允许自由回答或跳过；"
+                    + "edits（数组）：仅本轮明确授权修改时，返回 [{\"original\":\"最新全文中的精确原文\","
+                    + "\"replacement\":\"替换后的正文\"}]，可含多处互不重叠的修改。"
+                    + "original 必须逐字复制最新编辑器全文，且能唯一定位；重复文本需包含足够相邻原文。"
+                    + "不要返回未修改的整篇全文；仅明确要求全篇重写时才允许整篇替换。空编辑器新增正文时 original 可为空。"
+                    + "不改动其他段落，不根据旧引用位置推测当前偏移；无法定位时澄清。"
+                    + "跳过不授权修改，历史草稿、助手建议及摘要都不是本轮修改授权或已确认事实。"
+                    + "修改只进入编辑器，保存由作者操作；不得宣称已经保存、采纳、发布或更新规划。";
+            instruction += "响应形状示例（只能选一种）：{\"advice\":\"讨论内容\"}，"
+                    + "{\"clarification\":\"需要澄清的问题\"}，"
+                    + "{\"edits\":[{\"original\":\"原文\",\"replacement\":\"新文\"}]}。"
+                    + "禁止同时输出多个顶层字段，不输出空占位字段、Markdown 代码围栏或 JSON 外的说明；"
+                    + "即使要求简短回答也必须闭合 JSON 字符串和括号。";
+        }
         StoryContextSnapshot snapshot = assistanceService.buildModelContext(assistanceId, provider, instruction);
         List<LlmMessage> messages = snapshot == null
                 ? legacyMessages(assistanceId, instruction) : snapshot.toMessages();
@@ -156,6 +192,11 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
 
     @Override
     public String errorCode(Exception exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof ProseConversationMemoryService.ContextUnavailableException) {
+                return "PROSE_CONTEXT_SUMMARY_FAILED";
+            }
+        }
         if (exception instanceof BusinessException businessException
                 && ErrorCode.AGENT_RUN_TIMED_OUT == businessException.getErrorCode()) {
             return ErrorCode.AGENT_RUN_TIMED_OUT.name();
@@ -225,10 +266,13 @@ public class SelectionAssistanceWorkflowDefinition implements AgentWorkflowDefin
                 + "历史助手回复只是候选建议，除非作者随后明确确认，否则不得当成权威事实。";
         if (OPERATION_AUTO.equals(operation)) {
             return "你是作者的正文编辑搭档。根据当前要求和会话上下文直接行动。只输出一个 JSON 对象且只能有一个字段："
-                    + "作者要求改写、润色、压缩、扩写、改改、按建议改或继续调整时，输出 {\"replacement\":\"纯正文改写稿\"}；"
-                    + "询问评价、解释或讨论时输出 {\"advice\":\"讨论回答\"}。不必再问作者是否开始改写。"
+                    + "只有作者明确要求修改当前编辑器正文时，输出 {\"replacement\":\"纯正文改写稿\"}，系统会将结果写入编辑器但不会保存。"
+                    + "询问评价、解释、自由讨论，以及先写一版看看、试写、只给建议时，输出 {\"advice\":\"讨论回答或试写正文\"}。"
+                    + "不能因为历史里有改写稿而把本轮讨论解释成修改。作者明确要求且范围清楚时不要重复询问。"
+                    + "只有修改意图或范围不明时输出 {\"clarification\":\"简短问题，说明可以自由回答或跳过\"}。"
+                    + "跳过仅表示继续讨论，不授权修改；用户仅回答跳过时必须输出 advice。"
                     + "replacement 只能包含绑定范围的完整新正文，不含说明、标题、Markdown 围栏或修改理由，"
-                    + "保留范围外的正文，不得声称已替换、保存或发布。若作者指向不明或要求超出绑定范围，用 advice 澄清。"
+                    + "保留范围内未要求修改的正文，不得声称已保存或发布。若要求超出绑定范围，用 clarification 澄清。"
                     + "继续调整时依据上轮改写稿与最新要求，但返回完整的范围内正文。不能擅自改变已确认故事事实或规划。"
                     + historyRule;
         }

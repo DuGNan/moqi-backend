@@ -62,7 +62,43 @@ public final class ChapterCollaborationModels {
             String generationStatus,
             Long retryOfTaskId,
             LocalDateTime gmtCreate,
-            LocalDateTime gmtModified) {
+            LocalDateTime gmtModified,
+            com.fasterxml.jackson.databind.JsonNode proseReference,
+            com.fasterxml.jackson.databind.JsonNode proseResult) {
+        public MessageDetail(
+            Long id,
+            Long conversationId,
+            Long chapterId,
+            String messageRole,
+            String content,
+            Long aiTaskId,
+            Long focusBriefId,
+            String focusDecisionKey,
+            Long referencedMessageId,
+            MessageReferenceSummary referencedMessage,
+            Long continuationMessageId,
+            ReplyPolicySnapshot effectiveReplyPolicy,
+            MessageInteraction interaction,
+            MessageInteractionResponse interactionResponse,
+            String generationStatus,
+            Long retryOfTaskId,
+            LocalDateTime gmtCreate,
+            LocalDateTime gmtModified,
+            com.fasterxml.jackson.databind.JsonNode proseReference) {
+            this(id, conversationId, chapterId, messageRole, content, aiTaskId, focusBriefId, focusDecisionKey, referencedMessageId, referencedMessage, continuationMessageId, effectiveReplyPolicy, interaction, interactionResponse, generationStatus, retryOfTaskId, gmtCreate, gmtModified, proseReference, null);
+        }
+
+
+        public MessageDetail(Long id, Long conversationId, Long chapterId, String messageRole, String content,
+                Long aiTaskId, Long focusBriefId, String focusDecisionKey, Long referencedMessageId,
+                MessageReferenceSummary referencedMessage, Long continuationMessageId,
+                ReplyPolicySnapshot effectiveReplyPolicy, MessageInteraction interaction,
+                MessageInteractionResponse interactionResponse, String generationStatus, Long retryOfTaskId,
+                LocalDateTime gmtCreate, LocalDateTime gmtModified) {
+            this(id, conversationId, chapterId, messageRole, content, aiTaskId, focusBriefId, focusDecisionKey,
+                    referencedMessageId, referencedMessage, continuationMessageId, effectiveReplyPolicy, interaction,
+                    interactionResponse, generationStatus, retryOfTaskId, gmtCreate, gmtModified, null);
+        }
 
         /**
          * 保留不含讨论对焦引用的旧构造入口。
