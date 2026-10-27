@@ -19,6 +19,8 @@ import com.dugnan.moqi.common.api.ApiResponse;
 @RequestMapping("/api/chapters/{chapterId}/prose-objects/{objectId}/conversation")
 public class ProseObjectConversationController {
 
+    public record RestartRequest(Long expectedConversationId) { }
+
     private final ProseObjectConversationService service;
 
     public ProseObjectConversationController(ProseObjectConversationService service) {
@@ -30,6 +32,18 @@ public class ProseObjectConversationController {
             @PathVariable Long chapterId,
             @PathVariable String objectId) {
         return ApiResponse.success(service.get(chapterId, objectId));
+    }
+
+    @GetMapping("/history")
+    public ApiResponse<java.util.List<ConversationDetail>> history(
+            @PathVariable Long chapterId, @PathVariable String objectId) {
+        return ApiResponse.success(service.history(chapterId, objectId));
+    }
+
+    @PostMapping("/new")
+    public ApiResponse<ConversationDetail> restart(@PathVariable Long chapterId, @PathVariable String objectId,
+            @org.springframework.web.bind.annotation.RequestBody RestartRequest request) {
+        return ApiResponse.success(service.restart(chapterId, objectId, request.expectedConversationId()));
     }
 
     @PostMapping

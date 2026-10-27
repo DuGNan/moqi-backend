@@ -68,6 +68,7 @@ public interface ChapterSelectionAssistanceMapper extends BaseMapper<ChapterSele
             <script>
             UPDATE chapter_selection_assistance
             SET proposal_status = 'applied',
+                application_status = CASE WHEN result_kind = 'edit' THEN 'saved' ELSE application_status END,
                 applied_candidate_version = #{resultVersion},
                 applied_candidate_hash = #{resultHash},
                 version = version + 1,

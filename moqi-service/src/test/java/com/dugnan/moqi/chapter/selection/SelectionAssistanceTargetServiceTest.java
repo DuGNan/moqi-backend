@@ -53,6 +53,56 @@ import com.dugnan.moqi.work.mapper.ChapterMapper;
  */
 class SelectionAssistanceTargetServiceTest {
 
+    @ParameterizedTest
+    @ValueSource(ints = {2, 3, 4})
+    void freezesHistorySemanticsByProtocolAndProtectsRetryIdentity(int protocol) throws Exception {
+        Fixture fixture = new Fixture();
+        var request = new CreateRequest(3, hash("原始正文"), null, null, null,
+                "auto", "讨论动机", null, "continuous-retry", "formal", "formal:2", 3,
+                null, 20L, "原始正文", false, protocol);
+        fixture.service.create(2L, request);
+        var captured = org.mockito.ArgumentCaptor.forClass(AiTaskEntity.class);
+        verify(fixture.taskMapper).insert(captured.capture());
+        var task = captured.getValue();
+        String frozenInput = task.getTaskInputJson();
+        var input = new ObjectMapper().readTree(frozenInput);
+        assertThat(input.path("includeHistory").asBoolean()).isEqualTo(protocol == 4);
+        when(fixture.taskMapper.selectById(8L)).thenReturn(task);
+        when(fixture.assistanceMapper.selectOne(any())).thenReturn(fixture.assistance.get());
+        assertThat(fixture.service.create(2L, request).id()).isEqualTo(9L);
+        var toggled = new CreateRequest(3, hash("原始正文"), null, null, null,
+                "auto", "讨论动机", null, "continuous-retry", "formal", "formal:2", 3,
+                null, 20L, "原始正文", true, protocol);
+        if (protocol == 4) {
+            assertThat(fixture.service.create(2L, toggled).id()).isEqualTo(9L);
+        } else {
+            assertThatThrownBy(() -> fixture.service.create(2L, toggled)).isInstanceOf(BusinessException.class);
+        }
+        var upgraded = new CreateRequest(3, hash("原始正文"), null, null, null,
+                "auto", "讨论动机", null, "continuous-retry", "formal", "formal:2", 3,
+                null, 20L, "原始正文", true, protocol == 4 ? 3 : 4);
+        assertThatThrownBy(() -> fixture.service.create(2L, upgraded)).isInstanceOf(BusinessException.class);
+        verify(fixture.taskMapper, times(1)).insert(any(AiTaskEntity.class));
+        assertThat(task.getTaskInputJson()).isEqualTo(frozenInput);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void objectConversationStoresRawWordsAndOptionalOneTimeReference(boolean quoted) {
+        Fixture fixture = new Fixture();
+        fixture.chapter.setWorkflowStatus("co_creation");
+        var request = new CreateRequest(3, hash("原始正文"), quoted ? 0 : null, quoted ? 2 : null,
+                quoted ? "原始" : null, "auto", "你觉得呢？", null, "once-quote",
+                "formal", "formal:2", 3, quoted ? "selection" : null, 20L, "原始正文", true, 2);
+        fixture.service.create(2L, request);
+        verify(fixture.messageMapper).insert(argThat((ChapterConversationMessageEntity message) ->
+                "你觉得呢？".equals(message.getContent())
+                        && (quoted ? message.getProseReferenceJson().contains("原始")
+                                : message.getProseReferenceJson() == null)));
+        assertThat(fixture.assistance.get().getSelectedText()).isEqualTo("原始正文");
+        verify(fixture.chapterMapper, never()).updateContentIfVersion(any(), any(), any());
+    }
+
     @Test
     void conversationalRequestKeepsFormalObjectAndDoesNotAllocateCandidate() {
         Fixture fixture = new Fixture();
@@ -150,6 +200,7 @@ class SelectionAssistanceTargetServiceTest {
                 "user".equals(message.getMessageRole())
                         && message.getContent().contains("作者要求：保持事实")
                         && message.getContent().contains("引用正文：\n原始")
+                        && view.aiTaskId().equals(message.getAiTaskId())
                         && message.getClientMessageId() != null));
     }
 
@@ -158,7 +209,7 @@ class SelectionAssistanceTargetServiceTest {
         Fixture fixture = new Fixture();
         ChapterConversationMessageEntity previousUser = fixture.message(11L, "user", "上一轮作者要求");
         ChapterConversationMessageEntity previousAssistant = fixture.message(12L, "assistant", "上一轮候选建议");
-        when(fixture.messageMapper.selectList(any())).thenReturn(List.of(previousUser, previousAssistant));
+        when(fixture.messageMapper.selectList(any())).thenReturn(List.of(previousAssistant, previousUser));
 
         fixture.service.create(2L, fixture.request(
                 "formal", "formal:2", 3, "discuss", "history-discussion"));
@@ -169,6 +220,59 @@ class SelectionAssistanceTargetServiceTest {
                 .containsExactly(
                         new SelectionAssistanceModels.ConversationHistoryMessage("user", "上一轮作者要求"),
                         new SelectionAssistanceModels.ConversationHistoryMessage("assistant", "上一轮候选建议"));
+    }
+
+    @Test
+    void encodesAssistantHistoryInTheConversationResponseProtocol() throws Exception {
+        Fixture fixture = new Fixture();
+        String advice = "建议保留\"失控过程\"。\n可以压缩。";
+        when(fixture.messageMapper.selectList(any())).thenReturn(List.of(
+                fixture.message(12L, "assistant", advice), fixture.message(11L, "user", "怎么开头？")));
+        fixture.service.create(2L, fixture.request("formal", "formal:2", 3, "auto", "json-history"));
+        var history = fixture.service.modelHistory(9L);
+        assertThat(history.get(0).content()).isEqualTo("怎么开头？");
+        assertThat(history.get(1).role()).isEqualTo("assistant");
+        assertThat(new ObjectMapper().readTree(history.get(1).content()).path("advice").asText()).isEqualTo(advice);
+    }
+
+    @Test
+    void acceptsUnsavedEditorSnapshotWithoutChangingPersistedProse() {
+        Fixture fixture = new Fixture();
+        var view = fixture.service.create(2L, new CreateRequest(null, hash(fixture.chapter.getContent()),
+                0, 3, "未存稿", "auto", "分析这段", null, "editor-snapshot", "formal", "formal:2", 3,
+                "selection", 20L, "未存稿和后文", false));
+        assertThat(view.selectedText()).isEqualTo("未存稿");
+        assertThat(view.targetContentHash()).isEqualTo(hash("原始正文"));
+        assertThat(fixture.chapter.getContent()).isEqualTo("原始正文");
+        assertThat(fixture.service.modelHistory(9L)).isEmpty();
+        verify(fixture.messageMapper, never()).selectList(any());
+    }
+
+    @Test
+    void rejectsRequestsFromAnArchivedConversation() {
+        Fixture fixture = new Fixture();
+        assertThatThrownBy(() -> fixture.service.create(2L, new CreateRequest(null,
+                hash(fixture.chapter.getContent()), 0, 2, "原始", "auto", "直接改", null,
+                "old-session", "formal", "formal:2", 3, "selection", 19L, "原始正文", true)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("对话已变化");
+        verify(fixture.assistanceMapper, never()).insert(any(ChapterSelectionAssistanceEntity.class));
+    }
+
+    @Test
+    void boundsHistoryByWholeTurnsAndCharacterBudget() {
+        Fixture fixture = new Fixture();
+        var messages = new java.util.ArrayList<ChapterConversationMessageEntity>();
+        for (long id = 1; id <= 40; id++) {
+            messages.add(fixture.message(id, id % 2 == 1 ? "user" : "assistant", "文".repeat(3000)));
+        }
+        java.util.Collections.reverse(messages);
+        when(fixture.messageMapper.selectList(any())).thenReturn(messages);
+        fixture.service.create(2L, fixture.request("formal", "formal:2", 3, "auto", "bounded-history"));
+        var history = fixture.service.modelHistory(9L);
+        assertThat(history).hasSize(8);
+        assertThat(history.get(0).role()).isEqualTo("user");
+        assertThat(history.get(7).role()).isEqualTo("assistant");
+        assertThat(history.stream().mapToInt(message -> message.content().length()).sum()).isLessThan(24100);
     }
 
     @Test

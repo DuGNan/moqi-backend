@@ -29,7 +29,27 @@ public final class SelectionAssistanceModels {
             String targetKind,
             String targetId,
             Integer targetVersion,
-            String referenceScope) {
+            String referenceScope,
+            Long conversationId,
+            String editorContent,
+            Boolean includeHistory,
+            Integer conversationProtocol) {
+
+        public CreateRequest(Integer baseVersion, String contentHash, Integer selectionStart, Integer selectionEnd,
+                String selectedText, String operation, String instruction, Long parentId, String idempotencyKey,
+                String targetKind, String targetId, Integer targetVersion, String referenceScope,
+                Long conversationId, String editorContent, Boolean includeHistory) {
+            this(baseVersion, contentHash, selectionStart, selectionEnd, selectedText, operation, instruction,
+                    parentId, idempotencyKey, targetKind, targetId, targetVersion, referenceScope, conversationId,
+                    editorContent, includeHistory, null);
+        }
+
+        public CreateRequest(Integer baseVersion, String contentHash, Integer selectionStart, Integer selectionEnd,
+                String selectedText, String operation, String instruction, Long parentId, String idempotencyKey,
+                String targetKind, String targetId, Integer targetVersion, String referenceScope) {
+            this(baseVersion, contentHash, selectionStart, selectionEnd, selectedText, operation, instruction,
+                    parentId, idempotencyKey, targetKind, targetId, targetVersion, referenceScope, null, null, null);
+        }
 
         /** 兼容只面向章节正式正文的旧请求构造。 */
         public CreateRequest(
@@ -45,6 +65,13 @@ public final class SelectionAssistanceModels {
             this(baseVersion, contentHash, selectionStart, selectionEnd, selectedText, operation, instruction,
                     parentId, idempotencyKey, null, null, null, null);
         }
+    }
+
+    public record ExecutionDetails(String taskType, String stage, String resultKind,
+            String clarificationStatus, String applicationStatus, List<String> options) {
+    }
+
+    public record ExecutionAction(Long conversationId, String objectId, String status) {
     }
 
     public record ContinueRequest(String instruction, String idempotencyKey) {
@@ -110,7 +137,59 @@ public final class SelectionAssistanceModels {
             Long conversationId,
             Long userMessageId,
             Long assistantMessageId,
+            Long planningChangePackageId,
+            ExecutionDetails execution) {
+        public View(
+            Long id,
+            Long workId,
+            Long chapterId,
+            Long parentId,
+            Long aiTaskId,
+            Long agentRunId,
+            String operation,
+            String status,
+            Integer baseVersion,
+            String contentHash,
+            Integer selectionStart,
+            Integer selectionEnd,
+            String selectedText,
+            String instruction,
+            String briefTemplateVersion,
+            String briefFingerprint,
+            String inputFingerprint,
+            String resultContent,
+            TextDiff diff,
+            String factRiskStatus,
+            List<String> factRiskReasons,
+            boolean canAccept,
+            String planningChangeSuggestion,
+            String errorCode,
+            String errorMessage,
+            Integer acceptedChapterVersion,
+            Integer version,
+            LocalDateTime createdAt,
+            LocalDateTime modifiedAt,
+            PublicFailure failure,
+            String targetKind,
+            String targetId,
+            Integer targetVersion,
+            String targetContentHash,
+            String referenceScope,
+            String referenceTextHash,
+            Integer referenceSentenceCount,
+            boolean referenceStale,
+            Long createdCandidateId,
+            String createdCandidateObjectId,
+            String proposalStatus,
+            Integer appliedCandidateVersion,
+            String appliedCandidateHash,
+            Long conversationId,
+            Long userMessageId,
+            Long assistantMessageId,
             Long planningChangePackageId) {
+            this(id, workId, chapterId, parentId, aiTaskId, agentRunId, operation, status, baseVersion, contentHash, selectionStart, selectionEnd, selectedText, instruction, briefTemplateVersion, briefFingerprint, inputFingerprint, resultContent, diff, factRiskStatus, factRiskReasons, canAccept, planningChangeSuggestion, errorCode, errorMessage, acceptedChapterVersion, version, createdAt, modifiedAt, failure, targetKind, targetId, targetVersion, targetContentHash, referenceScope, referenceTextHash, referenceSentenceCount, referenceStale, createdCandidateId, createdCandidateObjectId, proposalStatus, appliedCandidateVersion, appliedCandidateHash, conversationId, userMessageId, assistantMessageId, planningChangePackageId, null);
+        }
+
 
         /** 兼容公共失败字段发布前的构造调用。 */
         public View(

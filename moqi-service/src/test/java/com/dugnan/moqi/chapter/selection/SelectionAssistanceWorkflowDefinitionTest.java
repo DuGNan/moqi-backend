@@ -38,6 +38,65 @@ import com.dugnan.moqi.context.StoryContextAuthorityStatus;
 class SelectionAssistanceWorkflowDefinitionTest {
 
     @Test
+    void twoStageExecutionEndsWorkflowInsteadOfSchedulingTheAuditReference() throws Exception {
+        var service = mock(SelectionAssistanceServiceImpl.class);
+        var factory = mock(LlmProviderFactory.class);
+        var config = mock(UserConfigService.class);
+        var provider = mock(LlmProvider.class);
+        var executor = mock(ProseExecutionService.class);
+        when(config.requireAvailableExecutionConfig()).thenReturn(mock(LlmExecutionConfig.class));
+        when(factory.createObserved(any(), any())).thenReturn(provider);
+        when(service.operation(9L)).thenReturn("auto");
+        when(service.isTwoStageConversation(9L)).thenReturn(true);
+        var workflow = new SelectionAssistanceWorkflowDefinition(service, factory, config, new ObjectMapper());
+        workflow.setExecutionService(executor);
+        var result = workflow.execute(SelectionAssistanceServiceImpl.GENERATE_STEP, context());
+        assertThat(result.nextStepKey()).isNull();
+        verify(executor).generate(org.mockito.ArgumentMatchers.eq(9L), org.mockito.ArgumentMatchers.eq(provider), any());
+    }
+
+    @Test
+    void skipAcknowledgesWithoutModelCallOrEditing() throws Exception {
+        var service = mock(SelectionAssistanceServiceImpl.class);
+        var factory = mock(LlmProviderFactory.class);
+        var config = mock(UserConfigService.class);
+        when(service.operation(9L)).thenReturn("auto");
+        when(service.isClarificationSkipped(9L)).thenReturn(true);
+        var workflow = new SelectionAssistanceWorkflowDefinition(service, factory, config, new ObjectMapper());
+        workflow.execute(SelectionAssistanceServiceImpl.GENERATE_STEP, context());
+        verify(service).completeConversation(9L, "已跳过。正文保持不变，你可以继续讨论或提出新的要求。", false, null);
+        org.mockito.Mockito.verifyNoInteractions(factory, config);
+    }
+
+    @Test
+    void compilesDirectEditorIntentAndDiscussionBoundariesForStreamingRequest() throws Exception {
+        var service = mock(SelectionAssistanceServiceImpl.class);
+        var factory = mock(LlmProviderFactory.class);
+        var config = mock(UserConfigService.class);
+        var provider = mock(LlmProvider.class);
+        var stream = mock(ProseConversationStream.class);
+        when(config.requireAvailableExecutionConfig()).thenReturn(mock(LlmExecutionConfig.class));
+        when(factory.createObserved(any(), any())).thenReturn(provider);
+        when(service.operation(9L)).thenReturn("auto");
+        when(service.modelHistory(9L)).thenReturn(List.of(
+                new ConversationHistoryMessage("user", "先写一版看看"),
+                new ConversationHistoryMessage("assistant", "这只是一份试写")));
+        when(service.modelPrompt(9L)).thenReturn("作者要求：直接修改这段。\n需要处理的正文：编辑器未保存内容");
+        var workflow = new SelectionAssistanceWorkflowDefinition(service, factory, config, new ObjectMapper());
+        workflow.setConversationStream(stream);
+        workflow.execute(SelectionAssistanceServiceImpl.GENERATE_STEP, context());
+        var captured = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(stream).generate(org.mockito.ArgumentMatchers.eq(9L), org.mockito.ArgumentMatchers.eq(provider),
+                captured.capture(), any());
+        var messages = captured.getValue().messages();
+        assertThat(messages).hasSize(4);
+        assertThat(messages.get(0).content()).contains("明确要求修改当前编辑器正文", "先写一版看看", "跳过仅表示继续讨论");
+        assertThat(messages.get(1).role()).isEqualTo(LlmRole.USER);
+        assertThat(messages.get(2).role()).isEqualTo(LlmRole.ASSISTANT);
+        assertThat(messages.get(3).content()).contains("编辑器未保存内容").doesNotContain("targetId", "conversationId");
+    }
+
+    @Test
     void processRestartFailureMarksAssistanceAsFailed() {
         SelectionAssistanceServiceImpl service = mock(SelectionAssistanceServiceImpl.class);
         SelectionAssistanceWorkflowDefinition workflow = new SelectionAssistanceWorkflowDefinition(

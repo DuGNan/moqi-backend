@@ -960,7 +960,9 @@ public class ChapterCollaborationServiceImpl implements ChapterCollaborationServ
                 entity.getGenerationStatus(),
                 task == null ? null : task.getRetryOfTaskId(),
                 entity.getGmtCreate(),
-                entity.getGmtModified());
+                entity.getGmtModified(),
+                com.dugnan.moqi.chapter.selection.ProseConversationProtocol.reference(entity.getProseReferenceJson()),
+                com.dugnan.moqi.chapter.selection.ProseConversationProtocol.reference(entity.getProseResultJson()));
     }
 
     /**

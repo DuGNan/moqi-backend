@@ -57,6 +57,57 @@ import com.dugnan.moqi.llm.LlmProviderCapabilities;
  */
 class SelectionAssistanceServiceImplTest {
 
+    @ParameterizedTest
+    @ValueSource(ints = {2, 3, 4})
+    void continuousProtocolLoadsMemoryEvenWhenCallerDisablesHistory(int protocol) {
+        LlmProvider provider = mock(LlmProvider.class);
+        when(provider.capabilities()).thenReturn(new LlmProviderCapabilities(true, false, false, 16384, 8192));
+        Fixture fixture = new Fixture();
+        var assistance = fixture.candidate("原文", "候选");
+        assistance.setRequestContractVersion(2);
+        assistance.setConversationId(30L);
+        assistance.setUserMessageId(31L);
+        when(fixture.assistanceMapper.selectById(9L)).thenReturn(assistance);
+        var current = new ChapterConversationMessageEntity();
+        current.setId(31L);
+        current.setContent("回到开头讨论");
+        current.setMessageRole("user");
+        current.setProseReferenceJson("{\"text\":\"最新未保存稿\",\"start\":0,\"end\":6}");
+        when(fixture.messageMapper.selectById(31L)).thenReturn(current);
+        var task = new AiTaskEntity();
+        task.setId(8L);
+        task.setTaskInputJson("{\"conversationProtocol\":" + protocol
+                + ",\"includeHistory\":false,\"editorContent\":\"最新未保存稿\"}");
+        when(fixture.taskMapper.selectById(8L)).thenReturn(task);
+        var memory = mock(ProseConversationMemoryService.class);
+        var turns = List.of(new com.dugnan.moqi.context.StoryContextConversationTurn(
+                "早前问题", "{\"advice\":\"早前建议\"}"));
+        when(memory.prepare(30L, 31L, provider, 9L))
+                .thenReturn(new ProseConversationMemoryService.Context("有来源的摘要", turns));
+        fixture.service.setMemoryService(memory);
+        var binding = mock(StoryContextTaskBindingService.class);
+        fixture.service.setPromptContextDependencies(mock(ProseObjectPromptContextService.class), binding);
+        fixture.service.buildModelContext(9L, provider, ProseExecutionPrompts.PLAN);
+        var command = ArgumentCaptor.forClass(StoryContextBuildCommand.class);
+        verify(binding).buildAndAttach(command.capture(), org.mockito.ArgumentMatchers.same(task));
+        assertThat(command.getValue().targetText()).contains("最新未保存稿");
+        if (protocol == 4) {
+            assertThat(command.getValue().currentInput()).doesNotContain("最新未保存稿").contains("唯一全文基准");
+            verify(memory).prepare(30L, 31L, provider, 9L);
+            assertThat(command.getValue().targetText()).contains("有来源的摘要");
+            assertThat(command.getValue().frozenConversationTurns()).containsExactly(
+                    new com.dugnan.moqi.context.StoryContextConversationTurn("早前问题", "{\"advice\":\"早前建议\"}"));
+        } else {
+            org.mockito.Mockito.verifyNoInteractions(memory);
+            assertThat(command.getValue().frozenConversationTurns()).isEmpty();
+        }
+        task.setContextSnapshotId(71L);
+        org.mockito.Mockito.clearInvocations(memory, binding);
+        fixture.service.buildModelContext(9L, provider, ProseExecutionPrompts.PLAN);
+        verify(binding).buildAndAttach(null, task);
+        org.mockito.Mockito.verifyNoInteractions(memory);
+    }
+
     @Test
     void compilesNaturalLanguageModelPromptWithoutInternalRoutingEnums() throws Exception {
         Fixture fixture = new Fixture();

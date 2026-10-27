@@ -21,7 +21,11 @@ import com.dugnan.moqi.chapter.service.ProseObjectTargetService.ProseObjectTarge
 import com.dugnan.moqi.work.entity.ChapterEntity;
 import com.dugnan.moqi.work.mapper.ChapterMapper;
 
-/** 验证正文对象会话按稳定对象作用域隔离并幂等创建。 */
+/**
+ * @author dgn
+ * @date 2026-08-26
+ * @description 验证正文对象会话隔离、归档及幂等创建。
+ */
 @ExtendWith(MockitoExtension.class)
 class ProseObjectConversationServiceImplTest {
 
@@ -86,5 +90,38 @@ class ProseObjectConversationServiceImplTest {
     private ProseObjectTarget target(String objectId) {
         return new ProseObjectTarget(objectId, objectId.startsWith("formal") ? "formal" : "candidate",
                 1, "hash", "正文", "来源");
+    }
+
+    @Test
+    void restartArchivesOldConversationAndCreatesFreshScope() {
+        ChapterEntity chapter = new ChapterEntity();
+        chapter.setId(2L);
+        chapter.setWorkId(1L);
+        when(chapterMapper.selectByIdForUpdate(2L)).thenReturn(chapter);
+        ChapterConversationEntity old = new ChapterConversationEntity();
+        old.setId(11L);
+        old.setConversationStatus("active");
+        when(conversationMapper.selectList(any())).thenReturn(List.of(old), List.of());
+        org.mockito.Mockito.doAnswer(call -> {
+            ((ChapterConversationEntity) call.getArgument(0)).setId(12L);
+            return 1;
+        }).when(conversationMapper).insert(any(ChapterConversationEntity.class));
+        assertThat(service.restart(2L, "candidate:8", 11L).id()).isEqualTo(12L);
+        assertThat(old.getConversationStatus()).isEqualTo("archived");
+        verify(conversationMapper).updateById(old);
+    }
+
+    @Test
+    void repeatedRestartDoesNotArchiveNewSession() {
+        ChapterEntity chapter = new ChapterEntity();
+        chapter.setId(2L);
+        when(chapterMapper.selectByIdForUpdate(2L)).thenReturn(chapter);
+        ChapterConversationEntity current = new ChapterConversationEntity();
+        current.setId(12L);
+        current.setConversationStatus("active");
+        when(conversationMapper.selectList(any())).thenReturn(List.of(current));
+        assertThat(service.restart(2L, "candidate:8", 11L).id()).isEqualTo(12L);
+        verify(conversationMapper, never()).updateById(any(ChapterConversationEntity.class));
+        verify(conversationMapper, never()).insert(any(ChapterConversationEntity.class));
     }
 }
